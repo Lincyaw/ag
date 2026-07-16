@@ -1,0 +1,5 @@
+/bin/
+/dist/
+/ag
+*.out
+coverage.txt

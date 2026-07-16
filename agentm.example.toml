@@ -1,0 +1,17 @@
+[agent]
+system = "You are a concise command-line agent. Use the read-only workspace tools when they are useful."
+max_turns = 8
+timeout = "5m"
+
+[openai]
+model = "gpt-5-mini"
+base_url = ""
+max_retries = 2
+
+[workspace]
+root = "."
+max_read_bytes = 65536
+
+[logging]
+level = "info"
+format = "json"

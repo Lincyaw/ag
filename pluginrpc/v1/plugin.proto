@@ -1,0 +1,177 @@
+syntax = "proto3";
+
+package agentm.plugin.v1;
+
+option go_package = "github.com/lincyaw/ag/pluginrpc/v1;pluginv1";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+
+enum FailurePolicy {
+  FAILURE_POLICY_UNSPECIFIED = 0;
+  FAILURE_POLICY_FAIL_CLOSED = 1;
+  FAILURE_POLICY_CONTINUE = 2;
+}
+
+enum ActionKind {
+  ACTION_KIND_UNSPECIFIED = 0;
+  ACTION_KIND_STEP = 1;
+  ACTION_KIND_STOP = 2;
+  ACTION_KIND_INJECT = 3;
+}
+
+message Manifest {
+  string name = 1;
+  string version = 2;
+  string description = 3;
+  uint32 api_version = 4;
+  repeated string requires = 5;
+  repeated string conflicts = 6;
+  repeated string registers = 7;
+}
+
+message ProviderSpec {
+  string name = 1;
+  string model = 2;
+}
+
+message ToolSpec {
+  string name = 1;
+  string description = 2;
+  google.protobuf.Struct parameters = 3;
+}
+
+message HookSpec {
+  string name = 1;
+  string event = 2;
+  int32 priority = 3;
+  FailurePolicy failure_policy = 4;
+  int64 timeout_millis = 5;
+}
+
+message CapabilitySpec {
+  string name = 1;
+  string description = 2;
+  google.protobuf.Struct input_schema = 3;
+  google.protobuf.Struct output_schema = 4;
+}
+
+message EventContract {
+  string name = 1;
+  repeated string mutable_fields = 2;
+  bool allow_block = 3;
+  bool allow_action = 4;
+}
+
+message DescribeResponse {
+  Manifest manifest = 1;
+  repeated ProviderSpec providers = 2;
+  repeated ToolSpec tools = 3;
+  repeated HookSpec hooks = 4;
+  repeated CapabilitySpec capabilities = 5;
+  repeated EventContract events = 6;
+}
+
+message ToolCall {
+  string id = 1;
+  string name = 2;
+  google.protobuf.Struct arguments = 3;
+}
+
+message Message {
+  string role = 1;
+  string content = 2;
+  repeated ToolCall tool_calls = 3;
+  string tool_call_id = 4;
+}
+
+message Usage {
+  int64 input_tokens = 1;
+  int64 output_tokens = 2;
+}
+
+message ModelRequest {
+  repeated Message messages = 1;
+  repeated ToolSpec tools = 2;
+}
+
+message ModelResponse {
+  string content = 1;
+  repeated ToolCall tool_calls = 2;
+  string model = 3;
+  string finish_reason = 4;
+  Usage usage = 5;
+}
+
+message ToolResult {
+  string content = 1;
+  bool is_error = 2;
+}
+
+message EventEnvelope {
+  string id = 1;
+  string name = 2;
+  string session_id = 3;
+  uint64 generation = 4;
+  google.protobuf.Struct payload = 5;
+}
+
+message Block {
+  string reason = 1;
+  string kind = 2;
+}
+
+message Cause {
+  string code = 1;
+  string detail = 2;
+  bool final = 3;
+}
+
+message Action {
+  ActionKind kind = 1;
+  Cause cause = 2;
+  repeated Message messages = 3;
+}
+
+message Effect {
+  google.protobuf.Struct patch = 1;
+  Block block = 2;
+  Action action = 3;
+}
+
+message CompleteRequest {
+  string provider = 1;
+  ModelRequest request = 2;
+}
+
+message CallToolRequest {
+  string tool = 1;
+  google.protobuf.Struct arguments = 2;
+}
+
+message HandleHookRequest {
+  string hook = 1;
+  EventEnvelope event = 2;
+}
+
+message HandleHookResponse {
+  Effect effect = 1;
+}
+
+message InvokeCapabilityRequest {
+  string capability = 1;
+  google.protobuf.Struct input = 2;
+}
+
+message InvokeCapabilityResponse {
+  google.protobuf.Struct output = 1;
+}
+
+service PluginService {
+  rpc Describe(google.protobuf.Empty) returns (DescribeResponse);
+  rpc Complete(CompleteRequest) returns (ModelResponse);
+  rpc CallTool(CallToolRequest) returns (ToolResult);
+  rpc HandleHook(HandleHookRequest) returns (HandleHookResponse);
+  rpc InvokeCapability(InvokeCapabilityRequest)
+      returns (InvokeCapabilityResponse);
+}

@@ -1,0 +1,79 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/spf13/pflag"
+)
+
+func TestLoadPrecedenceFlagEnvFileDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(`
+[agent]
+max_turns = 3
+timeout = "90s"
+
+[openai]
+model = "file-model"
+
+[workspace]
+root = "."
+
+[logging]
+level = "debug"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTM_OPENAI_MODEL", "env-model")
+
+	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	flags.String("model", "flag-default", "")
+	flags.Int("max-turns", 8, "")
+	if err := flags.Set("max-turns", "11"); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(LoadOptions{ConfigFile: path, Flags: flags})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Config.OpenAI.Model != "env-model" {
+		t.Fatalf("model = %q", loaded.Config.OpenAI.Model)
+	}
+	if loaded.Config.Agent.MaxTurns != 11 {
+		t.Fatalf("max turns = %d", loaded.Config.Agent.MaxTurns)
+	}
+	if loaded.Config.Agent.Timeout != 90*time.Second {
+		t.Fatalf("timeout = %s", loaded.Config.Agent.Timeout)
+	}
+	if loaded.Config.Logging.Format != "json" {
+		t.Fatalf("default log format = %q", loaded.Config.Logging.Format)
+	}
+}
+
+func TestLoadRejectsUnknownKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(`
+[agent]
+max_turns = 3
+unknown = true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(LoadOptions{ConfigFile: path})
+	if err == nil {
+		t.Fatal("expected unknown key to fail")
+	}
+}
+
+func TestExplicitMissingConfigFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.toml")
+	_, err := Load(LoadOptions{ConfigFile: path})
+	if err == nil {
+		t.Fatal("expected missing explicit config to fail")
+	}
+}
