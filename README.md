@@ -1,158 +1,150 @@
-# ag
+# AgentM SDK (`ag`)
 
-A deliberately small, pluggable command-line agent extracted from AgentM's
-core architectural idea:
+`ag` is a small, durable, protocol-first agent runtime distilled from AgentM.
+The kernel owns mechanisms; providers, tools, policy hooks, event subscribers,
+and optional capabilities are plugins.
 
-> The kernel is mechanism. Providers and tools are plugins.
+The same plugin can run in either mode:
 
-The project keeps the infrastructure production-shaped while leaving product
-features out:
+- in-process through `sdk.Local(plugin)`;
+- out-of-process through the versioned protobuf/gRPC protocol.
 
-- compile-time Go plugins with a tiny `Plugin -> Host` registration contract;
-- a provider-neutral model/tool loop;
-- the official OpenAI Go SDK (no hand-written API HTTP or SSE protocol);
-- native `log/slog` structured logging;
-- native OpenTelemetry traces and metrics with optional OTLP/HTTP export;
-- trace/span IDs injected into logs;
-- OTel-instrumented HTTP transport for model requests;
-- two bounded, read-only workspace tools.
+Go is a convenience SDK, not the cross-language boundary. Python, Rust, Java,
+or any other language can implement `pluginrpc/v1/plugin.proto` and operate as
+an independent process.
 
-It intentionally does not include a TUI, persistence, hot reload, multi-agent
-orchestration, write tools, approvals, context compaction, or background jobs.
+## What is implemented
 
-## Core flow
+- transactional plugin mount/unmount with ownership and immutable snapshots;
+- explicit registration, driver-based discovery, and renewable registry leases;
+- async-first provider, tool, and capability operations with
+  `Submit / Poll / Cancel`, revision CAS, idempotency, and durable stores;
+- short synchronous control hooks plus durable asynchronous event subscribers;
+- host outbox and remote-plugin inbox with leases, retries, deduplication, and
+  per-trajectory ordering;
+- append-only trajectories with checkpoints, restore, branch inspection, and
+  rollback;
+- OpenTelemetry transport instrumentation plus an asynchronous semantic OTel
+  subscriber plugin;
+- Cobra CLI/config contract with `flag > AGENTM_* > config file > default`
+  precedence;
+- local OpenAI plus local/standalone root-confined file and bounded bash plugins.
 
-```text
-plugins install
-    ├── provider
-    └── tools
-          ↓
-user prompt → provider → assistant
-                         ├── no tool calls → return text
-                         └── tool calls → execute → append results → provider
-```
+Delivery and operation execution are at-least-once. Plugin side effects must be
+idempotent; the SDK does not claim exactly-once execution.
 
-The `agent` package imports no concrete provider or tool package. Replacing the
-model or tool set means changing only the composition root in
-`cmd/ag`.
+## Build
 
-Go plugins are normal packages linked into the binary, not `.so` files. This is
-intentional: the contracts stay type-checked and the binary remains portable
-across macOS, Linux, and Windows.
-
-## Build and run
-
-Requires Go 1.24+.
+Requires the Go version declared in `go.mod`.
 
 ```bash
 go build -o bin/ag ./cmd/ag
+go build -o bin/agentm-plugin-file ./cmd/agentm-plugin-file
+go build -o bin/agentm-plugin-bash ./cmd/agentm-plugin-bash
+```
 
-OPENAI_API_KEY=... \
-  ./bin/ag \
+## Run locally
+
+The default mounts OpenAI, the read-only file plugin, and the asynchronous OTel
+subscriber. The official OpenAI SDK reads the API key from the environment;
+there is deliberately no API-key CLI flag.
+
+```bash
+OPENAI_API_KEY=... bin/ag run \
   --cwd . \
   --model gpt-5-mini \
-  -p "Read README.md and summarize the architecture."
+  --session example \
+  --prompt "Read README.md and summarize the architecture."
 ```
 
-For an OpenAI-compatible endpoint:
+Enable bounded shell execution explicitly:
 
 ```bash
-OPENAI_API_KEY=... \
-OPENAI_BASE_URL=http://localhost:8000/v1 \
-OPENAI_MODEL=my-model \
-  go run ./cmd/ag -p "List the files in this workspace."
+bin/ag run --bash --prompt "Run go test ./... and explain failures."
 ```
 
-Secrets are read from the environment by the official SDK; there is no API-key
-CLI flag.
+Enable atomic file writes explicitly with `--write`. File paths stay confined
+to the configured root after symlink resolution. Bash inherits no ambient
+environment except explicit safe defaults and repeated `--env KEY=VALUE`
+entries in the standalone binary.
 
-Business output is written to stdout. Logs, warnings, and errors are written to
-stderr.
+## Run plugins as independent processes
 
-## Logging
-
-The defaults are JSON logs at `info` level:
+Each process prints one ready JSON record containing its actual URI. It owns a
+durable operation store and inbox beneath `--state-dir`.
 
 ```bash
-LOG_LEVEL=debug LOG_FORMAT=text \
-  go run ./cmd/ag -p "List the root directory."
+bin/agentm-plugin-file \
+  --listen 127.0.0.1:9001 \
+  --root . \
+  --state-dir .state/file
+
+bin/agentm-plugin-bash \
+  --listen 127.0.0.1:9002 \
+  --root . \
+  --state-dir .state/bash
 ```
 
-When a log record is emitted inside a span, it includes `trace_id` and
-`span_id`. Prompt text, tool arguments, API keys, and response bodies are not
-logged.
+Mount them explicitly in the CLI:
+
+```bash
+bin/ag run \
+  --file=false --bash=false \
+  --plugin file=grpc://127.0.0.1:9001 \
+  --plugin bash=grpc://127.0.0.1:9002 \
+  --prompt "Inspect the workspace, then run the tests."
+```
+
+Remote aliases share the plugin namespace with local plugins. Disable a local
+plugin (for example, `--file=false`) before mounting a remote plugin under the
+same name; `ag plugin inspect grpc://host:port` can inspect a URI directly.
+
+Use `--registry-uri` and `--lease-ttl` on a standalone plugin to register and
+renew a discovery lease. Discovery never implies execution: `ag plugin
+discover` lists active leases, while `ag run` mounts only explicitly configured
+plugins. `--tls-cert` and `--tls-key` enable a `grpcs://` server.
+
+## CLI
+
+```text
+ag run
+ag config show
+ag config path
+ag plugin list
+ag plugin discover
+ag plugin inspect <name-or-uri>
+ag trajectory list
+ag trajectory show <id> [--head <entry-id>]
+ag trajectory rollback <id> <checkpoint-id>
+ag version
+```
+
+Business output is written to stdout. Diagnostics and structured logs are
+written to stderr. `ag run --output json` includes the generated trajectory ID.
+Use `ag run --resume <id>` to restore the last committed checkpoint and continue.
+
+Configuration files may be TOML, YAML, or JSON. The default path is shown by
+`ag config path`; `AGENTM_CONFIG` or `--config` selects another file. Secret
+values are not represented in the config schema or `ag config show`.
 
 ## OpenTelemetry
 
-Without OTLP configuration, OTel uses its standard no-op providers.
-
-Setting a shared or signal-specific endpoint enables OTLP/HTTP export:
+OTLP/HTTP traces, metrics, and opt-in logs follow standard `OTEL_*` environment variables.
+Runtime transport/mount/dispatch instrumentation is mechanism-level. Semantic
+run, turn, provider, tool, and trajectory telemetry is projected from durable
+events by `plugins/otel`; it is not hard-coded into the agent loop.
 
 ```bash
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-export OTEL_SERVICE_NAME=ag
-
-go run ./cmd/ag -p "Read README.md."
-```
-
-The binary includes the stable `http/protobuf` exporters. Setting an OTLP
-protocol to `grpc` or `http/json` fails at startup instead of being silently
-ignored.
-
-You can control each signal explicitly:
-
-```bash
 export OTEL_TRACES_EXPORTER=otlp
 export OTEL_METRICS_EXPORTER=otlp
-
-# Or disable one signal even when a shared endpoint is configured.
-export OTEL_METRICS_EXPORTER=none
+export OTEL_LOGS_EXPORTER=otlp
 ```
 
-The stable trace hierarchy is:
-
-```text
-invoke_agent
-  ├── chat
-  │    └── HTTP client span from otelhttp
-  ├── execute_tool read_file
-  └── chat
-       └── HTTP client span from otelhttp
-```
-
-The kernel also records `agent.runs`, `agent.model.calls`, and
-`agent.tool.calls` counters. OTel log export is not a hard dependency because
-the Go OTLP log exporter is still experimental; `slog` remains the durable log
-contract and carries trace correlation.
-
-## Plugin contract
-
-The complete plugin surface is intentionally small:
-
-```go
-type Plugin interface {
-    Name() string
-    Install(Host) error
-}
-
-type Host interface {
-    RegisterProvider(Provider) error
-    RegisterTool(Tool) error
-}
-```
-
-A provider supplies one model completion operation. A tool supplies a JSON
-Schema and one call operation. The host rejects duplicate providers, duplicate
-tools, malformed names, and incomplete schemas during startup.
-
-## Why Chat Completions in the OpenAI plugin?
-
-The official SDK documents Responses as the primary OpenAI API, but Chat
-Completions remains supported and maps directly onto a provider-neutral,
-replayable message transcript. That keeps the kernel stateless and also
-preserves compatibility with many OpenAI-compatible endpoints. The HTTP client,
-authentication, retries, serialization, and response parsing still come from
-the official SDK.
+The Go logs SDK/exporter is currently beta/experimental upstream, so logs stay
+disabled unless a logs endpoint or `OTEL_LOGS_EXPORTER=otlp` is configured.
+When enabled, `slog` records are fanned out to stderr and an asynchronous OTLP
+batch processor.
 
 ## Verify
 
@@ -160,5 +152,14 @@ the official SDK.
 gofmt -w .
 go vet ./...
 go test ./...
-go build ./cmd/ag
+go test -race ./...
+go build ./cmd/ag ./cmd/agentm-plugin-file ./cmd/agentm-plugin-bash
 ```
+
+The integration suite builds and starts real standalone plugin processes,
+performs protobuf `Submit / Poll` calls, verifies lease registration and
+cleanup, and exercises CLI trajectory resume/rollback through a real
+OpenAI-compatible HTTP server.
+
+See [docs/pluggable-sdk.md](docs/pluggable-sdk.md) for the normative architecture
+and [decisions.md](decisions.md) for accepted design decisions.

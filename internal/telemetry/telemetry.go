@@ -8,11 +8,14 @@ import (
 	"os"
 	"strings"
 
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -29,9 +32,10 @@ type Config struct {
 }
 
 type Runtime struct {
-	Tracer    trace.Tracer
-	Meter     metric.Meter
-	shutdowns []func(context.Context) error
+	Tracer     trace.Tracer
+	Meter      metric.Meter
+	LogHandler slog.Handler
+	shutdowns  []func(context.Context) error
 }
 
 func Setup(ctx context.Context, config Config) (*Runtime, error) {
@@ -69,6 +73,13 @@ func Setup(ctx context.Context, config Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure metric exporter: %w", err)
 	}
+	logEnabled, err := exporterEnabled(
+		os.Getenv("OTEL_LOGS_EXPORTER"),
+		hasEndpoint("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("configure log exporter: %w", err)
+	}
 	if traceEnabled {
 		if err := validateHTTPProtocol(
 			os.Getenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"),
@@ -83,6 +94,14 @@ func Setup(ctx context.Context, config Config) (*Runtime, error) {
 			os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL"),
 		); err != nil {
 			return nil, fmt.Errorf("configure metric protocol: %w", err)
+		}
+	}
+	if logEnabled {
+		if err := validateHTTPProtocol(
+			os.Getenv("OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"),
+			os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL"),
+		); err != nil {
+			return nil, fmt.Errorf("configure log protocol: %w", err)
 		}
 	}
 
@@ -118,6 +137,21 @@ func Setup(ctx context.Context, config Config) (*Runtime, error) {
 		otel.SetMeterProvider(provider)
 		runtime.shutdowns = append(runtime.shutdowns, provider.Shutdown)
 	}
+	if logEnabled {
+		exporter, exportErr := otlploghttp.New(ctx)
+		if exportErr != nil {
+			return cleanupOnError(fmt.Errorf("create OTLP log exporter: %w", exportErr))
+		}
+		provider := sdklog.NewLoggerProvider(
+			sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)),
+			sdklog.WithResource(res),
+		)
+		runtime.LogHandler = otelslog.NewHandler(
+			instrumentationName,
+			otelslog.WithLoggerProvider(provider),
+		)
+		runtime.shutdowns = append(runtime.shutdowns, provider.Shutdown)
+	}
 
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
@@ -135,6 +169,8 @@ func Setup(ctx context.Context, config Config) (*Runtime, error) {
 		traceEnabled,
 		"metrics_exported",
 		metricEnabled,
+		"logs_exported",
+		logEnabled,
 	)
 	return runtime, nil
 }

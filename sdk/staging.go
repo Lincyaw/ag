@@ -119,6 +119,14 @@ func (registrar *stagingRegistrar) RegisterCapability(
 	if err := validateCapabilitySpec(spec); err != nil {
 		return err
 	}
+	_, asynchronous := capability.(AsyncCapability)
+	_, synchronous := capability.(SyncCapability)
+	if !asynchronous && !synchronous {
+		return fmt.Errorf(
+			"capability %q implements neither AsyncCapability nor SyncCapability",
+			spec.Name,
+		)
+	}
 	if _, exists := registrar.capabilities[spec.Name]; exists {
 		return fmt.Errorf("capability %q registered twice", spec.Name)
 	}

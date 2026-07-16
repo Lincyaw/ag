@@ -5,6 +5,7 @@ package bash
 import (
 	"os"
 	"os/exec"
+	"time"
 )
 
 func configureProcess(command *exec.Cmd) {
@@ -15,3 +16,5 @@ func configureProcess(command *exec.Cmd) {
 		return command.Process.Kill()
 	}
 }
+
+func waitProcessGroup(_ *exec.Cmd, _ time.Duration) error { return nil }

@@ -263,11 +263,20 @@ its inbox before acknowledging Submit, executes it independently, and writes
 state transitions/results to its outbox. Poll is the portable baseline; Watch
 only reduces polling latency and must be reconnectable from a revision.
 
-The host records submitted, suspended, resumed, and terminal operation states
-in trajectory. A CLI request need not hold the agent loop in memory: a worker
-can resume the trajectory when the operation result arrives. Deadlines and
-cancellation are themselves persisted commands; cancellation is best-effort
-once an external side effect has started.
+Go plugins may implement a small synchronous convenience interface. During
+mount, the runtime decorates every sync-only provider, tool, and capability as
+an asynchronous resource backed by `OperationStore`; the loop never invokes
+those methods directly. Native async plugins retain their own Submit/Poll/Cancel
+implementation. Short control hooks are the only synchronous plugin path.
+
+The host records the provider/tool request and terminal result in trajectory;
+the operation idempotency key is the request trajectory entry ID. Intermediate
+operation state lives in `OperationStore`, so a restarted local or standalone
+worker can re-run a non-terminal operation when it is submitted again. The v1
+CLI polls while a run is active. A detached run worker and a streaming `Watch`
+optimization may later resume a suspended trajectory without changing this
+operation contract. Cancellation is best-effort once an external side effect
+has started.
 
 Operation IDs and idempotency keys are distinct. Retrying Submit with the same
 idempotency key returns the original operation. Receivers may execute a command
@@ -407,7 +416,7 @@ CLI flag > AGENTM_* environment > config file > built-in default
 The CLI uses `PluginRegistry` exactly like an embedded application. It does not
 construct or access the runtime's private registries.
 
-Planned stable command tree:
+Stable command tree:
 
 ```text
 ag run
@@ -415,42 +424,45 @@ ag config show
 ag config path
 ag plugin list
 ag plugin discover
-ag plugin inspect
+ag plugin inspect <name-or-uri>
 ag trajectory list
-ag trajectory show
-ag trajectory rollback
+ag trajectory show <id> [--head <entry-id>]
+ag trajectory rollback <id> <checkpoint-id>
 ag version
 ```
 
 Business output goes to stdout. Diagnostics and logs go to stderr.
 
+The repository also builds `agentm-plugin-file` and `agentm-plugin-bash` as
+standalone Cobra processes. Each owns durable operation/inbox state, exposes
+gRPC health, optionally serves TLS, and may register/renew/unregister a lease.
+
 ## End-to-end acceptance
 
-Completion requires end-to-end tests that:
+The end-to-end suite verifies that:
 
 1. starts a real gRPC plugin server on a loopback TCP listener;
 2. registers local and gRPC plugin entries in `PluginRegistry`;
 3. discovers and resolves those entries;
-4. dynamically mounts a scripted provider, a real tool, and the remote policy;
-5. drives model -> remote `before_tool` hook -> blocked tool result -> model;
-6. invokes a remote capability and verifies shared remote state;
-7. unmounts the remote plugin;
-8. drives another turn and verifies the tool now executes;
-9. verifies generation changes and lifecycle/OTel evidence;
-10. uses the public SDK only, not private runtime fields.
+4. drives model -> remote hook -> remote tool -> model and delivers a terminal
+   event through the remote inbox;
+5. races operation cancellation against completion;
+6. verifies generation changes and lifecycle/OTel evidence;
+7. uses the public SDK and public protobuf protocol at process boundaries.
 
 The complete acceptance suite also:
 
 11. starts a standalone plugin process and registers it through a lease;
 12. proves lease renewal and expiry under concurrent discovery;
-13. propagates cancellation and OTel context across the process boundary;
+13. propagates cancellation and OTel transport context across the process boundary;
 14. records a multi-turn trajectory with provider, hook, and tool entries;
-15. kills/reopens the host and restores from the last committed turn;
+15. reopens persistent stores and restores from the last committed turn;
 16. rolls back to an earlier turn without deleting the abandoned branch;
 17. races concurrent sessions with mount/unmount and passes `go test -race`;
-18. drives Cobra CLI commands as an external process and verifies stdout,
-    stderr, exit codes, JSON output, and persistent trajectory behavior;
-19. executes real confined file and bash tools through the public SDK.
+18. drives Cobra CLI commands and verifies stdout, stderr, exit codes, JSON
+    output, and persistent trajectory behavior;
+19. builds and starts real file/bash child processes, then executes tools via
+    protobuf Submit/Poll and checks durable operation state.
 
 Shape-only tests and tests that only check getters do not satisfy this
 acceptance criterion.

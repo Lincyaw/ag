@@ -112,7 +112,18 @@ type CapabilitySpec struct {
 
 type Capability interface {
 	Spec() CapabilitySpec
+}
+
+type SyncCapability interface {
+	Capability
 	Invoke(context.Context, json.RawMessage) (json.RawMessage, error)
+}
+
+type AsyncCapability interface {
+	Capability
+	SubmitInvoke(context.Context, OperationRequest) (Operation, error)
+	PollInvoke(context.Context, string, uint64) (Operation, error)
+	CancelInvoke(context.Context, string) (Operation, error)
 }
 
 type Priority int

@@ -260,6 +260,11 @@ func (runner *runner) run(
 	configureProcess(process)
 
 	err := process.Run()
+	if runContext.Err() != nil {
+		if waitErr := waitProcessGroup(process, time.Second); waitErr != nil {
+			return sdk.ToolResult{}, fmt.Errorf("stop bash command: %w", waitErr)
+		}
+	}
 	if parentErr := ctx.Err(); parentErr != nil {
 		return sdk.ToolResult{}, parentErr
 	}

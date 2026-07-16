@@ -211,10 +211,15 @@ func (server *Server) SubmitOperation(
 			operation, err = server.submitStored(ctx, kind, resource, sdkRequest)
 		}
 	case sdk.OperationKindCapability:
-		if server.registrar.capabilities[resource] == nil {
+		capability := server.registrar.capabilities[resource]
+		if capability == nil {
 			return nil, status.Errorf(codes.NotFound, "capability %q not found", resource)
 		}
-		operation, err = server.submitStored(ctx, kind, resource, sdkRequest)
+		if asynchronous, ok := capability.(sdk.AsyncCapability); ok {
+			operation, err = asynchronous.SubmitInvoke(ctx, sdkRequest)
+		} else {
+			operation, err = server.submitStored(ctx, kind, resource, sdkRequest)
+		}
 	default:
 		return nil, status.Error(codes.InvalidArgument, "unsupported operation kind")
 	}
@@ -258,7 +263,15 @@ func (server *Server) PollOperation(
 			operation, err = server.getStored(ctx, kind, resource, request.GetId())
 		}
 	case sdk.OperationKindCapability:
-		operation, err = server.getStored(ctx, kind, resource, request.GetId())
+		capability := server.registrar.capabilities[resource]
+		if capability == nil {
+			return nil, status.Errorf(codes.NotFound, "capability %q not found", resource)
+		}
+		if asynchronous, ok := capability.(sdk.AsyncCapability); ok {
+			operation, err = asynchronous.PollInvoke(ctx, request.GetId(), request.GetAfterRevision())
+		} else {
+			operation, err = server.getStored(ctx, kind, resource, request.GetId())
+		}
 	default:
 		return nil, status.Error(codes.InvalidArgument, "unsupported operation kind")
 	}
@@ -302,7 +315,15 @@ func (server *Server) CancelOperation(
 			operation, err = server.cancelStored(ctx, kind, resource, request.GetId())
 		}
 	case sdk.OperationKindCapability:
-		operation, err = server.cancelStored(ctx, kind, resource, request.GetId())
+		capability := server.registrar.capabilities[resource]
+		if capability == nil {
+			return nil, status.Errorf(codes.NotFound, "capability %q not found", resource)
+		}
+		if asynchronous, ok := capability.(sdk.AsyncCapability); ok {
+			operation, err = asynchronous.CancelInvoke(ctx, request.GetId())
+		} else {
+			operation, err = server.cancelStored(ctx, kind, resource, request.GetId())
+		}
 	default:
 		return nil, status.Error(codes.InvalidArgument, "unsupported operation kind")
 	}
@@ -375,7 +396,7 @@ func (server *Server) submitStored(
 		return sdk.Operation{}, err
 	}
 	if created {
-		server.startOperation(record.Operation.ID)
+		server.startOperation(ctx, record.Operation.ID)
 	}
 	return record.Operation, nil
 }
@@ -444,28 +465,34 @@ func (server *Server) recoverOperations(ctx context.Context) error {
 	}
 	for _, record := range records {
 		if !record.Operation.Terminal() {
-			server.startOperation(record.Operation.ID)
+			server.startOperation(ctx, record.Operation.ID)
 		}
 	}
 	return nil
 }
 
-func (server *Server) startOperation(id string) {
+func (server *Server) startOperation(parent context.Context, id string) {
 	server.wait.Add(1)
 	go func() {
 		defer server.wait.Done()
-		server.executeStored(id)
+		server.executeStored(parent, id)
 	}()
 }
 
-func (server *Server) executeStored(id string) {
-	record, err := server.operations.Get(server.context, id)
+func (server *Server) executeStored(parent context.Context, id string) {
+	operationContext, cancel := context.WithCancel(context.WithoutCancel(parent))
+	stopServerCancel := context.AfterFunc(server.context, cancel)
+	defer func() {
+		stopServerCancel()
+		cancel()
+	}()
+	record, err := server.operations.Get(operationContext, id)
 	if err != nil || record.Operation.Terminal() {
 		return
 	}
 	if record.Operation.State == sdk.OperationPending {
 		record, err = server.operations.Transition(
-			server.context,
+			operationContext,
 			id,
 			record.Operation.Revision,
 			sdk.OperationRunning,
@@ -476,7 +503,6 @@ func (server *Server) executeStored(id string) {
 			return
 		}
 	}
-	operationContext, cancel := context.WithCancel(server.context)
 	server.cancelMu.Lock()
 	server.operationCancels[id] = cancel
 	server.cancelMu.Unlock()
@@ -543,9 +569,9 @@ func (server *Server) executeLocal(
 		}
 		return json.Marshal(result)
 	case sdk.OperationKindCapability:
-		capability := server.registrar.capabilities[record.Resource]
-		if capability == nil {
-			return nil, fmt.Errorf("capability %q not found", record.Resource)
+		capability, ok := server.registrar.capabilities[record.Resource].(sdk.SyncCapability)
+		if !ok {
+			return nil, fmt.Errorf("capability %q is not synchronous", record.Resource)
 		}
 		return capability.Invoke(ctx, record.Input)
 	default:

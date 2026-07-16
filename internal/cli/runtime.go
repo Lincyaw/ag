@@ -46,6 +46,7 @@ func startRuntime(
 	if err != nil {
 		return nil, fmt.Errorf("configure OpenTelemetry: %w", err)
 	}
+	logger = logging.WithHandler(logger, observability.LogHandler)
 	cleanupTelemetry := func(cause error) (*runningRuntime, error) {
 		closeCtx, cancel := closeContext()
 		defer cancel()
@@ -62,9 +63,13 @@ func startRuntime(
 	if err != nil {
 		return cleanupTelemetry(err)
 	}
+	operations, err := sdk.NewFileOperationStore(filepath.Join(config.State.Directory, "operations"))
+	if err != nil {
+		return cleanupTelemetry(err)
+	}
 	runtime, err := sdk.NewRuntime(sdk.RuntimeConfig{
 		Logger: logger, Tracer: observability.Tracer, Meter: observability.Meter,
-		Trajectories: trajectories, Outbox: outbox,
+		Trajectories: trajectories, Operations: operations, Outbox: outbox,
 	})
 	if err != nil {
 		return cleanupTelemetry(err)

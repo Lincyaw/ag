@@ -24,6 +24,7 @@ type RuntimeConfig struct {
 	Tracer              trace.Tracer
 	Meter               metric.Meter
 	Trajectories        TrajectoryStore
+	Operations          OperationStore
 	Outbox              OutboxStore
 	DeliveryWorkers     int
 	DeliveryLease       time.Duration
@@ -45,6 +46,12 @@ type Runtime struct {
 	events              metric.Int64Counter
 	hooks               metric.Int64Counter
 	trajectories        TrajectoryStore
+	operations          OperationStore
+	operationContext    context.Context
+	cancelOperations    context.CancelFunc
+	operationMu         sync.Mutex
+	operationCancels    map[string]context.CancelFunc
+	operationWait       sync.WaitGroup
 	outbox              OutboxStore
 	deliveryWorkers     int
 	deliveryLease       time.Duration
@@ -70,6 +77,9 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	}
 	if config.Trajectories == nil {
 		config.Trajectories = NewMemoryTrajectoryStore()
+	}
+	if config.Operations == nil {
+		config.Operations = NewMemoryOperationStore()
 	}
 	if config.Outbox == nil {
 		config.Outbox = NewMemoryOutboxStore()
@@ -127,6 +137,7 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 		return nil, fmt.Errorf("create hooks counter: %w", err)
 	}
 	deliveryContext, cancelDeliveries := context.WithCancel(context.Background())
+	operationContext, cancelOperations := context.WithCancel(context.Background())
 	runtime := &Runtime{
 		logger:              config.Logger,
 		tracer:              config.Tracer,
@@ -135,6 +146,10 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 		events:              events,
 		hooks:               hooks,
 		trajectories:        config.Trajectories,
+		operations:          config.Operations,
+		operationContext:    operationContext,
+		cancelOperations:    cancelOperations,
+		operationCancels:    make(map[string]context.CancelFunc),
 		outbox:              config.Outbox,
 		deliveryWorkers:     config.DeliveryWorkers,
 		deliveryLease:       config.DeliveryLease,
@@ -154,6 +169,13 @@ func (runtime *Runtime) Trajectories() TrajectoryStore {
 		return nil
 	}
 	return runtime.trajectories
+}
+
+func (runtime *Runtime) Operations() OperationStore {
+	if runtime == nil {
+		return nil
+	}
+	return runtime.operations
 }
 
 func (runtime *Runtime) Outbox() OutboxStore {
@@ -242,6 +264,7 @@ func (runtime *Runtime) Mount(
 		recordSpanError(span, err)
 		return closeOnError(err)
 	}
+	runtime.wrapSynchronousResources(staged)
 
 	state := newMountState(manifest, sourceDescription(source), connection)
 	runtime.mu.Lock()
@@ -400,6 +423,7 @@ func (runtime *Runtime) Close(ctx context.Context) error {
 	runtime.current.Store(empty)
 	runtime.mu.Unlock()
 	runtime.cancelDeliveries()
+	runtime.cancelOperations()
 
 	workersDone := make(chan struct{})
 	go func() {
@@ -410,6 +434,16 @@ func (runtime *Runtime) Close(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-workersDone:
+	}
+	operationsDone := make(chan struct{})
+	go func() {
+		runtime.operationWait.Wait()
+		close(operationsDone)
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-operationsDone:
 	}
 
 	var errs []error

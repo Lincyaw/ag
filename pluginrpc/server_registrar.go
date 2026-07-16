@@ -110,6 +110,14 @@ func (registrar *serverRegistrar) RegisterCapability(
 	if name == "" {
 		return errors.New("capability name is empty")
 	}
+	_, asynchronous := capability.(sdk.AsyncCapability)
+	_, synchronous := capability.(sdk.SyncCapability)
+	if !asynchronous && !synchronous {
+		return fmt.Errorf(
+			"capability %q implements neither AsyncCapability nor SyncCapability",
+			name,
+		)
+	}
 	if _, exists := registrar.capabilities[name]; exists {
 		return fmt.Errorf("capability %q registered twice", name)
 	}

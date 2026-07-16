@@ -11,6 +11,53 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+func WithHandler(logger *slog.Logger, additional slog.Handler) *slog.Logger {
+	if additional == nil {
+		return logger
+	}
+	if logger == nil {
+		return slog.New(additional)
+	}
+	return slog.New(multiHandler{handlers: []slog.Handler{logger.Handler(), additional}})
+}
+
+type multiHandler struct{ handlers []slog.Handler }
+
+func (handler multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, candidate := range handler.handlers {
+		if candidate.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (handler multiHandler) Handle(ctx context.Context, record slog.Record) error {
+	var errs []error
+	for _, candidate := range handler.handlers {
+		if candidate.Enabled(ctx, record.Level) {
+			errs = append(errs, candidate.Handle(ctx, record.Clone()))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (handler multiHandler) WithAttrs(attributes []slog.Attr) slog.Handler {
+	result := make([]slog.Handler, len(handler.handlers))
+	for index, candidate := range handler.handlers {
+		result[index] = candidate.WithAttrs(attributes)
+	}
+	return multiHandler{handlers: result}
+}
+
+func (handler multiHandler) WithGroup(name string) slog.Handler {
+	result := make([]slog.Handler, len(handler.handlers))
+	for index, candidate := range handler.handlers {
+		result[index] = candidate.WithGroup(name)
+	}
+	return multiHandler{handlers: result}
+}
+
 type Config struct {
 	Level  string
 	Format string

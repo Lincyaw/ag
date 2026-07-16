@@ -721,15 +721,7 @@ func (session *Session) complete(
 		}
 		return response, nil
 	}
-	synchronous, ok := provider.(SyncProvider)
-	if !ok {
-		return ModelResponse{}, fmt.Errorf("provider %q has no execution implementation", spec.Name)
-	}
-	response, err := synchronous.Complete(ctx, request)
-	if err != nil {
-		return ModelResponse{}, fmt.Errorf("provider %q completion: %w", spec.Name, err)
-	}
-	return response, nil
+	return ModelResponse{}, fmt.Errorf("provider %q has no asynchronous execution implementation", spec.Name)
 }
 
 func (session *Session) executeTool(
@@ -846,11 +838,7 @@ func (session *Session) callTool(
 		}
 		return result, nil
 	}
-	synchronous, ok := tool.(SyncTool)
-	if !ok {
-		return ToolResult{}, fmt.Errorf("tool %q has no execution implementation", spec.Name)
-	}
-	return synchronous.Call(ctx, arguments)
+	return ToolResult{}, fmt.Errorf("tool %q has no asynchronous execution implementation", spec.Name)
 }
 
 func (session *Session) afterToolError(

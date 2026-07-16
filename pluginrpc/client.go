@@ -3,12 +3,10 @@ package pluginrpc
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"strings"
-	"time"
 
 	pluginv1 "github.com/lincyaw/ag/pluginrpc/v1"
 	"github.com/lincyaw/ag/sdk"
@@ -361,33 +359,26 @@ type remoteCapability struct {
 
 func (capability remoteCapability) Spec() sdk.CapabilitySpec { return capability.spec }
 
-func (capability remoteCapability) Invoke(
+func (capability remoteCapability) SubmitInvoke(
 	ctx context.Context,
-	input json.RawMessage,
-) (json.RawMessage, error) {
-	operation, err := submitRemote(ctx, capability.client, sdk.OperationKindCapability, capability.spec.Name, sdk.OperationRequest{
-		IdempotencyKey: fmt.Sprintf("capability-%d", time.Now().UnixNano()),
-		Input:          input,
-	})
-	if err != nil {
-		return nil, err
-	}
-	for !operation.Terminal() {
-		if !wait(ctx, 100*time.Millisecond) {
-			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-			_, cancelErr := cancelRemote(cancelCtx, capability.client, sdk.OperationKindCapability, capability.spec.Name, operation.ID)
-			cancel()
-			return nil, errors.Join(ctx.Err(), cancelErr)
-		}
-		operation, err = pollRemote(ctx, capability.client, sdk.OperationKindCapability, capability.spec.Name, operation.ID, operation.Revision)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if operation.State != sdk.OperationSucceeded {
-		return nil, fmt.Errorf("capability operation %q ended in state %q: %s", operation.ID, operation.State, operation.Error)
-	}
-	return operation.Output, nil
+	request sdk.OperationRequest,
+) (sdk.Operation, error) {
+	return submitRemote(ctx, capability.client, sdk.OperationKindCapability, capability.spec.Name, request)
+}
+
+func (capability remoteCapability) PollInvoke(
+	ctx context.Context,
+	id string,
+	afterRevision uint64,
+) (sdk.Operation, error) {
+	return pollRemote(ctx, capability.client, sdk.OperationKindCapability, capability.spec.Name, id, afterRevision)
+}
+
+func (capability remoteCapability) CancelInvoke(
+	ctx context.Context,
+	id string,
+) (sdk.Operation, error) {
+	return cancelRemote(ctx, capability.client, sdk.OperationKindCapability, capability.spec.Name, id)
 }
 
 func submitRemote(

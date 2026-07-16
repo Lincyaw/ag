@@ -310,11 +310,31 @@ func (runtime *Runtime) InvokeCapability(
 		),
 	)
 	defer span.End()
-	output, err := owned.capability.Invoke(ctx, input)
+	asynchronous, ok := owned.capability.(AsyncCapability)
+	if !ok {
+		err := fmt.Errorf("capability %q has no asynchronous execution implementation", name)
+		recordSpanError(span, err)
+		return nil, err
+	}
+	initial, err := asynchronous.SubmitInvoke(ctx, OperationRequest{
+		IdempotencyKey: newDispatchID(),
+		Input:          append(json.RawMessage(nil), input...),
+	})
+	if err != nil {
+		recordSpanError(span, err)
+		return nil, fmt.Errorf("submit capability %q: %w", name, err)
+	}
+	operation, err := runtime.awaitOperation(
+		ctx,
+		initial,
+		asynchronous.PollInvoke,
+		asynchronous.CancelInvoke,
+	)
 	if err != nil {
 		recordSpanError(span, err)
 		return nil, fmt.Errorf("invoke capability %q: %w", name, err)
 	}
+	output := operation.Output
 	if !json.Valid(output) {
 		err := fmt.Errorf("capability %q returned invalid JSON", name)
 		recordSpanError(span, err)

@@ -51,7 +51,7 @@ func fromProtoProviderSpec(spec *pluginv1.ProviderSpec) sdk.ProviderSpec {
 }
 
 func toProtoToolSpec(spec sdk.ToolSpec) (*pluginv1.ToolSpec, error) {
-	parameters, err := structpb.NewStruct(spec.Parameters)
+	parameters, err := mapToProtoStruct(spec.Parameters)
 	if err != nil {
 		return nil, fmt.Errorf("encode tool %q parameters: %w", spec.Name, err)
 	}
@@ -111,11 +111,11 @@ func fromProtoSubscriberSpec(spec *pluginv1.SubscriberSpec) sdk.SubscriberSpec {
 }
 
 func toProtoCapabilitySpec(spec sdk.CapabilitySpec) (*pluginv1.CapabilitySpec, error) {
-	input, err := structpb.NewStruct(spec.InputSchema)
+	input, err := mapToProtoStruct(spec.InputSchema)
 	if err != nil {
 		return nil, fmt.Errorf("encode capability %q input schema: %w", spec.Name, err)
 	}
-	output, err := structpb.NewStruct(spec.OutputSchema)
+	output, err := mapToProtoStruct(spec.OutputSchema)
 	if err != nil {
 		return nil, fmt.Errorf("encode capability %q output schema: %w", spec.Name, err)
 	}
@@ -400,6 +400,18 @@ func rawToStruct(raw json.RawMessage) (*structpb.Struct, error) {
 		return nil, err
 	}
 	return structpb.NewStruct(value)
+}
+
+func mapToProtoStruct(value map[string]any) (*structpb.Struct, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var normalized map[string]any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return nil, err
+	}
+	return structpb.NewStruct(normalized)
 }
 
 func structToRaw(value *structpb.Struct) (json.RawMessage, error) {

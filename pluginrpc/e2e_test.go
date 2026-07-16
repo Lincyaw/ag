@@ -66,6 +66,30 @@ func (e2eTool) Spec() sdk.ToolSpec {
 	}
 }
 
+type e2eCapability struct{}
+
+func (e2eCapability) Spec() sdk.CapabilitySpec {
+	return sdk.CapabilitySpec{
+		Name: "remote-state", Description: "returns serializable remote state",
+		InputSchema:  map[string]any{"type": "object"},
+		OutputSchema: map[string]any{"type": "object"},
+	}
+}
+
+func (e2eCapability) Invoke(
+	_ context.Context,
+	input json.RawMessage,
+) (json.RawMessage, error) {
+	var request map[string]any
+	if err := json.Unmarshal(input, &request); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{
+		"transport": "rpc-operation",
+		"input":     request,
+	})
+}
+
 func (e2eTool) Call(
 	_ context.Context,
 	arguments json.RawMessage,
@@ -100,6 +124,7 @@ func (plugin *e2ePlugin) Manifest() sdk.Manifest {
 		Registers: []string{
 			sdk.ProviderResource("remote-model"),
 			sdk.ToolResource("remote-echo"),
+			sdk.CapabilityResource("remote-state"),
 			sdk.HookResource("remote-system"),
 			sdk.SubscriberResource("remote-terminal-events"),
 		},
@@ -133,6 +158,7 @@ func (plugin *e2ePlugin) Install(
 	return errors.Join(
 		registrar.RegisterProvider(plugin.provider),
 		registrar.RegisterTool(e2eTool{}),
+		registrar.RegisterCapability(e2eCapability{}),
 		registrar.RegisterHook(hook),
 		registrar.RegisterSubscriber(subscriber),
 	)
@@ -211,7 +237,8 @@ func TestRemotePluginRealTCPRunsSessionHookToolAndSubscriber(t *testing.T) {
 	}
 	catalog := runtime.Catalog()
 	if len(catalog.Providers) != 1 || len(catalog.Tools) != 1 ||
-		len(catalog.Hooks) != 1 || len(catalog.Subscribers) != 1 {
+		len(catalog.Hooks) != 1 || len(catalog.Subscribers) != 1 ||
+		len(catalog.Capabilities) != 1 {
 		t.Fatalf("remote catalog = %#v", catalog)
 	}
 
@@ -229,6 +256,20 @@ func TestRemotePluginRealTCPRunsSessionHookToolAndSubscriber(t *testing.T) {
 	}
 	if result.Output != "remote-finished" || result.Turns != 2 || result.ToolCalls != 1 {
 		t.Fatalf("remote result = %#v", result)
+	}
+	capabilityOutput, err := runtime.InvokeCapability(ctx, "remote-state", []byte(`{"value":"shared"}`))
+	if err != nil {
+		t.Fatalf("invoke remote capability: %v", err)
+	}
+	var capabilityState struct {
+		Transport string         `json:"transport"`
+		Input     map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(capabilityOutput, &capabilityState); err != nil {
+		t.Fatal(err)
+	}
+	if capabilityState.Transport != "rpc-operation" || capabilityState.Input["value"] != "shared" {
+		t.Fatalf("remote capability state = %#v", capabilityState)
 	}
 	plugin.provider.mu.Lock()
 	systems := append([]string(nil), plugin.provider.systems...)
