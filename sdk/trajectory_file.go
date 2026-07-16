@@ -191,53 +191,12 @@ func (store *FileTrajectoryStore) writeLocked(
 	ctx context.Context,
 	trajectory Trajectory,
 ) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	raw, err := json.Marshal(trajectory)
-	if err != nil {
-		return fmt.Errorf("encode trajectory %q: %w", trajectory.ID, err)
-	}
-	temporary, err := os.CreateTemp(store.directory, ".trajectory-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create trajectory temporary file: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	removeTemporary := true
-	defer func() {
-		if removeTemporary {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("secure trajectory temporary file: %w", err)
-	}
-	if _, err := temporary.Write(raw); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("write trajectory %q: %w", trajectory.ID, err)
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("sync trajectory %q: %w", trajectory.ID, err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close trajectory %q: %w", trajectory.ID, err)
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryPath, store.path(trajectory.ID)); err != nil {
-		return fmt.Errorf("publish trajectory %q: %w", trajectory.ID, err)
-	}
-	removeTemporary = false
-	directory, err := os.Open(store.directory)
-	if err != nil {
-		return fmt.Errorf("open trajectory directory for sync: %w", err)
-	}
-	defer directory.Close()
-	if err := directory.Sync(); err != nil {
-		return fmt.Errorf("sync trajectory directory: %w", err)
-	}
-	return nil
+	return writeJSONAtomic(
+		ctx,
+		store.directory,
+		store.path(trajectory.ID),
+		".trajectory-*.tmp",
+		fmt.Sprintf("trajectory %q", trajectory.ID),
+		trajectory,
+	)
 }

@@ -229,7 +229,9 @@ func (store *MemoryOutboxStore) transition(
 	delivery.AvailableAt = availableAt
 	delivery.LeaseToken = ""
 	delivery.LeaseExpiresAt = time.Time{}
-	delivery.LastError = lastError
+	if state != DeliveryDelivered || lastError != "" {
+		delivery.LastError = lastError
+	}
 	delivery.UpdatedAt = now.UTC()
 	store.deliveries[id] = delivery
 	return nil
