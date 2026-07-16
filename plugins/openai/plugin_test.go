@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/lincyaw/ag/agent"
-	sdk "github.com/openai/openai-go/v3"
+	agentsdk "github.com/lincyaw/ag/sdk"
+	openaisdk "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 )
 
@@ -56,19 +56,19 @@ func TestProviderUsesOfficialSDKForTools(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := sdk.NewClient(
+	client := openaisdk.NewClient(
 		option.WithBaseURL(server.URL+"/v1"),
 		option.WithAPIKey("test"),
 		option.WithMaxRetries(0),
 		option.WithHTTPClient(server.Client()),
 	)
 	model := &provider{client: client, model: "test-model"}
-	response, err := model.Complete(context.Background(), agent.ModelRequest{
-		Messages: []agent.Message{{
-			Role:    agent.RoleUser,
+	response, err := model.Complete(context.Background(), agentsdk.ModelRequest{
+		Messages: []agentsdk.Message{{
+			Role:    agentsdk.RoleUser,
 			Content: "read the README",
 		}},
-		Tools: []agent.ToolSpec{{
+		Tools: []agentsdk.ToolSpec{{
 			Name:        "read_file",
 			Description: "Read one file.",
 			Parameters: map[string]any{

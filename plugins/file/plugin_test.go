@@ -1,0 +1,173 @@
+package file
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/lincyaw/ag/sdk"
+)
+
+func TestFileToolsConfinePathsAndEnforceBounds(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	parent := t.TempDir()
+	root := filepath.Join(parent, "root")
+	outside := filepath.Join(parent, "outside")
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "hello.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "too-large.txt"), []byte("123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "binary"), []byte{0xff, 0xfe}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(root, "secret-link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "outside-link")); err != nil {
+		t.Fatal(err)
+	}
+	filesystem, err := newRootedFS(Config{
+		Root: root, MaxReadBytes: 8, MaxWriteBytes: 8, MaxEntries: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := readTool{filesystem: filesystem}
+	list := listTool{filesystem: filesystem}
+	write := writeTool{filesystem: filesystem}
+
+	result, err := read.Call(ctx, []byte(`{"path":"hello.txt"}`))
+	if err != nil || result.Content != "hello" {
+		t.Fatalf("read = %#v, %v", result, err)
+	}
+	for name, arguments := range map[string]string{
+		"parent traversal": `{"path":"../outside/secret.txt"}`,
+		"absolute path":    `{"path":"` + filepath.ToSlash(filepath.Join(outside, "secret.txt")) + `"}`,
+		"symlink escape":   `{"path":"secret-link"}`,
+		"oversized":        `{"path":"too-large.txt"}`,
+		"binary":           `{"path":"binary"}`,
+		"unknown field":    `{"path":"hello.txt","extra":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := read.Call(ctx, json.RawMessage(arguments)); err == nil {
+				t.Fatal("unsafe/invalid read unexpectedly succeeded")
+			}
+		})
+	}
+	if _, err := list.Call(ctx, []byte(`{"path":"outside-link"}`)); err == nil {
+		t.Fatal("listing an escaping directory symlink succeeded")
+	}
+	if _, err := write.Call(ctx, []byte(`{"path":"outside-link/new.txt","content":"bad"}`)); err == nil {
+		t.Fatal("writing through an escaping parent symlink succeeded")
+	}
+	if _, err := write.Call(ctx, []byte(`{"path":"secret-link","content":"bad"}`)); err == nil {
+		t.Fatal("replacing a symlink succeeded")
+	}
+	if _, err := write.Call(ctx, []byte(`{"path":"sub/new.txt","content":"123456789"}`)); err == nil {
+		t.Fatal("oversized write succeeded")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := write.Call(cancelled, []byte(`{"path":"sub/new.txt","content":"ok"}`)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled write = %v", err)
+	}
+}
+
+func TestConcurrentWritesAreAtomicAndPluginManifestMatchesMode(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	root := t.TempDir()
+	filesystem, err := newRootedFS(Config{
+		Root: root, MaxWriteBytes: 32 << 10, MaxReadBytes: 32 << 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := writeTool{filesystem: filesystem}
+	read := readTool{filesystem: filesystem}
+	const writers = 32
+	contents := make(map[string]struct{}, writers)
+	var contentsMu sync.Mutex
+	var wait sync.WaitGroup
+	errorsChannel := make(chan error, writers)
+	for index := range writers {
+		content := strings.Repeat(string(rune('a'+index%26)), 4096) + string(rune('0'+index%10))
+		contentsMu.Lock()
+		contents[content] = struct{}{}
+		contentsMu.Unlock()
+		wait.Add(1)
+		go func(content string) {
+			defer wait.Done()
+			raw, _ := json.Marshal(map[string]string{"path": "shared.txt", "content": content})
+			if _, err := write.Call(ctx, raw); err != nil {
+				errorsChannel <- err
+			}
+		}(content)
+	}
+	wait.Wait()
+	close(errorsChannel)
+	for err := range errorsChannel {
+		t.Errorf("concurrent write: %v", err)
+	}
+	result, err := read.Call(ctx, []byte(`{"path":"shared.txt"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := contents[result.Content]; !exists {
+		t.Fatalf("final file is a torn write: length=%d", len(result.Content))
+	}
+	temporary, err := filepath.Glob(filepath.Join(root, ".agentm-file-*.tmp"))
+	if err != nil || len(temporary) != 0 {
+		t.Fatalf("temporary files = %v, %v", temporary, err)
+	}
+
+	for _, test := range []struct {
+		name        string
+		enableWrite bool
+		toolCount   int
+	}{
+		{name: "read-only", toolCount: 2},
+		{name: "writable", enableWrite: true, toolCount: 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime, err := sdk.NewRuntime(sdk.RuntimeConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				closeCtx, cancel := context.WithTimeout(ctx, time.Second)
+				defer cancel()
+				if err := runtime.Close(closeCtx); err != nil {
+					t.Errorf("close runtime: %v", err)
+				}
+			}()
+			if _, err := runtime.Mount(ctx, sdk.Local(New(Config{
+				Root: root, EnableWrite: test.enableWrite,
+			}))); err != nil {
+				t.Fatal(err)
+			}
+			if got := len(runtime.Catalog().Tools); got != test.toolCount {
+				t.Fatalf("tool count = %d, want %d", got, test.toolCount)
+			}
+		})
+	}
+}

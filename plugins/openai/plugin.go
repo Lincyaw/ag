@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/lincyaw/ag/agent"
-	sdk "github.com/openai/openai-go/v3"
+	agentsdk "github.com/lincyaw/ag/sdk"
+	openaisdk "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/shared"
@@ -27,15 +27,21 @@ type plugin struct {
 	config Config
 }
 
-func New(config Config) agent.Plugin {
+func New(config Config) agentsdk.Plugin {
 	return plugin{config: config}
 }
 
-func (plugin) Name() string {
-	return "openai"
+func (plugin) Manifest() agentsdk.Manifest {
+	return agentsdk.Manifest{
+		Name:        "openai",
+		Version:     "1.0.0",
+		Description: "OpenAI chat completion provider using the official Go client",
+		APIVersion:  agentsdk.APIVersion,
+		Registers:   []string{agentsdk.ProviderResource("openai")},
+	}
 }
 
-func (p plugin) Install(host agent.Host) error {
+func (p plugin) Install(_ context.Context, registrar agentsdk.Registrar) error {
 	if strings.TrimSpace(p.config.Model) == "" {
 		return errors.New("OpenAI model is empty")
 	}
@@ -64,36 +70,32 @@ func (p plugin) Install(host agent.Host) error {
 	}
 	clientOptions = append(clientOptions, option.WithHTTPClient(httpClient))
 
-	return host.RegisterProvider(&provider{
-		client: sdk.NewClient(clientOptions...),
+	return registrar.RegisterProvider(&provider{
+		client: openaisdk.NewClient(clientOptions...),
 		model:  p.config.Model,
 	})
 }
 
 type provider struct {
-	client sdk.Client
+	client openaisdk.Client
 	model  string
 }
 
-func (p *provider) Name() string {
-	return "openai"
-}
-
-func (p *provider) Model() string {
-	return p.model
+func (p *provider) Spec() agentsdk.ProviderSpec {
+	return agentsdk.ProviderSpec{Name: "openai", Model: p.model}
 }
 
 func (p *provider) Complete(
 	ctx context.Context,
-	request agent.ModelRequest,
-) (agent.ModelResponse, error) {
+	request agentsdk.ModelRequest,
+) (agentsdk.ModelResponse, error) {
 	messages, err := toMessages(request.Messages)
 	if err != nil {
-		return agent.ModelResponse{}, err
+		return agentsdk.ModelResponse{}, err
 	}
-	tools := make([]sdk.ChatCompletionToolUnionParam, 0, len(request.Tools))
+	tools := make([]openaisdk.ChatCompletionToolUnionParam, 0, len(request.Tools))
 	for _, tool := range request.Tools {
-		tools = append(tools, sdk.ChatCompletionFunctionTool(
+		tools = append(tools, openaisdk.ChatCompletionFunctionTool(
 			shared.FunctionDefinitionParam{
 				Name:        tool.Name,
 				Description: param.NewOpt(tool.Description),
@@ -104,17 +106,17 @@ func (p *provider) Complete(
 
 	completion, err := p.client.Chat.Completions.New(
 		ctx,
-		sdk.ChatCompletionNewParams{
-			Model:    sdk.ChatModel(p.model),
+		openaisdk.ChatCompletionNewParams{
+			Model:    openaisdk.ChatModel(p.model),
 			Messages: messages,
 			Tools:    tools,
 		},
 	)
 	if err != nil {
-		return agent.ModelResponse{}, err
+		return agentsdk.ModelResponse{}, err
 	}
 	if len(completion.Choices) == 0 {
-		return agent.ModelResponse{}, errors.New("OpenAI returned no choices")
+		return agentsdk.ModelResponse{}, errors.New("OpenAI returned no choices")
 	}
 
 	choice := completion.Choices[0]
@@ -123,51 +125,51 @@ func (p *provider) Complete(
 		content = choice.Message.Refusal
 	}
 
-	calls := make([]agent.ToolCall, 0, len(choice.Message.ToolCalls))
+	calls := make([]agentsdk.ToolCall, 0, len(choice.Message.ToolCalls))
 	for _, rawCall := range choice.Message.ToolCalls {
 		if rawCall.Type != "function" {
-			return agent.ModelResponse{}, fmt.Errorf(
+			return agentsdk.ModelResponse{}, fmt.Errorf(
 				"unsupported OpenAI tool call type %q",
 				rawCall.Type,
 			)
 		}
 		call := rawCall.AsFunction()
-		calls = append(calls, agent.ToolCall{
+		calls = append(calls, agentsdk.ToolCall{
 			ID:        call.ID,
 			Name:      call.Function.Name,
 			Arguments: []byte(call.Function.Arguments),
 		})
 	}
 
-	return agent.ModelResponse{
+	return agentsdk.ModelResponse{
 		Content:      content,
 		ToolCalls:    calls,
 		Model:        completion.Model,
 		FinishReason: choice.FinishReason,
-		Usage: agent.Usage{
+		Usage: agentsdk.Usage{
 			InputTokens:  completion.Usage.PromptTokens,
 			OutputTokens: completion.Usage.CompletionTokens,
 		},
 	}, nil
 }
 
-func toMessages(messages []agent.Message) ([]sdk.ChatCompletionMessageParamUnion, error) {
-	result := make([]sdk.ChatCompletionMessageParamUnion, 0, len(messages))
+func toMessages(messages []agentsdk.Message) ([]openaisdk.ChatCompletionMessageParamUnion, error) {
+	result := make([]openaisdk.ChatCompletionMessageParamUnion, 0, len(messages))
 	for _, message := range messages {
 		switch message.Role {
-		case agent.RoleSystem:
-			result = append(result, sdk.SystemMessage(message.Content))
-		case agent.RoleUser:
-			result = append(result, sdk.UserMessage(message.Content))
-		case agent.RoleAssistant:
-			assistant := sdk.AssistantMessage(message.Content)
+		case agentsdk.RoleSystem:
+			result = append(result, openaisdk.SystemMessage(message.Content))
+		case agentsdk.RoleUser:
+			result = append(result, openaisdk.UserMessage(message.Content))
+		case agentsdk.RoleAssistant:
+			assistant := openaisdk.AssistantMessage(message.Content)
 			for _, call := range message.ToolCalls {
 				assistant.OfAssistant.ToolCalls = append(
 					assistant.OfAssistant.ToolCalls,
-					sdk.ChatCompletionMessageToolCallUnionParam{
-						OfFunction: &sdk.ChatCompletionMessageFunctionToolCallParam{
+					openaisdk.ChatCompletionMessageToolCallUnionParam{
+						OfFunction: &openaisdk.ChatCompletionMessageFunctionToolCallParam{
 							ID: call.ID,
-							Function: sdk.ChatCompletionMessageFunctionToolCallFunctionParam{
+							Function: openaisdk.ChatCompletionMessageFunctionToolCallFunctionParam{
 								Name:      call.Name,
 								Arguments: string(call.Arguments),
 							},
@@ -176,13 +178,13 @@ func toMessages(messages []agent.Message) ([]sdk.ChatCompletionMessageParamUnion
 				)
 			}
 			result = append(result, assistant)
-		case agent.RoleTool:
+		case agentsdk.RoleTool:
 			if message.ToolCallID == "" {
 				return nil, errors.New("tool message is missing tool call ID")
 			}
 			result = append(
 				result,
-				sdk.ToolMessage(message.Content, message.ToolCallID),
+				openaisdk.ToolMessage(message.Content, message.ToolCallID),
 			)
 		default:
 			return nil, fmt.Errorf("unsupported message role %q", message.Role)

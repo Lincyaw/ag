@@ -1,0 +1,331 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/lincyaw/ag/sdk"
+)
+
+func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
+	workspace := t.TempDir()
+	state := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(workspace, "input.txt"),
+		[]byte("file-content-from-cli"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENAI_API_KEY", "cli-test-key")
+	server := newScriptedOpenAIServer(t)
+	defer server.Close()
+
+	first := executeCLI(t,
+		"--state-dir", state,
+		"--otel=false",
+		"run",
+		"--session", "cli-e2e",
+		"--prompt", "use both tools",
+		"--output", "json",
+		"--base-url", server.URL+"/v1",
+		"--model", "test-model",
+		"--cwd", workspace,
+		"--bash",
+	)
+	var firstOutput struct {
+		SessionID string     `json:"session_id"`
+		Result    sdk.Result `json:"result"`
+	}
+	decodeJSON(t, first.stdout, &firstOutput)
+	if firstOutput.SessionID != "cli-e2e" || firstOutput.Result.Output != "first run complete" ||
+		firstOutput.Result.Turns != 2 || firstOutput.Result.ToolCalls != 2 {
+		t.Fatalf("first output = %#v", firstOutput)
+	}
+	if _, err := os.Stat(filepath.Join(state, "trajectories", "cli-e2e.json")); err != nil {
+		t.Fatalf("durable trajectory missing: %v", err)
+	}
+
+	requests := server.requests(t)
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %d, want 2", len(requests))
+	}
+	assertSecondProviderRequestContainsToolResults(t, requests[1], workspace)
+
+	shown := executeCLI(t,
+		"--state-dir", state,
+		"trajectory", "show", "cli-e2e",
+	)
+	var trajectory sdk.Trajectory
+	decodeJSON(t, shown.stdout, &trajectory)
+	checkpoints := checkpointIDs(trajectory)
+	if len(checkpoints) != 2 {
+		t.Fatalf("checkpoint IDs = %v", checkpoints)
+	}
+
+	second := executeCLI(t,
+		"--state-dir", state,
+		"--otel=false",
+		"run",
+		"--resume", "cli-e2e",
+		"--prompt", "continue from checkpoint",
+		"--output", "json",
+		"--base-url", server.URL+"/v1",
+		"--model", "test-model",
+		"--cwd", workspace,
+		"--bash",
+	)
+	var secondOutput struct {
+		SessionID string     `json:"session_id"`
+		Result    sdk.Result `json:"result"`
+	}
+	decodeJSON(t, second.stdout, &secondOutput)
+	if secondOutput.Result.Output != "resumed run complete" || secondOutput.Result.Turns != 1 {
+		t.Fatalf("resumed output = %#v", secondOutput)
+	}
+
+	rolledBack := executeCLI(t,
+		"--state-dir", state,
+		"trajectory", "rollback", "cli-e2e", checkpoints[0],
+	)
+	var rollbackOutput map[string]string
+	decodeJSON(t, rolledBack.stdout, &rollbackOutput)
+	if rollbackOutput["checkpoint_id"] != checkpoints[0] || rollbackOutput["head"] == "" {
+		t.Fatalf("rollback output = %#v", rollbackOutput)
+	}
+
+	branch := executeCLI(t,
+		"--state-dir", state,
+		"trajectory", "show", "cli-e2e", "--head", rollbackOutput["head"],
+	)
+	var rollbackBranch sdk.Trajectory
+	decodeJSON(t, branch.stdout, &rollbackBranch)
+	if len(rollbackBranch.Entries) == 0 ||
+		rollbackBranch.Entries[len(rollbackBranch.Entries)-1].Kind != sdk.TrajectoryKindRollback {
+		t.Fatalf("rollback branch = %#v", rollbackBranch.Entries)
+	}
+	for _, entry := range rollbackBranch.Entries {
+		if entry.ID == checkpoints[1] {
+			t.Fatalf("rollback branch retained later checkpoint %s", checkpoints[1])
+		}
+	}
+
+	listed := executeCLI(t, "--state-dir", state, "trajectory", "list")
+	var summaries []sdk.TrajectorySummary
+	decodeJSON(t, listed.stdout, &summaries)
+	if len(summaries) != 1 || summaries[0].ID != "cli-e2e" || summaries[0].Head != rollbackOutput["head"] {
+		t.Fatalf("trajectory summaries = %#v", summaries)
+	}
+}
+
+func TestCLIConfigPrecedencePluginCatalogAndUsageExit(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "config.toml")
+	state := filepath.Join(t.TempDir(), "state")
+	if err := os.WriteFile(configFile, []byte(fmt.Sprintf(`
+[agent]
+provider = "from-file"
+max_turns = 3
+
+[openai]
+enabled = false
+
+[workspace]
+enabled = false
+
+[state]
+directory = %q
+
+[observability]
+enabled = false
+`, state)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTM_AGENT_PROVIDER", "from-env")
+	result := executeCLI(t,
+		"--config", configFile,
+		"--state-dir", filepath.Join(state, "flag"),
+		"config", "show",
+	)
+	var shown map[string]any
+	decodeJSON(t, result.stdout, &shown)
+	config := shown["config"].(map[string]any)
+	agent := config["agent"].(map[string]any)
+	if agent["provider"] != "from-env" || agent["timeout"] != "5m0s" {
+		t.Fatalf("effective agent config = %#v", agent)
+	}
+	stateConfig := config["state"].(map[string]any)
+	if stateConfig["directory"] != filepath.Join(state, "flag") {
+		t.Fatalf("effective state config = %#v", stateConfig)
+	}
+
+	plugins := executeCLI(t, "--config", configFile, "plugin", "list")
+	var descriptors []sdk.PluginDescriptor
+	decodeJSON(t, plugins.stdout, &descriptors)
+	if len(descriptors) != 0 {
+		t.Fatalf("disabled local plugins still listed: %#v", descriptors)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"run"}, &stdout, &stderr, "test"); code != exitUsage {
+		t.Fatalf("missing prompt exit = %d, stderr = %q", code, stderr.String())
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "--prompt is required") {
+		t.Fatalf("usage streams stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+type cliResult struct {
+	stdout string
+	stderr string
+}
+
+func executeCLI(t *testing.T, arguments ...string) cliResult {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	if code := Run(arguments, &stdout, &stderr, "test-version"); code != exitOK {
+		t.Fatalf("ag %v exited %d\nstdout:\n%s\nstderr:\n%s", arguments, code, stdout.String(), stderr.String())
+	}
+	return cliResult{stdout: stdout.String(), stderr: stderr.String()}
+}
+
+func decodeJSON(t *testing.T, raw string, target any) {
+	t.Helper()
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	if err := decoder.Decode(target); err != nil {
+		t.Fatalf("decode JSON %q: %v", raw, err)
+	}
+}
+
+func checkpointIDs(trajectory sdk.Trajectory) []string {
+	var result []string
+	for _, entry := range trajectory.Entries {
+		if entry.Kind == sdk.TrajectoryKindCheckpoint {
+			result = append(result, entry.ID)
+		}
+	}
+	return result
+}
+
+func assertSecondProviderRequestContainsToolResults(
+	t *testing.T,
+	request map[string]any,
+	workspace string,
+) {
+	t.Helper()
+	messages, ok := request["messages"].([]any)
+	if !ok {
+		t.Fatalf("messages = %#v", request["messages"])
+	}
+	joined := fmt.Sprint(messages)
+	for _, expected := range []string{
+		"file-content-from-cli",
+		"bash-cwd=" + resolveTestPath(t, workspace),
+		"exit_code: 0",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("provider messages %q missing %q", joined, expected)
+		}
+	}
+}
+
+type scriptedServer struct {
+	*httptest.Server
+	mu     sync.Mutex
+	bodies []map[string]any
+}
+
+func newScriptedOpenAIServer(t *testing.T) *scriptedServer {
+	t.Helper()
+	server := &scriptedServer{}
+	server.Server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			http.Error(writer, err.Error(), http.StatusBadRequest)
+			return
+		}
+		server.mu.Lock()
+		server.bodies = append(server.bodies, body)
+		call := len(server.bodies)
+		server.mu.Unlock()
+		if request.URL.Path != "/v1/chat/completions" ||
+			request.Header.Get("Authorization") != "Bearer cli-test-key" {
+			http.Error(writer, "unexpected OpenAI request", http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		switch call {
+		case 1:
+			writeChatResponse(t, writer, "", "tool_calls", []map[string]any{
+				toolCall("file-call", "read_file", `{"path":"input.txt"}`),
+				toolCall("bash-call", "bash", `{"command":"printf 'bash-cwd=%s\\n' \"$PWD\""}`),
+			})
+		case 2:
+			writeChatResponse(t, writer, "first run complete", "stop", nil)
+		case 3:
+			writeChatResponse(t, writer, "resumed run complete", "stop", nil)
+		default:
+			http.Error(writer, fmt.Sprintf("unexpected call %d", call), http.StatusBadRequest)
+		}
+	}))
+	return server
+}
+
+func (server *scriptedServer) requests(t *testing.T) []map[string]any {
+	t.Helper()
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	result := make([]map[string]any, len(server.bodies))
+	copy(result, server.bodies)
+	return result
+}
+
+func toolCall(id, name, arguments string) map[string]any {
+	return map[string]any{
+		"id": id, "type": "function",
+		"function": map[string]any{"name": name, "arguments": arguments},
+	}
+}
+
+func writeChatResponse(
+	t *testing.T,
+	writer http.ResponseWriter,
+	content string,
+	finishReason string,
+	toolCalls []map[string]any,
+) {
+	t.Helper()
+	response := map[string]any{
+		"id": "chatcmpl-cli", "object": "chat.completion", "created": 1,
+		"model": "test-model",
+		"choices": []map[string]any{{
+			"index": 0,
+			"message": map[string]any{
+				"role": "assistant", "content": content, "tool_calls": toolCalls,
+			},
+			"finish_reason": finishReason,
+		}},
+		"usage": map[string]any{
+			"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+		},
+	}
+	if err := json.NewEncoder(writer).Encode(response); err != nil {
+		t.Errorf("write OpenAI response: %v", err)
+	}
+}
+
+func resolveTestPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
