@@ -120,12 +120,19 @@ ag plugin inspect <name-or-uri>
 ag trajectory list
 ag trajectory show <id> [--head <entry-id>]
 ag trajectory rollback <id> <checkpoint-id>
+ag state inspect
+ag state prune --before <RFC3339-or-duration>
 ag version
 ```
 
 Business output is written to stdout. Diagnostics and structured logs are
-written to stderr. `ag run --output json` includes the generated trajectory ID.
-Use `ag run --resume <id>` to restore the last committed checkpoint and continue.
+written to stderr. The default output is human-readable text; explicitly pass
+`-o json` (or `--output json`) to any command for stable machine-readable
+output. JSON `ag run` output includes the generated trajectory ID. Use `ag run
+--resume <id>` to restore the last committed checkpoint and continue.
+
+See [docs/cli.md](docs/cli.md) for the text/JSON schemas, stream boundary, and
+exit-status contract.
 
 Configuration files may be TOML, YAML, or JSON. The default path is shown by
 `ag config path`; `AGENTM_CONFIG` or `--config` selects another file. Secret

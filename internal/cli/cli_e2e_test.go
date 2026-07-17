@@ -64,7 +64,7 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 
 	shown := executeCLI(t,
 		"--state-dir", state,
-		"trajectory", "show", "cli-e2e",
+		"trajectory", "show", "cli-e2e", "-o", "json",
 	)
 	var trajectory sdk.Trajectory
 	decodeJSON(t, shown.stdout, &trajectory)
@@ -96,7 +96,7 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 
 	rolledBack := executeCLI(t,
 		"--state-dir", state,
-		"trajectory", "rollback", "cli-e2e", checkpoints[0],
+		"trajectory", "rollback", "cli-e2e", checkpoints[0], "-o", "json",
 	)
 	var rollbackOutput map[string]string
 	decodeJSON(t, rolledBack.stdout, &rollbackOutput)
@@ -106,7 +106,7 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 
 	branch := executeCLI(t,
 		"--state-dir", state,
-		"trajectory", "show", "cli-e2e", "--head", rollbackOutput["head"],
+		"trajectory", "show", "cli-e2e", "--head", rollbackOutput["head"], "-o", "json",
 	)
 	var rollbackBranch sdk.Trajectory
 	decodeJSON(t, branch.stdout, &rollbackBranch)
@@ -120,7 +120,7 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 		}
 	}
 
-	listed := executeCLI(t, "--state-dir", state, "trajectory", "list")
+	listed := executeCLI(t, "--state-dir", state, "trajectory", "list", "-o", "json")
 	var summaries []sdk.TrajectorySummary
 	decodeJSON(t, listed.stdout, &summaries)
 	if len(summaries) != 1 || summaries[0].ID != "cli-e2e" || summaries[0].Head != rollbackOutput["head"] {
@@ -155,7 +155,7 @@ enabled = false
 	result := executeCLI(t,
 		"--config", configFile,
 		"--state-dir", filepath.Join(state, "flag"),
-		"config", "show",
+		"config", "show", "-o", "json",
 	)
 	var shown map[string]any
 	decodeJSON(t, result.stdout, &shown)
@@ -169,7 +169,7 @@ enabled = false
 		t.Fatalf("effective state config = %#v", stateConfig)
 	}
 
-	plugins := executeCLI(t, "--config", configFile, "plugin", "list")
+	plugins := executeCLI(t, "--config", configFile, "plugin", "list", "-o", "json")
 	var descriptors []sdk.PluginDescriptor
 	decodeJSON(t, plugins.stdout, &descriptors)
 	if len(descriptors) != 0 {
@@ -182,6 +182,102 @@ enabled = false
 	}
 	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "--prompt is required") {
 		t.Fatalf("usage streams stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestCLIDefaultHumanOutputAndExplicitJSONContract(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("OPENAI_API_KEY", "cli-test-key")
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		_ *http.Request,
+	) {
+		writer.Header().Set("Content-Type", "application/json")
+		writeChatResponse(t, writer, "human-readable answer", "stop", nil)
+	}))
+	defer server.Close()
+
+	human := executeCLI(t,
+		"--otel=false",
+		"run",
+		"--session", "human-session",
+		"--prompt", "answer once",
+		"--base-url", server.URL+"/v1",
+		"--model", "test-model",
+		"--file=false",
+	)
+	for _, expected := range []string{
+		"human-readable answer",
+		"Session:     human-session",
+		"Turns:       1",
+		"Tool calls:  0",
+		"Cause:       model_end",
+	} {
+		if !strings.Contains(human.stdout, expected) {
+			t.Fatalf("human stdout %q missing %q", human.stdout, expected)
+		}
+	}
+	if json.Valid([]byte(human.stdout)) {
+		t.Fatalf("default output unexpectedly became JSON: %q", human.stdout)
+	}
+
+	config := executeCLI(t, "--otel=false", "config", "show")
+	for _, expected := range []string{
+		"Effective configuration",
+		"Agent",
+		"Workspace",
+		"Diagnostics",
+	} {
+		if !strings.Contains(config.stdout, expected) {
+			t.Fatalf("config text %q missing %q", config.stdout, expected)
+		}
+	}
+
+	version := executeCLI(t, "-o", "json", "version")
+	var versionOutput map[string]string
+	decodeJSON(t, version.stdout, &versionOutput)
+	if versionOutput["version"] != "test-version" {
+		t.Fatalf("version JSON = %#v", versionOutput)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(
+		[]string{"run", "-o", "json"},
+		&stdout,
+		&stderr,
+		"test-version",
+	); code != exitUsage {
+		t.Fatalf("JSON usage exit = %d, stderr = %q", code, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("JSON error polluted stdout: %q", stdout.String())
+	}
+	var failure cliErrorOutput
+	decodeJSON(t, stderr.String(), &failure)
+	if failure.Error.Type != "usage" ||
+		failure.Error.ExitCode != exitUsage ||
+		!strings.Contains(failure.Error.Message, "--prompt is required") {
+		t.Fatalf("JSON error = %#v", failure)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run(
+		[]string{"run", "--unknown", "-o", "json"},
+		&stdout,
+		&stderr,
+		"test-version",
+	); code != exitUsage {
+		t.Fatalf("late JSON flag exit = %d, stderr = %q", code, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("late JSON flag polluted stdout: %q", stdout.String())
+	}
+	failure = cliErrorOutput{}
+	decodeJSON(t, stderr.String(), &failure)
+	if failure.Error.Type != "usage" ||
+		!strings.Contains(failure.Error.Message, "unknown flag") {
+		t.Fatalf("late JSON flag error = %#v", failure)
 	}
 }
 

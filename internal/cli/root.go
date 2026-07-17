@@ -26,6 +26,7 @@ type app struct {
 	stdout     io.Writer
 	stderr     io.Writer
 	configFile string
+	output     string
 }
 
 type usageError struct{ error }
@@ -36,16 +37,20 @@ func Run(args []string, stdout, stderr io.Writer, version string) int {
 	command := New(stdout, stderr, version)
 	command.SetArgs(args)
 	if err := command.ExecuteContext(signalContext); err != nil {
-		fmt.Fprintf(stderr, "ag: %v\n", err)
 		var usage usageError
+		exitCode := exitRuntime
 		switch {
 		case errors.As(err, &usage):
-			return exitUsage
+			exitCode = exitUsage
 		case errors.Is(err, context.Canceled):
-			return exitCanceled
-		default:
-			return exitRuntime
+			exitCode = exitCanceled
 		}
+		if requestedOutput(args, selectedOutput(command)) == outputJSON {
+			_ = writeCLIError(stderr, command, err, exitCode)
+		} else {
+			fmt.Fprintf(stderr, "ag: %v\n", err)
+		}
+		return exitCode
 	}
 	return exitOK
 }
@@ -53,11 +58,17 @@ func Run(args []string, stdout, stderr io.Writer, version string) int {
 func New(stdout, stderr io.Writer, version string) *cobra.Command {
 	application := &app{version: version, stdout: stdout, stderr: stderr}
 	root := &cobra.Command{
-		Use:           "ag",
-		Short:         "Run and inspect pluggable agent trajectories",
+		Use:   "ag",
+		Short: "Run and inspect pluggable agent trajectories",
+		Example: `  ag run -p "Summarize this repository"
+  ag trajectory list
+  ag trajectory list -o json | jq '.[].id'`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		Args:          noArgs,
+		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			return application.validateOutput()
+		},
 		RunE: func(command *cobra.Command, _ []string) error {
 			return command.Help()
 		},
@@ -83,6 +94,13 @@ func New(stdout, stderr io.Writer, version string) *cobra.Command {
 		"state-namespace",
 		"",
 		"Isolate state in a named backend namespace.",
+	)
+	root.PersistentFlags().StringVarP(
+		&application.output,
+		"output",
+		"o",
+		outputText,
+		"Output format: text or json.",
 	)
 	root.PersistentFlags().String("log-level", "", "debug, info, warn, or error.")
 	root.PersistentFlags().String("log-format", "", "json or text.")

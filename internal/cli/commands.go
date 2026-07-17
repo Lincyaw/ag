@@ -2,10 +2,8 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -20,20 +18,19 @@ func (application *app) runCommand() *cobra.Command {
 	var prompt string
 	var sessionID string
 	var resumeID string
-	var outputFormat string
 	command := &cobra.Command{
 		Use:   "run",
 		Short: "Run a prompt and durably record its trajectory",
-		Args:  noArgs,
+		Example: `  ag run -p "Summarize this repository"
+  ag run --resume <session-id> -p "Continue"
+  ag run -p "Inspect the repository" -o json`,
+		Args: noArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			if strings.TrimSpace(prompt) == "" {
 				return usageError{errors.New("--prompt is required")}
 			}
 			if sessionID != "" && resumeID != "" {
 				return usageError{errors.New("--session and --resume are mutually exclusive")}
-			}
-			if outputFormat != "text" && outputFormat != "json" {
-				return usageError{errors.New(`--output must be "text" or "json"`)}
 			}
 			loaded, err := application.load(command)
 			if err != nil {
@@ -66,20 +63,12 @@ func (application *app) runCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("run session %s: %w", session.ID(), err)
 			}
-			if outputFormat == "json" {
-				return writeJSON(application.stdout, struct {
-					SessionID string              `json:"session_id"`
-					Result    agentruntime.Result `json:"result"`
-				}{SessionID: session.ID(), Result: result})
-			}
-			_, err = fmt.Fprintln(application.stdout, result.Output)
-			return err
+			return application.writeRun(session.ID(), result)
 		},
 	}
 	command.Flags().StringVarP(&prompt, "prompt", "p", "", "Prompt to run.")
 	command.Flags().StringVar(&sessionID, "session", "", "ID for a new trajectory.")
 	command.Flags().StringVar(&resumeID, "resume", "", "Resume an existing trajectory ID.")
-	command.Flags().StringVar(&outputFormat, "output", "text", "Output format: text or json.")
 	addRunConfigFlags(command.Flags())
 	return command
 }
@@ -88,17 +77,14 @@ func (application *app) configCommand() *cobra.Command {
 	command := &cobra.Command{Use: "config", Short: "Inspect effective configuration"}
 	show := &cobra.Command{
 		Use:   "show",
-		Short: "Print effective non-secret configuration as JSON",
+		Short: "Print effective non-secret configuration",
 		Args:  noArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			loaded, err := application.load(command)
 			if err != nil {
 				return err
 			}
-			return writeJSON(application.stdout, struct {
-				File   string           `json:"file"`
-				Config appconfig.Config `json:"config"`
-			}{File: loaded.File, Config: loaded.Config})
+			return application.writeConfig(loaded)
 		},
 	}
 	path := &cobra.Command{
@@ -110,8 +96,7 @@ func (application *app) configCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintln(application.stdout, loaded.Path())
-			return err
+			return application.writePath(loaded.Path())
 		},
 	}
 	command.AddCommand(show, path)
@@ -134,7 +119,7 @@ func (application *app) pluginCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return writeJSON(application.stdout, descriptors)
+			return application.writePlugins(descriptors)
 		},
 	}
 	discover := &cobra.Command{
@@ -150,7 +135,7 @@ func (application *app) pluginCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return writeJSON(application.stdout, descriptors)
+			return application.writePlugins(descriptors)
 		},
 	}
 	inspect := &cobra.Command{
@@ -171,7 +156,7 @@ func (application *app) pluginCommand() *cobra.Command {
 				return err
 			}
 			defer connection.Close(context.Background())
-			return writeJSON(application.stdout, connection.Manifest())
+			return application.writeManifest(connection.Manifest())
 		},
 	}
 	command.AddCommand(list, discover, inspect)
@@ -239,7 +224,7 @@ func (application *app) trajectoryCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return writeJSON(application.stdout, trajectories)
+			return application.writeTrajectoryList(trajectories)
 		},
 	}
 	var branchHead string
@@ -266,7 +251,7 @@ func (application *app) trajectoryCommand() *cobra.Command {
 				trajectory.Head = branchHead
 				trajectory.Entries = branch
 			}
-			return writeJSON(application.stdout, trajectory)
+			return application.writeTrajectory(trajectory)
 		},
 	}
 	show.Flags().StringVar(&branchHead, "head", "", "Show only the branch ending at this entry.")
@@ -305,10 +290,10 @@ func (application *app) trajectoryCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return writeJSON(application.stdout, map[string]string{
-				"trajectory_id": trajectory.ID,
-				"head":          trajectory.Head,
-				"checkpoint_id": args[1],
+			return application.writeRollback(rollbackOutput{
+				TrajectoryID: trajectory.ID,
+				Head:         trajectory.Head,
+				CheckpointID: args[1],
 			})
 		},
 	}
@@ -342,11 +327,7 @@ func (application *app) stateCommand() *cobra.Command {
 				return err
 			}
 			defer backend.Close(context.Background())
-			return writeJSON(application.stdout, struct {
-				Backend      string                  `json:"backend"`
-				Namespace    string                  `json:"namespace"`
-				Capabilities sdk.StorageCapabilities `json:"capabilities"`
-			}{
+			return application.writeState(stateOutput{
 				Backend:      backend.String(),
 				Namespace:    backend.Namespace(),
 				Capabilities: backend.Capabilities(),
@@ -376,7 +357,7 @@ func (application *app) stateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return writeJSON(application.stdout, result)
+			return application.writePrune(result)
 		},
 	}
 	prune.Flags().StringVar(
@@ -415,10 +396,7 @@ func (application *app) versionCommand() *cobra.Command {
 		Use:   "version",
 		Short: "Print version",
 		Args:  noArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			_, err := fmt.Fprintln(application.stdout, application.version)
-			return err
-		},
+		RunE:  func(_ *cobra.Command, _ []string) error { return application.writeVersion() },
 	}
 }
 
@@ -436,11 +414,4 @@ func exactArgs(count int) cobra.PositionalArgs {
 		}
 		return nil
 	}
-}
-
-func writeJSON(writer io.Writer, value any) error {
-	encoder := json.NewEncoder(writer)
-	encoder.SetEscapeHTML(false)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(value)
 }

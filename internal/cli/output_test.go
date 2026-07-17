@@ -1,0 +1,166 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/lincyaw/ag/sdk"
+)
+
+func TestHumanResourceRenderersExposeUsefulOperationalFields(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.July, 17, 9, 0, 0, 0, time.UTC)
+	trajectory := sdk.Trajectory{
+		ID:        "trajectory-1",
+		Head:      "entry-2",
+		CreatedAt: now,
+		UpdatedAt: now.Add(time.Minute),
+		Entries: []sdk.TrajectoryEntry{
+			{
+				ID: "entry-1", Kind: sdk.TrajectoryKindToolCall, Timestamp: now,
+				Payload: json.RawMessage(
+					`{"turn":0,"call":{"id":"call-1","name":"read_file","arguments":{"path":"README.md"}}}`,
+				),
+			},
+			{
+				ID: "entry-2", ParentID: "entry-1",
+				Kind: sdk.TrajectoryKindToolResult, Timestamp: now.Add(time.Second),
+				Payload: json.RawMessage(
+					`{"turn":0,"call":{"id":"call-1","name":"read_file"},"result":{"content":"ok","is_error":false}}`,
+				),
+			},
+		},
+	}
+	cases := []struct {
+		name     string
+		render   func(*app) error
+		expected []string
+	}{
+		{
+			name: "plugins",
+			render: func(application *app) error {
+				return application.writePlugins([]sdk.PluginDescriptor{{
+					Name: "file", Scheme: "local", URI: "local://file",
+					Description: "line one\nFAKE\t\x1b[31mred",
+				}})
+			},
+			expected: []string{
+				"NAME", "file", "local://file", `line one FAKE \u001b[31mred`,
+			},
+		},
+		{
+			name: "manifest",
+			render: func(application *app) error {
+				return application.writeManifest(sdk.Manifest{
+					Name: "file", Version: "1.1.0", Description: "file tools",
+					APIVersion: sdk.APIVersion, Registers: []string{"tool/read_file"},
+				})
+			},
+			expected: []string{"Name:", "file", "Registers:", "tool/read_file"},
+		},
+		{
+			name: "trajectory list",
+			render: func(application *app) error {
+				return application.writeTrajectoryList([]sdk.TrajectorySummary{{
+					ID: "trajectory-1", Head: "entry-2", UpdatedAt: now, EntryCount: 2,
+				}})
+			},
+			expected: []string{"ID", "ENTRIES", "trajectory-1", "entry-2"},
+		},
+		{
+			name:   "trajectory show",
+			render: func(application *app) error { return application.writeTrajectory(trajectory) },
+			expected: []string{
+				"Trajectory:", "trajectory-1", "tool=read_file", "status=ok",
+			},
+		},
+		{
+			name: "rollback",
+			render: func(application *app) error {
+				return application.writeRollback(rollbackOutput{
+					TrajectoryID: "trajectory-1",
+					CheckpointID: "checkpoint-1",
+					Head:         "rollback-head",
+				})
+			},
+			expected: []string{"Rolled back", "checkpoint-1", "rollback-head"},
+		},
+		{
+			name: "state",
+			render: func(application *app) error {
+				return application.writeState(stateOutput{
+					Backend: "file:///state", Namespace: "default",
+					Capabilities: sdk.StorageCapabilities{
+						Durable: true, Maintenance: true,
+					},
+				})
+			},
+			expected: []string{"Backend:", "file:///state", "Durable:", "yes"},
+		},
+		{
+			name: "prune",
+			render: func(application *app) error {
+				return application.writePrune(sdk.PruneResult{
+					Operations: 2, Deliveries: 3, Trajectories: 4,
+				})
+			},
+			expected: []string{"State pruning complete.", "Operations deleted:", "2"},
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var stdout bytes.Buffer
+			application := &app{stdout: &stdout, output: outputText}
+			if err := test.render(application); err != nil {
+				t.Fatal(err)
+			}
+			for _, expected := range test.expected {
+				if !strings.Contains(stdout.String(), expected) {
+					t.Fatalf("output %q missing %q", stdout.String(), expected)
+				}
+			}
+			if json.Valid(stdout.Bytes()) {
+				t.Fatalf("human output unexpectedly valid JSON: %q", stdout.String())
+			}
+			if strings.ContainsRune(stdout.String(), '\x1b') {
+				t.Fatalf("human output contains terminal escape: %q", stdout.String())
+			}
+		})
+	}
+}
+
+func TestJSONOnlyChangesRepresentation(t *testing.T) {
+	t.Parallel()
+	var stdout bytes.Buffer
+	application := &app{
+		version: "1.2.3",
+		stdout:  &stdout,
+		output:  outputJSON,
+	}
+	if err := application.writeVersion(); err != nil {
+		t.Fatal(err)
+	}
+	var version map[string]string
+	if err := json.Unmarshal(stdout.Bytes(), &version); err != nil {
+		t.Fatal(err)
+	}
+	if version["version"] != "1.2.3" {
+		t.Fatalf("version = %#v", version)
+	}
+
+	stdout.Reset()
+	if err := application.writePath("/tmp/config.toml"); err != nil {
+		t.Fatal(err)
+	}
+	var path map[string]string
+	if err := json.Unmarshal(stdout.Bytes(), &path); err != nil {
+		t.Fatal(err)
+	}
+	if path["path"] != "/tmp/config.toml" {
+		t.Fatalf("path = %#v", path)
+	}
+}
