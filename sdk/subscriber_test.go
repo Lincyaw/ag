@@ -1,8 +1,11 @@
 package sdk
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +17,22 @@ type subscriberTestPlugin struct {
 	subscriber Subscriber
 	closed     chan struct{}
 	closeOnce  sync.Once
+}
+
+type cancelLeaseOutbox struct {
+	*MemoryOutboxStore
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (store *cancelLeaseOutbox) Lease(
+	ctx context.Context,
+	_ time.Time,
+	_ time.Duration,
+) (Delivery, error) {
+	store.once.Do(func() { close(store.entered) })
+	<-ctx.Done()
+	return Delivery{}, ctx.Err()
 }
 
 func (plugin *subscriberTestPlugin) Manifest() Manifest {
@@ -246,6 +265,56 @@ func TestDrainDeliveriesWaitsForCurrentSubscribersAndHonorsContext(t *testing.T)
 	}
 	if len(deliveries) != 1 || deliveries[0].State != DeliveryDelivered {
 		t.Fatalf("drained deliveries = %#v", deliveries)
+	}
+}
+
+func TestSubscriberShutdownCancellationIsNotWarned(t *testing.T) {
+	var logs bytes.Buffer
+	outbox := &cancelLeaseOutbox{
+		MemoryOutboxStore: NewMemoryOutboxStore(),
+		entered:           make(chan struct{}),
+	}
+	runtime, err := NewRuntime(RuntimeConfig{
+		Logger:          slog.New(slog.NewJSONHandler(&logs, nil)),
+		Outbox:          outbox,
+		DeliveryWorkers: 1,
+		DeliveryPoll:    time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugin := &subscriberTestPlugin{
+		manifest: Manifest{
+			Name:        "shutdown-observer",
+			Version:     "1.0.0",
+			Description: "starts a delivery worker for shutdown testing",
+			APIVersion:  APIVersion,
+			Registers:   []string{SubscriberResource("shutdown-events")},
+		},
+		subscriber: SubscriberFunc{
+			SubscriberSpec: SubscriberSpec{
+				Name:   "shutdown-events",
+				Events: []string{EventAgentEnd},
+			},
+		},
+		closed: make(chan struct{}),
+	}
+	if _, err := runtime.Mount(context.Background(), Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-outbox.entered:
+	case <-time.After(time.Second):
+		t.Fatal("delivery worker did not enter Lease")
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := runtime.Close(closeCtx); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "lease subscriber delivery") {
+		t.Fatalf("shutdown cancellation was logged as a warning:\n%s", logs.String())
 	}
 }
 

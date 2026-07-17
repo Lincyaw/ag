@@ -129,6 +129,9 @@ func (runtime *Runtime) deliveryLoop(worker int) {
 			continue
 		}
 		if err != nil {
+			if runtime.deliveryContext.Err() != nil {
+				return
+			}
 			runtime.logger.WarnContext(
 				runtime.deliveryContext,
 				"lease subscriber delivery",
