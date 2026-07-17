@@ -48,9 +48,6 @@ func (p plugin) Install(_ context.Context, registrar agentsdk.Registrar) error {
 	if p.config.MaxRetries < 0 {
 		return errors.New("OpenAI max retries cannot be negative")
 	}
-	if p.config.MaxRetries == 0 {
-		p.config.MaxRetries = 2
-	}
 
 	clientOptions := []option.RequestOption{
 		option.WithMaxRetries(p.config.MaxRetries),

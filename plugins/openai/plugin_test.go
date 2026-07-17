@@ -12,6 +12,59 @@ import (
 	"github.com/openai/openai-go/v3/option"
 )
 
+type providerRegistrar struct {
+	agentsdk.Registrar
+	provider agentsdk.Provider
+}
+
+func (registrar *providerRegistrar) RegisterProvider(
+	provider agentsdk.Provider,
+) error {
+	registrar.provider = provider
+	return nil
+}
+
+func TestPluginRespectsZeroMaxRetries(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		_ *http.Request,
+	) {
+		attempts++
+		writer.Header().Set("Content-Type", "application/json")
+		http.Error(writer, `{"error":{"message":"try again"}}`, http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	registrar := &providerRegistrar{}
+	plugin := New(Config{
+		Model: "test-model", APIKey: "test",
+		BaseURL: server.URL + "/v1", MaxRetries: 0,
+		HTTPClient: server.Client(),
+	})
+	if err := plugin.Install(t.Context(), registrar); err != nil {
+		t.Fatal(err)
+	}
+	if registrar.provider == nil {
+		t.Fatal("provider was not registered")
+	}
+	provider, ok := registrar.provider.(agentsdk.SyncProvider)
+	if !ok {
+		t.Fatal("registered provider is not synchronous")
+	}
+	_, err := provider.Complete(t.Context(), agentsdk.ModelRequest{
+		Messages: []agentsdk.Message{{
+			Role: agentsdk.RoleUser, Content: "hello",
+		}},
+	})
+	if err == nil {
+		t.Fatal("provider request unexpectedly succeeded")
+	}
+	if attempts != 1 {
+		t.Fatalf("request attempts = %d, want 1", attempts)
+	}
+}
+
 func TestProviderUsesOfficialSDKForTools(t *testing.T) {
 	requestBody := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(
