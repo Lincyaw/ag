@@ -23,6 +23,7 @@ func NewStorageRegistry() *StorageRegistry {
 
 func NewDefaultStorageRegistry() *StorageRegistry {
 	return &StorageRegistry{drivers: map[string]sdk.StorageDriver{
+		"duckdb": duckDBStorageDriver{},
 		"file":   fileStorageDriver{},
 		"memory": memoryStorageDriver{},
 	}}

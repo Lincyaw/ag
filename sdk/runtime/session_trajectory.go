@@ -93,7 +93,7 @@ func (runtime *Runtime) moveTrajectoryHead(
 	ctx context.Context,
 	trajectory sdk.Trajectory,
 	checkpointID string,
-	kind string,
+	kind sdk.TrajectoryKind,
 ) (string, error) {
 	payload, err := json.Marshal(map[string]string{
 		"from": trajectory.Head,
@@ -217,7 +217,7 @@ func (session *Session) Rollback(
 
 func (session *Session) appendTrajectory(
 	ctx context.Context,
-	kind string,
+	kind sdk.TrajectoryKind,
 	generation uint64,
 	payload any,
 ) error {

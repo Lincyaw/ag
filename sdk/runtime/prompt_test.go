@@ -100,7 +100,7 @@ func TestPromptBlockCommitsWithoutCallingProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantKinds := []string{
+	wantKinds := []sdk.TrajectoryKind{
 		sdk.TrajectoryKindUserMessage,
 		sdk.TrajectoryKindCheckpoint,
 		sdk.TrajectoryKindTerminal,

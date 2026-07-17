@@ -93,10 +93,10 @@ type PluginLifecyclePayload struct {
 }
 
 type TrajectoryEventPayload struct {
-	TrajectoryID string `json:"trajectory_id"`
-	EntryID      string `json:"entry_id,omitempty"`
-	EntryKind    string `json:"entry_kind,omitempty"`
-	From         string `json:"from,omitempty"`
-	To           string `json:"to,omitempty"`
-	Generation   uint64 `json:"generation,omitempty"`
+	TrajectoryID string         `json:"trajectory_id"`
+	EntryID      string         `json:"entry_id,omitempty"`
+	EntryKind    TrajectoryKind `json:"entry_kind,omitempty"`
+	From         string         `json:"from,omitempty"`
+	To           string         `json:"to,omitempty"`
+	Generation   uint64         `json:"generation,omitempty"`
 }

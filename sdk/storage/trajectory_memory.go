@@ -2,10 +2,8 @@ package storage
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -14,9 +12,16 @@ import (
 	sdk "github.com/lincyaw/ag/sdk"
 )
 
+type memoryTrajectory struct {
+	trajectory     sdk.Trajectory
+	entries        map[string]sdk.TrajectoryEntry
+	order          []string
+	inheritedCount int
+}
+
 type memoryTrajectoryStore struct {
 	mu           sync.RWMutex
-	trajectories map[string]sdk.Trajectory
+	trajectories map[string]*memoryTrajectory
 }
 
 func NewMemoryTrajectoryStore() sdk.TrajectoryStore {
@@ -25,8 +30,21 @@ func NewMemoryTrajectoryStore() sdk.TrajectoryStore {
 
 func newMemoryTrajectoryStore() *memoryTrajectoryStore {
 	return &memoryTrajectoryStore{
-		trajectories: make(map[string]sdk.Trajectory),
+		trajectories: make(map[string]*memoryTrajectory),
 	}
+}
+
+func (store *memoryTrajectoryStore) trajectoryLocked(
+	id string,
+) (*memoryTrajectory, error) {
+	if err := sdk.ValidateResourceName("trajectory", id); err != nil {
+		return nil, err
+	}
+	trajectory, exists := store.trajectories[id]
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", sdk.ErrTrajectoryNotFound, id)
+	}
+	return trajectory, nil
 }
 
 func (store *memoryTrajectoryStore) Create(
@@ -54,7 +72,33 @@ func (store *memoryTrajectoryStore) Create(
 	if _, exists := store.trajectories[trajectory.ID]; exists {
 		return fmt.Errorf("%w: %s", sdk.ErrTrajectoryExists, trajectory.ID)
 	}
-	store.trajectories[trajectory.ID] = cloneTrajectory(trajectory)
+	inheritedCount := 0
+	if trajectory.ParentID != "" {
+		branch, err := store.branchLocked(
+			trajectory.ParentID,
+			trajectory.ParentEntryID,
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"resolve trajectory %q fork point: %w",
+				trajectory.ID,
+				err,
+			)
+		}
+		inheritedCount = len(branch)
+		trajectory.Head = trajectory.ParentEntryID
+		if checkpoint, found := findLatestInBranch(
+			branch,
+			sdk.TrajectoryKindCheckpoint,
+		); found {
+			trajectory.Checkpoint = checkpoint.ID
+		}
+	}
+	store.trajectories[trajectory.ID] = &memoryTrajectory{
+		trajectory:     cloneTrajectory(trajectory),
+		entries:        make(map[string]sdk.TrajectoryEntry),
+		inheritedCount: inheritedCount,
+	}
 	return nil
 }
 
@@ -69,25 +113,414 @@ func (store *memoryTrajectoryStore) Append(
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	trajectory, exists := store.trajectories[id]
-	if !exists {
-		return "", fmt.Errorf("%w: %s", sdk.ErrTrajectoryNotFound, id)
+	trajectory, err := store.trajectoryLocked(id)
+	if err != nil {
+		return "", err
 	}
-	if trajectory.Head != expectedHead {
+	if trajectory.trajectory.Execution != nil &&
+		!trajectory.trajectory.Execution.Terminal() {
+		return "", fmt.Errorf(
+			"%w: trajectory %s has active execution %s",
+			sdk.ErrTrajectoryExecution,
+			id,
+			trajectory.trajectory.Execution.ID,
+		)
+	}
+	return store.appendLocked(trajectory, id, expectedHead, entries)
+}
+
+func (store *memoryTrajectoryStore) BeginExecution(
+	ctx context.Context,
+	id string,
+	expectedHead string,
+	start sdk.TrajectoryExecutionStart,
+	input sdk.TrajectoryEntry,
+) (sdk.TrajectoryMetadata, error) {
+	if err := ctx.Err(); err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	if input.Kind != sdk.TrajectoryKindUserMessage {
+		return sdk.TrajectoryMetadata{}, errors.New(
+			"trajectory execution input must be a user_message entry",
+		)
+	}
+	now := time.Now().UTC()
+	execution, err := prepareTrajectoryExecutionStart(
+		start,
+		expectedHead,
+		input.ID,
+		now,
+	)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	bound, err := bindTrajectoryExecutionEntries(
+		execution.ID,
+		[]sdk.TrajectoryEntry{input},
+	)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	input = bound[0]
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	trajectory, err := store.trajectoryLocked(id)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	if trajectory.trajectory.Execution != nil &&
+		!trajectory.trajectory.Execution.Terminal() {
+		return sdk.TrajectoryMetadata{}, fmt.Errorf(
+			"%w: trajectory %s has active execution %s",
+			sdk.ErrTrajectoryExecution,
+			id,
+			trajectory.trajectory.Execution.ID,
+		)
+	}
+	if _, err := store.appendLocked(
+		trajectory,
+		id,
+		expectedHead,
+		[]sdk.TrajectoryEntry{input},
+	); err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	trajectory.trajectory.Execution = cloneTrajectoryExecution(&execution)
+	return trajectoryMetadata(
+		trajectory.trajectory,
+		trajectory.inheritedCount+len(trajectory.order),
+		len(trajectory.order),
+	), nil
+}
+
+func (store *memoryTrajectoryStore) ClaimExecution(
+	ctx context.Context,
+	id string,
+	owner string,
+	now time.Time,
+	ttl time.Duration,
+) (sdk.TrajectoryExecution, error) {
+	if err := ctx.Err(); err != nil {
+		return sdk.TrajectoryExecution{}, err
+	}
+	now = now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	trajectory, err := store.trajectoryLocked(id)
+	if err != nil {
+		return sdk.TrajectoryExecution{}, err
+	}
+	if trajectory.trajectory.Execution == nil {
+		return sdk.TrajectoryExecution{}, fmt.Errorf(
+			"%w: trajectory %s has no execution",
+			sdk.ErrTrajectoryExecution,
+			id,
+		)
+	}
+	execution, err := claimTrajectoryExecution(
+		*trajectory.trajectory.Execution,
+		owner,
+		now,
+		ttl,
+	)
+	if err != nil {
+		return sdk.TrajectoryExecution{}, err
+	}
+	trajectory.trajectory.Execution = cloneTrajectoryExecution(&execution)
+	trajectory.trajectory.UpdatedAt = now
+	return execution, nil
+}
+
+func (store *memoryTrajectoryStore) RenewExecution(
+	ctx context.Context,
+	id string,
+	executionID string,
+	token string,
+	now time.Time,
+	ttl time.Duration,
+) (sdk.TrajectoryExecution, error) {
+	if err := ctx.Err(); err != nil {
+		return sdk.TrajectoryExecution{}, err
+	}
+	now = now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	trajectory, err := store.trajectoryLocked(id)
+	if err != nil {
+		return sdk.TrajectoryExecution{}, err
+	}
+	if trajectory.trajectory.Execution == nil {
+		return sdk.TrajectoryExecution{}, fmt.Errorf(
+			"%w: trajectory %s has no execution",
+			sdk.ErrTrajectoryExecution,
+			id,
+		)
+	}
+	execution, err := renewTrajectoryExecution(
+		*trajectory.trajectory.Execution,
+		executionID,
+		token,
+		now,
+		ttl,
+	)
+	if err != nil {
+		return sdk.TrajectoryExecution{}, err
+	}
+	trajectory.trajectory.Execution = cloneTrajectoryExecution(&execution)
+	trajectory.trajectory.UpdatedAt = now
+	return execution, nil
+}
+
+func (store *memoryTrajectoryStore) CommitExecution(
+	ctx context.Context,
+	commit sdk.TrajectoryExecutionCommit,
+) (sdk.TrajectoryMetadata, error) {
+	if err := ctx.Err(); err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	if commit.TrajectoryID == "" {
+		return sdk.TrajectoryMetadata{}, errors.New(
+			"trajectory execution commit has no trajectory ID",
+		)
+	}
+	if len(commit.Entries) == 0 && commit.State == "" {
+		return sdk.TrajectoryMetadata{}, errors.New(
+			"trajectory execution commit has no mutation",
+		)
+	}
+	entries, err := bindTrajectoryExecutionEntries(
+		commit.ExecutionID,
+		commit.Entries,
+	)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	commit.Entries = entries
+	now := time.Now().UTC()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	trajectory, err := store.trajectoryLocked(commit.TrajectoryID)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	if trajectory.trajectory.Head != commit.ExpectedHead {
+		return sdk.TrajectoryMetadata{}, fmt.Errorf(
+			"%w: trajectory %s has head %q, expected %q",
+			sdk.ErrTrajectoryConflict,
+			commit.TrajectoryID,
+			trajectory.trajectory.Head,
+			commit.ExpectedHead,
+		)
+	}
+	if trajectory.trajectory.Execution == nil {
+		return sdk.TrajectoryMetadata{}, fmt.Errorf(
+			"%w: trajectory %s has no execution",
+			sdk.ErrTrajectoryExecution,
+			commit.TrajectoryID,
+		)
+	}
+	execution, err := commitTrajectoryExecution(
+		*trajectory.trajectory.Execution,
+		commit,
+		now,
+	)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	if len(commit.Entries) > 0 {
+		if _, err := store.appendLocked(
+			trajectory,
+			commit.TrajectoryID,
+			commit.ExpectedHead,
+			commit.Entries,
+		); err != nil {
+			return sdk.TrajectoryMetadata{}, err
+		}
+	}
+	trajectory.trajectory.Execution = cloneTrajectoryExecution(&execution)
+	trajectory.trajectory.UpdatedAt = now
+	return trajectoryMetadata(
+		trajectory.trajectory,
+		trajectory.inheritedCount+len(trajectory.order),
+		len(trajectory.order),
+	), nil
+}
+
+func (store *memoryTrajectoryStore) ListRecoverable(
+	ctx context.Context,
+	now time.Time,
+) ([]sdk.TrajectoryMetadata, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	now = now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	result := make([]sdk.TrajectoryMetadata, 0)
+	for _, trajectory := range store.trajectories {
+		execution := trajectory.trajectory.Execution
+		if execution == nil ||
+			execution.Terminal() ||
+			(execution.State == sdk.TrajectoryExecutionRunning &&
+				execution.LeaseExpiresAt.After(now)) {
+			continue
+		}
+		result = append(result, trajectoryMetadata(
+			trajectory.trajectory,
+			trajectory.inheritedCount+len(trajectory.order),
+			len(trajectory.order),
+		))
+	}
+	slices.SortFunc(result, func(left, right sdk.TrajectoryMetadata) int {
+		if order := left.Execution.CreatedAt.Compare(
+			right.Execution.CreatedAt,
+		); order != 0 {
+			return order
+		}
+		return strings.Compare(left.ID, right.ID)
+	})
+	return result, nil
+}
+
+func (store *memoryTrajectoryStore) appendLocked(
+	trajectory *memoryTrajectory,
+	id string,
+	expectedHead string,
+	entries []sdk.TrajectoryEntry,
+) (string, error) {
+	if trajectory.trajectory.Head != expectedHead {
 		return "", fmt.Errorf(
 			"%w: trajectory %s has head %q, expected %q",
 			sdk.ErrTrajectoryConflict,
 			id,
-			trajectory.Head,
+			trajectory.trajectory.Head,
 			expectedHead,
 		)
 	}
-	next, err := appendTrajectoryEntries(trajectory, entries)
+	prepared, err := prepareTrajectoryEntries(
+		id,
+		uint64(len(trajectory.order)),
+		trajectory.trajectory.Head != "",
+		entries,
+		func(entryID string) (sdk.TrajectoryEntry, bool, error) {
+			return store.entryLocked(id, entryID)
+		},
+	)
 	if err != nil {
 		return "", err
 	}
-	store.trajectories[id] = next
-	return next.Head, nil
+	preparedIndex := make(map[string]sdk.TrajectoryEntry, len(prepared))
+	for _, entry := range prepared {
+		preparedIndex[entry.ID] = entry
+	}
+	last := prepared[len(prepared)-1]
+	checkpointID, err := latestCheckpointAfterAppend(
+		trajectory.trajectory.Head,
+		trajectory.trajectory.Checkpoint,
+		last.ID,
+		preparedIndex,
+		func(entryID string) (sdk.TrajectoryEntry, bool, error) {
+			return store.entryLocked(id, entryID)
+		},
+	)
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range prepared {
+		trajectory.entries[entry.ID] = entry
+		trajectory.order = append(trajectory.order, entry.ID)
+	}
+	trajectory.trajectory.Head = last.ID
+	trajectory.trajectory.UpdatedAt = last.Timestamp
+	trajectory.trajectory.Checkpoint = checkpointID
+	return last.ID, nil
+}
+
+func (store *memoryTrajectoryStore) LoadMetadata(
+	ctx context.Context,
+	id string,
+) (sdk.TrajectoryMetadata, error) {
+	if err := ctx.Err(); err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	trajectory, err := store.trajectoryLocked(id)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	return trajectoryMetadata(
+		trajectory.trajectory,
+		trajectory.inheritedCount+len(trajectory.order),
+		len(trajectory.order),
+	), nil
+}
+
+func (store *memoryTrajectoryStore) LoadEntry(
+	ctx context.Context,
+	id string,
+	entryID string,
+) (sdk.TrajectoryEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return sdk.TrajectoryEntry{}, err
+	}
+	if err := sdk.ValidateResourceName("trajectory entry", entryID); err != nil {
+		return sdk.TrajectoryEntry{}, err
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	entry, found, err := store.entryLocked(id, entryID)
+	if err != nil {
+		return sdk.TrajectoryEntry{}, err
+	}
+	if !found {
+		return sdk.TrajectoryEntry{}, fmt.Errorf(
+			"%w: trajectory %s entry %s",
+			sdk.ErrTrajectoryEntryNotFound,
+			id,
+			entryID,
+		)
+	}
+	return cloneTrajectoryEntry(entry), nil
+}
+
+func (store *memoryTrajectoryStore) LoadBranch(
+	ctx context.Context,
+	id string,
+	head string,
+) ([]sdk.TrajectoryEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	return store.branchLocked(id, head)
+}
+
+func (store *memoryTrajectoryStore) FindLatest(
+	ctx context.Context,
+	id string,
+	head string,
+	kind sdk.TrajectoryKind,
+) (sdk.TrajectoryEntry, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return sdk.TrajectoryEntry{}, false, err
+	}
+	if err := validateTrajectoryKind(kind); err != nil {
+		return sdk.TrajectoryEntry{}, false, err
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	return store.findLatestLocked(id, head, kind)
 }
 
 func (store *memoryTrajectoryStore) Load(
@@ -99,11 +532,7 @@ func (store *memoryTrajectoryStore) Load(
 	}
 	store.mu.RLock()
 	defer store.mu.RUnlock()
-	trajectory, exists := store.trajectories[id]
-	if !exists {
-		return sdk.Trajectory{}, fmt.Errorf("%w: %s", sdk.ErrTrajectoryNotFound, id)
-	}
-	return cloneTrajectory(trajectory), nil
+	return store.materializeLocked(id)
 }
 
 func (store *memoryTrajectoryStore) List(
@@ -116,7 +545,11 @@ func (store *memoryTrajectoryStore) List(
 	defer store.mu.RUnlock()
 	result := make([]sdk.TrajectorySummary, 0, len(store.trajectories))
 	for _, trajectory := range store.trajectories {
-		result = append(result, summarizeTrajectory(trajectory))
+		result = append(result, summarizeTrajectory(
+			trajectory.trajectory,
+			trajectory.inheritedCount+len(trajectory.order),
+			len(trajectory.order),
+		))
 	}
 	slices.SortFunc(result, func(left, right sdk.TrajectorySummary) int {
 		if order := left.CreatedAt.Compare(right.CreatedAt); order != 0 {
@@ -153,214 +586,172 @@ func (store *memoryTrajectoryStore) Delete(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := sdk.ValidateResourceName("trajectory", id); err != nil {
-		return err
-	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if _, exists := store.trajectories[id]; !exists {
-		return fmt.Errorf("%w: %s", sdk.ErrTrajectoryNotFound, id)
+	target, err := store.trajectoryLocked(id)
+	if err != nil {
+		return err
+	}
+	if target.trajectory.Execution != nil &&
+		!target.trajectory.Execution.Terminal() {
+		return fmt.Errorf(
+			"%w: trajectory %s execution %s is active",
+			sdk.ErrTrajectoryExecution,
+			id,
+			target.trajectory.Execution.ID,
+		)
+	}
+	for _, trajectory := range store.trajectories {
+		if trajectory.trajectory.ParentID == id {
+			return fmt.Errorf(
+				"%w: trajectory %s is parent of %s",
+				sdk.ErrTrajectoryReferenced,
+				id,
+				trajectory.trajectory.ID,
+			)
+		}
 	}
 	delete(store.trajectories, id)
 	return nil
 }
 
-func validateNewTrajectory(trajectory sdk.Trajectory) error {
-	if trajectory.SchemaVersion > sdk.TrajectorySchemaVersion {
-		return fmt.Errorf(
-			"%w: got %d, maximum supported is %d",
-			sdk.ErrTrajectoryVersion,
-			trajectory.SchemaVersion,
-			sdk.TrajectorySchemaVersion,
-		)
+func (store *memoryTrajectoryStore) entryLocked(
+	id string,
+	entryID string,
+) (sdk.TrajectoryEntry, bool, error) {
+	trajectory, err := store.trajectoryLocked(id)
+	if err != nil {
+		return sdk.TrajectoryEntry{}, false, err
 	}
-	if err := sdk.ValidateResourceName("trajectory", trajectory.ID); err != nil {
-		return err
+	if entry, found := trajectory.entries[entryID]; found {
+		return cloneTrajectoryEntry(entry), true, nil
 	}
-	if trajectory.Head != "" || len(trajectory.Entries) != 0 {
-		return errors.New("new trajectory must not contain entries or a head")
+	if trajectory.trajectory.SchemaVersion < 2 ||
+		trajectory.trajectory.ParentID == "" {
+		return sdk.TrajectoryEntry{}, false, nil
 	}
-	if (trajectory.ParentID == "") != (trajectory.ParentEntryID == "") {
-		return errors.New(
-			"trajectory parent_id and parent_entry_id must be set together",
-		)
-	}
-	return nil
+	return store.entryOnBranchLocked(
+		trajectory.trajectory.ParentID,
+		trajectory.trajectory.ParentEntryID,
+		entryID,
+	)
 }
 
-func appendTrajectoryEntries(
-	trajectory sdk.Trajectory,
-	entries []sdk.TrajectoryEntry,
+func (store *memoryTrajectoryStore) entryOnBranchLocked(
+	id string,
+	head string,
+	entryID string,
+) (sdk.TrajectoryEntry, bool, error) {
+	seen := make(map[string]struct{})
+	for cursor := head; cursor != ""; {
+		if _, cycle := seen[cursor]; cycle {
+			return sdk.TrajectoryEntry{}, false, fmt.Errorf(
+				"trajectory %q contains a cycle at %q",
+				id,
+				cursor,
+			)
+		}
+		seen[cursor] = struct{}{}
+		entry, found, err := store.entryLocked(id, cursor)
+		if err != nil {
+			return sdk.TrajectoryEntry{}, false, err
+		}
+		if !found {
+			return sdk.TrajectoryEntry{}, false, fmt.Errorf(
+				"trajectory %q branch references unknown entry %q",
+				id,
+				cursor,
+			)
+		}
+		if cursor == entryID {
+			return entry, true, nil
+		}
+		cursor = entry.ParentID
+	}
+	return sdk.TrajectoryEntry{}, false, nil
+}
+
+func (store *memoryTrajectoryStore) branchLocked(
+	id string,
+	head string,
+) ([]sdk.TrajectoryEntry, error) {
+	if _, err := store.trajectoryLocked(id); err != nil {
+		return nil, err
+	}
+	result := make([]sdk.TrajectoryEntry, 0)
+	seen := make(map[string]struct{})
+	for cursor := head; cursor != ""; {
+		if _, cycle := seen[cursor]; cycle {
+			return nil, fmt.Errorf(
+				"trajectory %q contains a cycle at %q",
+				id,
+				cursor,
+			)
+		}
+		seen[cursor] = struct{}{}
+		entry, found, err := store.entryLocked(id, cursor)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf(
+				"trajectory %q branch references unknown entry %q",
+				id,
+				cursor,
+			)
+		}
+		result = append(result, entry)
+		cursor = entry.ParentID
+	}
+	slices.Reverse(result)
+	return result, nil
+}
+
+func (store *memoryTrajectoryStore) findLatestLocked(
+	id string,
+	head string,
+	kind sdk.TrajectoryKind,
+) (sdk.TrajectoryEntry, bool, error) {
+	if _, err := store.trajectoryLocked(id); err != nil {
+		return sdk.TrajectoryEntry{}, false, err
+	}
+	return latestEntry(
+		head,
+		kind,
+		func(entryID string) (sdk.TrajectoryEntry, bool, error) {
+			return store.entryLocked(id, entryID)
+		},
+	)
+}
+
+func (store *memoryTrajectoryStore) materializeLocked(
+	id string,
 ) (sdk.Trajectory, error) {
-	if len(entries) == 0 {
-		return sdk.Trajectory{}, errors.New("trajectory append contains no entries")
+	stored, err := store.trajectoryLocked(id)
+	if err != nil {
+		return sdk.Trajectory{}, err
 	}
-	known := make(map[string]struct{}, len(trajectory.Entries)+len(entries))
-	for _, entry := range trajectory.Entries {
-		known[entry.ID] = struct{}{}
-	}
-	for index := range entries {
-		entry := &entries[index]
-		if err := sdk.ValidateResourceName("trajectory entry", entry.ID); err != nil {
+	trajectory := cloneTrajectory(stored.trajectory)
+	trajectory.Entries = make(
+		[]sdk.TrajectoryEntry,
+		0,
+		stored.inheritedCount+len(stored.order),
+	)
+	if trajectory.SchemaVersion >= 2 && trajectory.ParentID != "" {
+		inherited, err := store.branchLocked(
+			trajectory.ParentID,
+			trajectory.ParentEntryID,
+		)
+		if err != nil {
 			return sdk.Trajectory{}, err
 		}
-		if _, duplicate := known[entry.ID]; duplicate {
-			return sdk.Trajectory{}, fmt.Errorf(
-				"trajectory entry %q already exists",
-				entry.ID,
-			)
-		}
-		if strings.TrimSpace(entry.Kind) == "" {
-			return sdk.Trajectory{}, fmt.Errorf(
-				"trajectory entry %q kind is empty",
-				entry.ID,
-			)
-		}
-		if !json.Valid(entry.Payload) {
-			return sdk.Trajectory{}, fmt.Errorf(
-				"trajectory entry %q payload is invalid JSON",
-				entry.ID,
-			)
-		}
-		if entry.ParentID == "" {
-			if len(known) != 0 && entry.Kind != sdk.TrajectoryKindRestore {
-				return sdk.Trajectory{}, fmt.Errorf(
-					"trajectory entry %q has no parent in a non-empty trajectory",
-					entry.ID,
-				)
-			}
-		} else if _, exists := known[entry.ParentID]; !exists {
-			return sdk.Trajectory{}, fmt.Errorf(
-				"trajectory entry %q has unknown parent %q",
-				entry.ID,
-				entry.ParentID,
-			)
-		}
-		if entry.Timestamp.IsZero() {
-			entry.Timestamp = time.Now().UTC()
-		}
-		if entry.PayloadVersion == 0 {
-			entry.PayloadVersion = sdk.TrajectoryPayloadVersion
-		}
-		if entry.PayloadVersion > sdk.TrajectoryPayloadVersion {
-			return sdk.Trajectory{}, fmt.Errorf(
-				"%w: entry %q payload version %d, maximum supported is %d",
-				sdk.ErrTrajectoryVersion,
-				entry.ID,
-				entry.PayloadVersion,
-				sdk.TrajectoryPayloadVersion,
-			)
-		}
-		entry.Payload = append(json.RawMessage(nil), entry.Payload...)
-		entry.Attributes = maps.Clone(entry.Attributes)
-		known[entry.ID] = struct{}{}
+		trajectory.Entries = append(trajectory.Entries, inherited...)
 	}
-	next := cloneTrajectory(trajectory)
-	for _, entry := range entries {
-		next.Entries = append(next.Entries, cloneTrajectoryEntry(entry))
-	}
-	next.Head = entries[len(entries)-1].ID
-	next.UpdatedAt = entries[len(entries)-1].Timestamp
-	return next, nil
-}
-
-func summarizeTrajectory(trajectory sdk.Trajectory) sdk.TrajectorySummary {
-	return sdk.TrajectorySummary{
-		SchemaVersion: trajectory.SchemaVersion,
-		ID:            trajectory.ID,
-		ParentID:      trajectory.ParentID,
-		ParentEntryID: trajectory.ParentEntryID,
-		CreatedAt:     trajectory.CreatedAt,
-		UpdatedAt:     trajectory.UpdatedAt,
-		Head:          trajectory.Head,
-		EntryCount:    len(trajectory.Entries),
-	}
-}
-
-func cloneTrajectory(source sdk.Trajectory) sdk.Trajectory {
-	result := source
-	result.Environment = cloneTrajectoryEnvironment(source.Environment)
-	result.Entries = make([]sdk.TrajectoryEntry, len(source.Entries))
-	for index, entry := range source.Entries {
-		result.Entries[index] = cloneTrajectoryEntry(entry)
-	}
-	return result
-}
-
-func normalizeTrajectory(trajectory *sdk.Trajectory) {
-	if trajectory.SchemaVersion == 0 {
-		trajectory.SchemaVersion = sdk.TrajectorySchemaVersion
-	}
-	for index := range trajectory.Entries {
-		if trajectory.Entries[index].PayloadVersion == 0 {
-			trajectory.Entries[index].PayloadVersion = sdk.TrajectoryPayloadVersion
-		}
-	}
-}
-
-func validateLoadedTrajectory(trajectory *sdk.Trajectory) error {
-	if trajectory.SchemaVersion > sdk.TrajectorySchemaVersion {
-		return fmt.Errorf(
-			"%w: got %d, maximum supported is %d",
-			sdk.ErrTrajectoryVersion,
-			trajectory.SchemaVersion,
-			sdk.TrajectorySchemaVersion,
+	for _, entryID := range stored.order {
+		trajectory.Entries = append(
+			trajectory.Entries,
+			cloneTrajectoryEntry(stored.entries[entryID]),
 		)
 	}
-	normalizeTrajectory(trajectory)
-	for _, entry := range trajectory.Entries {
-		if entry.PayloadVersion > sdk.TrajectoryPayloadVersion {
-			return fmt.Errorf(
-				"%w: entry %q payload version %d, maximum supported is %d",
-				sdk.ErrTrajectoryVersion,
-				entry.ID,
-				entry.PayloadVersion,
-				sdk.TrajectoryPayloadVersion,
-			)
-		}
-	}
-	return nil
-}
-
-func cloneTrajectoryEnvironment(source sdk.TrajectoryEnvironment) sdk.TrajectoryEnvironment {
-	result := source
-	result.Plugins = make([]sdk.TrajectoryPlugin, len(source.Plugins))
-	for index, plugin := range source.Plugins {
-		result.Plugins[index] = plugin
-		result.Plugins[index].Registers = append([]string(nil), plugin.Registers...)
-	}
-	result.Providers = append([]sdk.ProviderSpec(nil), source.Providers...)
-	result.Tools = make([]sdk.ToolSpec, len(source.Tools))
-	for index, spec := range source.Tools {
-		result.Tools[index] = spec
-		result.Tools[index].Parameters = maps.Clone(spec.Parameters)
-	}
-	result.Hooks = append([]sdk.HookSpec(nil), source.Hooks...)
-	result.Subscribers = make([]sdk.SubscriberSpec, len(source.Subscribers))
-	for index, spec := range source.Subscribers {
-		result.Subscribers[index] = spec
-		result.Subscribers[index].Events = append([]string(nil), spec.Events...)
-	}
-	result.Capabilities = make([]sdk.CapabilitySpec, len(source.Capabilities))
-	for index, spec := range source.Capabilities {
-		result.Capabilities[index] = spec
-		result.Capabilities[index].InputSchema = maps.Clone(spec.InputSchema)
-		result.Capabilities[index].OutputSchema = maps.Clone(spec.OutputSchema)
-	}
-	result.Events = make([]sdk.EventContract, len(source.Events))
-	for index, contract := range source.Events {
-		result.Events[index] = contract
-		result.Events[index].MutableFields = append(
-			[]string(nil),
-			contract.MutableFields...,
-		)
-	}
-	return result
-}
-
-func cloneTrajectoryEntry(source sdk.TrajectoryEntry) sdk.TrajectoryEntry {
-	result := source
-	result.Payload = append(json.RawMessage(nil), source.Payload...)
-	result.Attributes = maps.Clone(source.Attributes)
-	return result
+	return trajectory, nil
 }
