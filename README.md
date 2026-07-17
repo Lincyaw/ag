@@ -151,6 +151,7 @@ ag plugin list
 ag plugin discover
 ag plugin inspect <name[@instance-id]|uri>
 ag registry serve
+ag gateway serve
 ag trajectory list
 ag trajectory show <id> [--head <entry-id>]
 ag trajectory rollback <id> <checkpoint-id>
@@ -166,7 +167,9 @@ output. JSON `ag run` output includes the generated trajectory ID. Use `ag run
 --resume <id>` to restore the last committed checkpoint and continue.
 
 See [docs/cli.md](docs/cli.md) for the text/JSON schemas, stream boundary, and
-exit-status contract.
+exit-status contract. See [docs/gateway.md](docs/gateway.md) for the
+multi-session HTTP workflow, plugin switching, cancellation, and recovery
+semantics.
 
 Configuration files may be TOML, YAML, or JSON. The default path is shown by
 `ag config path`; `AGENTM_CONFIG` or `--config` selects another file. Secret

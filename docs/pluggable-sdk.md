@@ -9,8 +9,9 @@ Go baseline: 1.26
 ## Product definition
 
 `ag` is a protocol-first, SDK-hosted agent runtime. The executable in `cmd/`
-is one presenter and composition example, not the product boundary. A future
-gateway is another peer presenter built only from the public SDK.
+is one presenter and composition example, not the product boundary. The
+gateway is another peer presenter built from the public SDK and durable state
+ports.
 
 The kernel owns only mechanisms that cannot be moved into a plugin:
 
