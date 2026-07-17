@@ -2,12 +2,14 @@ package registry
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lincyaw/ag/sdk"
 )
@@ -28,6 +30,8 @@ func NewBackendRegistry() *BackendRegistry {
 
 func NewDefaultBackendRegistry() *BackendRegistry {
 	return &BackendRegistry{drivers: map[string]Driver{
+		"etcd":   etcdDriver{scheme: "etcd"},
+		"etcds":  etcdDriver{scheme: "etcds"},
 		"file":   fileDriver{},
 		"memory": memoryDriver{},
 	}}
@@ -161,4 +165,119 @@ func (fileDriver) Open(
 		return nil, errors.New("file registry URI has no path")
 	}
 	return NewFileDirectory(FileConfig{Directory: path})
+}
+
+type etcdDriver struct {
+	scheme string
+}
+
+func (driver etcdDriver) Scheme() string { return driver.scheme }
+
+func (driver etcdDriver) Open(
+	ctx context.Context,
+	parsed *url.URL,
+) (Directory, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if parsed == nil {
+		return nil, errors.New("etcd registry URI is nil")
+	}
+	if parsed.Scheme != driver.scheme {
+		return nil, fmt.Errorf(
+			"%s registry driver cannot open %q",
+			driver.scheme,
+			parsed.Scheme,
+		)
+	}
+	if parsed.User != nil {
+		return nil, errors.New(
+			"etcd registry URI must not contain credentials",
+		)
+	}
+	if strings.TrimSpace(parsed.Host) == "" {
+		return nil, errors.New("etcd registry URI has no endpoint")
+	}
+	query := parsed.Query()
+	for key := range query {
+		switch key {
+		case "dial_timeout", "endpoint", "server_name":
+		default:
+			return nil, fmt.Errorf(
+				"etcd registry URI query parameter %q is unsupported",
+				key,
+			)
+		}
+	}
+	dialTimeout := 5 * time.Second
+	if raw := strings.TrimSpace(query.Get("dial_timeout")); raw != "" {
+		var err error
+		dialTimeout, err = time.ParseDuration(raw)
+		if err != nil || dialTimeout <= 0 {
+			return nil, fmt.Errorf(
+				"parse etcd registry dial timeout %q",
+				raw,
+			)
+		}
+	}
+	transportScheme := "http"
+	var tlsConfig *tls.Config
+	if driver.scheme == "etcds" {
+		transportScheme = "https"
+		tlsConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ServerName: strings.TrimSpace(
+				query.Get("server_name"),
+			),
+		}
+	} else if query.Get("server_name") != "" {
+		return nil, errors.New(
+			"etcd server_name requires an etcds:// URI",
+		)
+	}
+	endpoints := []string{
+		transportScheme + "://" + parsed.Host,
+	}
+	for _, endpoint := range query["endpoint"] {
+		normalized, err := normalizeEtcdEndpoint(
+			endpoint,
+			transportScheme,
+		)
+		if err != nil {
+			return nil, err
+		}
+		endpoints = append(endpoints, normalized)
+	}
+	display := *parsed
+	display.RawQuery = query.Encode()
+	return NewEtcdDirectory(EtcdConfig{
+		Endpoints:   endpoints,
+		Prefix:      parsed.Path,
+		DialTimeout: dialTimeout,
+		TLS:         tlsConfig,
+		DisplayURI:  display.String(),
+	})
+}
+
+func normalizeEtcdEndpoint(
+	raw string,
+	scheme string,
+) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("etcd registry endpoint is empty")
+	}
+	if !strings.Contains(raw, "://") {
+		return scheme + "://" + raw, nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != scheme ||
+		parsed.Host == "" || parsed.Path != "" {
+		return "", fmt.Errorf(
+			"etcd registry endpoint %q must use %s://host:port",
+			raw,
+			scheme,
+		)
+	}
+	return parsed.String(), nil
 }

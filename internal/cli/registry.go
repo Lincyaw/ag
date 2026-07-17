@@ -58,7 +58,7 @@ func (application *app) registryCommand() *cobra.Command {
 	serve.Flags().String(
 		"registry-backend",
 		"",
-		"Directory backend URI (memory://local or file:///path).",
+		"Directory backend URI (memory://local, file:///path, or etcd[s]://host:2379/prefix).",
 	)
 	serve.Flags().String("tls-cert", "", "TLS certificate PEM file.")
 	serve.Flags().String("tls-key", "", "TLS private key PEM file.")
