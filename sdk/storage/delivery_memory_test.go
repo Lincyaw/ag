@@ -1,4 +1,4 @@
-package sdk
+package storage
 
 import (
 	"context"
@@ -8,12 +8,14 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	. "github.com/lincyaw/ag/sdk"
 )
 
-func TestMemoryOutboxLeaseRecoveryAndConcurrentDeduplication(t *testing.T) {
+func TestMemoryDeliveryStoreLeaseRecoveryAndConcurrentDeduplication(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store := NewMemoryOutboxStore()
+	store := NewMemoryDeliveryStore()
 	base := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	delivery := Delivery{
 		ID:           "event-1:observe",
@@ -113,9 +115,9 @@ func TestMemoryOutboxLeaseRecoveryAndConcurrentDeduplication(t *testing.T) {
 	}
 }
 
-func TestMemoryOutboxAtomicBatchAndCancellation(t *testing.T) {
+func TestMemoryDeliveryStoreAtomicBatchAndCancellation(t *testing.T) {
 	t.Parallel()
-	store := NewMemoryOutboxStore()
+	store := NewMemoryDeliveryStore()
 	valid := func(id string) Delivery {
 		return Delivery{
 			ID:           id,
@@ -163,10 +165,10 @@ func TestMemoryOutboxAtomicBatchAndCancellation(t *testing.T) {
 	}
 }
 
-func TestMemoryOutboxPreservesPartitionOrderAcrossWorkers(t *testing.T) {
+func TestMemoryDeliveryStorePreservesPartitionOrderAcrossWorkers(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store := NewMemoryOutboxStore()
+	store := NewMemoryDeliveryStore()
 	now := time.Date(2026, 7, 17, 13, 0, 0, 0, time.UTC)
 	makeDelivery := func(id, partition string) Delivery {
 		return Delivery{

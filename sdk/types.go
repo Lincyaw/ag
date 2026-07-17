@@ -234,6 +234,10 @@ func (contract EventContract) active() bool {
 		contract.AllowAction
 }
 
+func (contract EventContract) Active() bool {
+	return contract.active()
+}
+
 type Event struct {
 	ID         string          `json:"id"`
 	Name       string          `json:"name"`
@@ -307,13 +311,15 @@ func Inject(messages ...Message) Effect {
 }
 
 type Manifest struct {
-	Name        string   `json:"name"`
-	Version     string   `json:"version"`
-	Description string   `json:"description"`
-	APIVersion  int      `json:"api_version"`
-	Requires    []string `json:"requires,omitempty"`
-	Conflicts   []string `json:"conflicts,omitempty"`
-	Registers   []string `json:"registers,omitempty"`
+	Name          string   `json:"name"`
+	Version       string   `json:"version"`
+	Description   string   `json:"description"`
+	APIVersion    int      `json:"api_version"`
+	MinAPIVersion int      `json:"min_api_version,omitempty"`
+	MaxAPIVersion int      `json:"max_api_version,omitempty"`
+	Requires      []string `json:"requires,omitempty"`
+	Conflicts     []string `json:"conflicts,omitempty"`
+	Registers     []string `json:"registers,omitempty"`
 }
 
 func (manifest Manifest) Validate() error {
@@ -326,11 +332,21 @@ func (manifest Manifest) Validate() error {
 	if strings.TrimSpace(manifest.Description) == "" {
 		return errors.New("plugin description is empty")
 	}
-	if manifest.APIVersion != APIVersion {
+	minimum, maximum := manifest.APIRange()
+	if minimum < 1 || maximum < minimum {
 		return fmt.Errorf(
-			"plugin %q API version %d is incompatible with SDK API version %d",
+			"plugin %q has invalid API version range %d..%d",
 			manifest.Name,
-			manifest.APIVersion,
+			minimum,
+			maximum,
+		)
+	}
+	if APIVersion < minimum || APIVersion > maximum {
+		return fmt.Errorf(
+			"plugin %q API versions %d..%d are incompatible with SDK API version %d",
+			manifest.Name,
+			minimum,
+			maximum,
 			APIVersion,
 		)
 	}
@@ -341,6 +357,18 @@ func (manifest Manifest) Validate() error {
 			append(manifest.Requires, manifest.Conflicts...)...,
 		),
 	)
+}
+
+func (manifest Manifest) APIRange() (int, int) {
+	minimum := manifest.APIVersion
+	maximum := manifest.APIVersion
+	if manifest.MinAPIVersion != 0 {
+		minimum = manifest.MinAPIVersion
+	}
+	if manifest.MaxAPIVersion != 0 {
+		maximum = manifest.MaxAPIVersion
+	}
+	return minimum, maximum
 }
 
 type Registrar interface {
@@ -420,6 +448,10 @@ func normalizeResources(resources []string) []string {
 	return slices.Compact(normalized)
 }
 
+func NormalizeResources(resources []string) []string {
+	return normalizeResources(resources)
+}
+
 func validateResourceName(kind, name string) error {
 	if !resourceNamePattern.MatchString(name) {
 		return fmt.Errorf(
@@ -430,6 +462,10 @@ func validateResourceName(kind, name string) error {
 		)
 	}
 	return nil
+}
+
+func ValidateResourceName(kind, name string) error {
+	return validateResourceName(kind, name)
 }
 
 func validateUniqueStrings(owner string, values []string) error {

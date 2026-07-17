@@ -1,4 +1,4 @@
-package sdk
+package runtime
 
 import (
 	"context"
@@ -140,7 +140,10 @@ func (runtime *Runtime) dispatch(
 			result.Actions = append(result.Actions, *effect.Action)
 		}
 	}
-	runtime.enqueueSubscribers(snapshot, result.Event)
+	if err := runtime.enqueueSubscribers(ctx, snapshot, result.Event); err != nil {
+		recordSpanError(span, err)
+		return DispatchResult{}, err
+	}
 	return result, nil
 }
 

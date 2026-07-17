@@ -1,4 +1,4 @@
-package sdk
+package runtime
 
 import (
 	"context"
@@ -10,11 +10,12 @@ import (
 )
 
 func (runtime *Runtime) enqueueSubscribers(
+	ctx context.Context,
 	snapshot *registrySnapshot,
 	event Event,
-) {
+) error {
 	if len(snapshot.subscribers) == 0 {
-		return
+		return nil
 	}
 	names := make([]string, 0, len(snapshot.subscribers))
 	for name, subscriber := range snapshot.subscribers {
@@ -23,40 +24,44 @@ func (runtime *Runtime) enqueueSubscribers(
 		}
 	}
 	if len(names) == 0 {
-		return
+		return nil
 	}
 	slices.Sort(names)
 	now := time.Now().UTC()
 	deliveries := make([]Delivery, 0, len(names))
 	for _, name := range names {
 		subscriber := snapshot.subscribers[name]
+		revision := PluginResourceRevision(
+			subscriber.owner.manifest,
+			"subscriber",
+			name,
+			subscriber.spec,
+		)
 		partition := name
 		if event.SessionID != "" {
 			partition += "/" + event.SessionID
 		}
 		deliveries = append(deliveries, Delivery{
-			ID:           event.ID + "." + name,
-			Plugin:       subscriber.owner.manifest.Name,
-			Subscription: name,
-			Partition:    partition,
-			Event:        cloneEvent(event),
-			CreatedAt:    now,
+			ID:               event.ID + "." + name + "." + revision[:12],
+			Plugin:           subscriber.owner.manifest.Name,
+			PluginVersion:    subscriber.owner.manifest.Version,
+			Subscription:     name,
+			ResourceRevision: revision,
+			Partition:        partition,
+			Event:            cloneEvent(event),
+			CreatedAt:        now,
 		})
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	if err := runtime.outbox.Enqueue(ctx, deliveries...); err != nil {
-		runtime.logger.ErrorContext(
-			ctx,
-			"enqueue subscriber deliveries",
-			"event",
-			event.Name,
-			"event_id",
+		return fmt.Errorf(
+			"persist subscriber deliveries for event %s: %w",
 			event.ID,
-			"error",
 			err,
 		)
 	}
+	return nil
 }
 
 func (runtime *Runtime) startDeliveryWorkers() {
@@ -160,6 +165,31 @@ func (runtime *Runtime) deliver(delivery Delivery) {
 		runtime.retryDelivery(delivery, errors.New("subscriber is not mounted"))
 		return
 	}
+	currentRevision := PluginResourceRevision(
+		owned.owner.manifest,
+		"subscriber",
+		delivery.Subscription,
+		owned.spec,
+	)
+	if (delivery.PluginVersion != "" &&
+		delivery.PluginVersion != owned.owner.manifest.Version) ||
+		(delivery.ResourceRevision != "" &&
+			delivery.ResourceRevision != currentRevision) {
+		lease.release()
+		runtime.deadLetterDelivery(
+			delivery,
+			fmt.Errorf(
+				"delivery targets plugin %s@%s resource revision %s; current target is %s@%s revision %s",
+				delivery.Plugin,
+				delivery.PluginVersion,
+				delivery.ResourceRevision,
+				owned.owner.manifest.Name,
+				owned.owner.manifest.Version,
+				currentRevision,
+			),
+		)
+		return
+	}
 	timeout := runtime.deliveryTimeout
 	if owned.spec.Timeout > 0 && owned.spec.Timeout < timeout {
 		timeout = owned.spec.Timeout
@@ -181,6 +211,29 @@ func (runtime *Runtime) deliver(delivery Delivery) {
 		runtime.logger.WarnContext(
 			runtime.deliveryContext,
 			"ack subscriber delivery",
+			"delivery_id",
+			delivery.ID,
+			"error",
+			err,
+		)
+	}
+}
+
+func (runtime *Runtime) deadLetterDelivery(
+	delivery Delivery,
+	cause error,
+) {
+	err := runtime.outbox.DeadLetter(
+		runtime.deliveryContext,
+		delivery.ID,
+		delivery.LeaseToken,
+		time.Now().UTC(),
+		cause.Error(),
+	)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		runtime.logger.WarnContext(
+			runtime.deliveryContext,
+			"dead-letter subscriber delivery",
 			"delivery_id",
 			delivery.ID,
 			"error",

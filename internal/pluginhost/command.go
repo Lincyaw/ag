@@ -84,6 +84,12 @@ func NewCommand(config CommandConfig) *cobra.Command {
 	command.Flags().StringVar(&host.RegistryURI, "registry-uri", "", "Optional lease registry URI.")
 	command.Flags().DurationVar(&host.LeaseTTL, "lease-ttl", 30*time.Second, "Discovery lease TTL.")
 	command.Flags().StringVar(&host.StateDirectory, "state-dir", "", "Durable operation and inbox state.")
+	command.Flags().StringVar(
+		&host.StorageURI,
+		"storage",
+		"",
+		"State backend URI (memory://, file://, or an application-registered scheme).",
+	)
 	command.Flags().StringVar(&host.TLSCertFile, "tls-cert", "", "TLS certificate PEM file.")
 	command.Flags().StringVar(&host.TLSKeyFile, "tls-key", "", "TLS private key PEM file.")
 	command.Flags().IntVar(&host.MaxMessageBytes, "max-message-bytes", 0, "Maximum gRPC message size.")

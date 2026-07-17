@@ -6,12 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
+	"time"
 
 	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/lincyaw/ag/internal/logging"
 	"github.com/lincyaw/ag/sdk"
+	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 	"github.com/spf13/cobra"
 )
 
@@ -46,13 +47,13 @@ func (application *app) runCommand() *cobra.Command {
 			}
 			defer running.close(application.stderr)
 
-			sessionConfig := sdk.SessionConfig{
+			sessionConfig := agentruntime.SessionConfig{
 				ID:       sessionID,
 				Provider: loaded.Config.Agent.Provider,
 				System:   loaded.Config.Agent.System,
 				MaxTurns: loaded.Config.Agent.MaxTurns,
 			}
-			var session *sdk.Session
+			var session *agentruntime.Session
 			if resumeID != "" {
 				session, err = running.runtime.ResumeSession(ctx, resumeID, sessionConfig)
 			} else {
@@ -67,8 +68,8 @@ func (application *app) runCommand() *cobra.Command {
 			}
 			if outputFormat == "json" {
 				return writeJSON(application.stdout, struct {
-					SessionID string     `json:"session_id"`
-					Result    sdk.Result `json:"result"`
+					SessionID string              `json:"session_id"`
+					Result    agentruntime.Result `json:"result"`
 				}{SessionID: session.ID(), Result: result})
 			}
 			_, err = fmt.Fprintln(application.stdout, result.Output)
@@ -228,10 +229,12 @@ func (application *app) trajectoryCommand() *cobra.Command {
 		Short: "List trajectory summaries",
 		Args:  noArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			store, _, err := application.trajectoryStore(command)
+			backend, _, err := application.stateBackend(command)
 			if err != nil {
 				return err
 			}
+			defer backend.Close(context.Background())
+			store := backend.Trajectories()
 			trajectories, err := store.List(command.Context())
 			if err != nil {
 				return err
@@ -245,10 +248,12 @@ func (application *app) trajectoryCommand() *cobra.Command {
 		Short: "Show a trajectory or one of its branches",
 		Args:  exactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			store, _, err := application.trajectoryStore(command)
+			backend, _, err := application.stateBackend(command)
 			if err != nil {
 				return err
 			}
+			defer backend.Close(context.Background())
+			store := backend.Trajectories()
 			trajectory, err := store.Load(command.Context(), args[0])
 			if err != nil {
 				return err
@@ -270,10 +275,11 @@ func (application *app) trajectoryCommand() *cobra.Command {
 		Short: "Move the active branch to a prior checkpoint",
 		Args:  exactArgs(2),
 		RunE: func(command *cobra.Command, args []string) error {
-			store, loaded, err := application.trajectoryStore(command)
+			backend, loaded, err := application.stateBackend(command)
 			if err != nil {
 				return err
 			}
+			store := backend.Trajectories()
 			logger, err := logging.New(logging.Config{
 				Level: loaded.Config.Logging.Level, Format: loaded.Config.Logging.Format,
 				Writer: application.stderr,
@@ -281,8 +287,14 @@ func (application *app) trajectoryCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			runtime, err := sdk.NewRuntime(sdk.RuntimeConfig{Logger: logger, Trajectories: store})
+			runtime, err := agentruntime.NewRuntime(
+				agentruntime.RuntimeConfig{
+					Logger:  logger,
+					Storage: backend,
+				},
+			)
 			if err != nil {
+				_ = backend.Close(context.Background())
 				return err
 			}
 			defer runtime.Close(context.Background())
@@ -304,18 +316,98 @@ func (application *app) trajectoryCommand() *cobra.Command {
 	return command
 }
 
-func (application *app) trajectoryStore(
+func (application *app) stateBackend(
 	command *cobra.Command,
-) (*sdk.FileTrajectoryStore, appconfig.Loaded, error) {
+) (sdk.StateBackend, appconfig.Loaded, error) {
 	loaded, err := application.load(command)
 	if err != nil {
 		return nil, appconfig.Loaded{}, err
 	}
-	store, err := sdk.NewFileTrajectoryStore(filepath.Join(
-		loaded.Config.State.Directory,
-		"trajectories",
-	))
-	return store, loaded, err
+	backend, err := openStateBackend(command.Context(), loaded.Config)
+	return backend, loaded, err
+}
+
+func (application *app) stateCommand() *cobra.Command {
+	command := &cobra.Command{
+		Use:   "state",
+		Short: "Inspect and maintain the configured state backend",
+	}
+	inspect := &cobra.Command{
+		Use:   "inspect",
+		Short: "Show backend identity and correctness capabilities",
+		Args:  noArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			backend, _, err := application.stateBackend(command)
+			if err != nil {
+				return err
+			}
+			defer backend.Close(context.Background())
+			return writeJSON(application.stdout, struct {
+				Backend      string                  `json:"backend"`
+				Namespace    string                  `json:"namespace"`
+				Capabilities sdk.StorageCapabilities `json:"capabilities"`
+			}{
+				Backend:      backend.String(),
+				Namespace:    backend.Namespace(),
+				Capabilities: backend.Capabilities(),
+			})
+		},
+	}
+	var before string
+	prune := &cobra.Command{
+		Use:   "prune",
+		Short: "Delete terminal state older than a cutoff",
+		Args:  noArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			cutoff, err := parseRetentionCutoff(before, time.Now().UTC())
+			if err != nil {
+				return usageError{err}
+			}
+			backend, _, err := application.stateBackend(command)
+			if err != nil {
+				return err
+			}
+			defer backend.Close(context.Background())
+			result, err := backend.Prune(command.Context(), sdk.RetentionPolicy{
+				OperationsBefore:   cutoff,
+				DeliveriesBefore:   cutoff,
+				TrajectoriesBefore: cutoff,
+			})
+			if err != nil {
+				return err
+			}
+			return writeJSON(application.stdout, result)
+		},
+	}
+	prune.Flags().StringVar(
+		&before,
+		"before",
+		"",
+		"RFC3339 timestamp or age duration such as 720h (required).",
+	)
+	command.AddCommand(inspect, prune)
+	return command
+}
+
+func parseRetentionCutoff(value string, now time.Time) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, errors.New("--before is required")
+	}
+	if timestamp, err := time.Parse(time.RFC3339, value); err == nil {
+		return timestamp.UTC(), nil
+	}
+	age, err := time.ParseDuration(value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf(
+			"--before must be RFC3339 or a duration: %w",
+			err,
+		)
+	}
+	if age <= 0 {
+		return time.Time{}, errors.New("--before duration must be positive")
+	}
+	return now.Add(-age), nil
 }
 
 func (application *app) versionCommand() *cobra.Command {

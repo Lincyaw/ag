@@ -1,9 +1,10 @@
-package sdk
+package runtime
 
 import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 )
 
 type ownedProvider struct {
@@ -158,6 +159,7 @@ func (snapshot *registrySnapshot) add(
 	state *mountState,
 	staged *stagingRegistrar,
 	nextSequence *uint64,
+	defaultHookTimeout time.Duration,
 ) error {
 	name := state.manifest.Name
 	if _, exists := snapshot.plugins[name]; exists {
@@ -267,7 +269,11 @@ func (snapshot *registrySnapshot) add(
 	for eventName, hooks := range staged.hooks {
 		contract := snapshot.events[eventName].contract
 		for _, hook := range hooks {
-			spec := normalizeHookSpec(hook.Spec(), contract)
+			spec := normalizeHookSpec(
+				hook.Spec(),
+				contract,
+				defaultHookTimeout,
+			)
 			snapshot.hooks[eventName] = append(
 				snapshot.hooks[eventName],
 				ownedHook{
@@ -346,16 +352,23 @@ func compareOwnedHooks(left, right ownedHook) int {
 	return 0
 }
 
-func normalizeHookSpec(spec HookSpec, contract EventContract) HookSpec {
+func normalizeHookSpec(
+	spec HookSpec,
+	contract EventContract,
+	defaultTimeout time.Duration,
+) HookSpec {
 	if spec.Priority == 0 {
 		spec.Priority = PriorityNormal
 	}
 	if spec.FailurePolicy == "" {
-		if contract.active() {
+		if contract.Active() {
 			spec.FailurePolicy = FailurePolicyFailClosed
 		} else {
 			spec.FailurePolicy = FailurePolicyContinue
 		}
+	}
+	if spec.Timeout == 0 {
+		spec.Timeout = defaultTimeout
 	}
 	return spec
 }

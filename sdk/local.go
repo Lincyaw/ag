@@ -51,3 +51,7 @@ func sourceDescription(source Source) string {
 	}
 	return value
 }
+
+func SourceDescription(source Source) string {
+	return sourceDescription(source)
+}

@@ -11,6 +11,8 @@ import (
 
 	pluginv1 "github.com/lincyaw/ag/pluginrpc/v1"
 	"github.com/lincyaw/ag/sdk"
+	agentruntime "github.com/lincyaw/ag/sdk/runtime"
+	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 )
 
 type e2eProvider struct {
@@ -212,7 +214,7 @@ func TestRemotePluginRealTCPRunsSessionHookToolAndSubscriber(t *testing.T) {
 	if err := registry.Register(sdk.PluginReference{Name: "remote-e2e", URI: uri}); err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := sdk.NewRuntime(sdk.RuntimeConfig{
+	runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{
 		OperationPoll:       time.Millisecond,
 		DeliveryPoll:        time.Millisecond,
 		DeliveryWorkers:     4,
@@ -242,7 +244,7 @@ func TestRemotePluginRealTCPRunsSessionHookToolAndSubscriber(t *testing.T) {
 		t.Fatalf("remote catalog = %#v", catalog)
 	}
 
-	session, err := runtime.NewSession(ctx, sdk.SessionConfig{
+	session, err := runtime.NewSession(ctx, agentruntime.SessionConfig{
 		ID:       "remote-session",
 		Provider: "remote-model",
 		MaxTurns: 3,
@@ -329,7 +331,7 @@ func TestRemoteCancelWinsAgainstBlockingSyncToolCompletion(t *testing.T) {
 			return registrar.RegisterTool(tool)
 		},
 	}
-	operationStore := sdk.NewMemoryOperationStore()
+	operationStore := sdkstorage.NewMemoryOperationStore()
 	adapter, err := NewServer(ctx, ServerConfig{Plugin: plugin, Operations: operationStore})
 	if err != nil {
 		t.Fatal(err)

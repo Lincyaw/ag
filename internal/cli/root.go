@@ -74,6 +74,16 @@ func New(stdout, stderr io.Writer, version string) *cobra.Command {
 		"Config file (TOML, YAML, or JSON).",
 	)
 	root.PersistentFlags().String("state-dir", "", "Durable state directory.")
+	root.PersistentFlags().String(
+		"storage",
+		"",
+		"State backend URI (memory://, file://, or an application-registered scheme).",
+	)
+	root.PersistentFlags().String(
+		"state-namespace",
+		"",
+		"Isolate state in a named backend namespace.",
+	)
 	root.PersistentFlags().String("log-level", "", "debug, info, warn, or error.")
 	root.PersistentFlags().String("log-format", "", "json or text.")
 	root.PersistentFlags().Bool("otel", true, "Project lifecycle events into OpenTelemetry.")
@@ -83,6 +93,7 @@ func New(stdout, stderr io.Writer, version string) *cobra.Command {
 		application.configCommand(),
 		application.pluginCommand(),
 		application.trajectoryCommand(),
+		application.stateCommand(),
 		application.versionCommand(),
 	)
 	return root

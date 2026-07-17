@@ -94,7 +94,9 @@ type Plugins struct {
 }
 
 type State struct {
-	Directory string `mapstructure:"directory" json:"directory" yaml:"directory"`
+	Directory  string `mapstructure:"directory" json:"directory" yaml:"directory"`
+	BackendURI string `mapstructure:"backend_uri" json:"backend_uri,omitempty" yaml:"backend_uri,omitempty"`
+	Namespace  string `mapstructure:"namespace" json:"namespace,omitempty" yaml:"namespace,omitempty"`
 }
 
 type Observability struct {
@@ -184,8 +186,9 @@ func (c Config) Validate() error {
 		c.Bash.MaxOutputBytes < 1) {
 		return errors.New("bash configuration and limits are invalid")
 	}
-	if strings.TrimSpace(c.State.Directory) == "" {
-		return errors.New("state.directory is required")
+	if strings.TrimSpace(c.State.Directory) == "" &&
+		strings.TrimSpace(c.State.BackendURI) == "" {
+		return errors.New("state.directory or state.backend_uri is required")
 	}
 	for _, remote := range c.Plugins.Remote {
 		if strings.TrimSpace(remote) == "" {
@@ -238,6 +241,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("plugins.remote", []string{})
 	v.SetDefault("plugins.registry_uri", "")
 	v.SetDefault("state.directory", defaultStateDirectory())
+	v.SetDefault("state.backend_uri", "")
+	v.SetDefault("state.namespace", "")
 	v.SetDefault("observability.enabled", true)
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.format", "json")
@@ -282,6 +287,8 @@ func bindFlags(v *viper.Viper, flags *pflag.FlagSet) error {
 		"plugins.remote":            "plugin",
 		"plugins.registry_uri":      "registry-uri",
 		"state.directory":           "state-dir",
+		"state.backend_uri":         "storage",
+		"state.namespace":           "state-namespace",
 		"observability.enabled":     "otel",
 		"logging.level":             "log-level",
 		"logging.format":            "log-format",

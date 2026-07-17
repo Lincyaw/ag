@@ -1,4 +1,4 @@
-package sdk
+package runtime
 
 import (
 	"context"
@@ -12,11 +12,23 @@ import (
 )
 
 type SessionConfig struct {
-	ID       string
-	Provider string
-	System   string
-	MaxTurns int
+	ID           string
+	Provider     string
+	System       string
+	MaxTurns     int
+	ResumePolicy ResumePolicy
 }
+
+type ResumePolicy string
+
+const (
+	// ResumeExact restores provider/system checkpoint state and requires the
+	// current mounted composition to match the trajectory's creation snapshot.
+	ResumeExact ResumePolicy = "exact"
+	// ResumeCurrent restores messages but deliberately uses the caller's current
+	// provider/system configuration and mounted composition.
+	ResumeCurrent ResumePolicy = "current"
+)
 
 type Session struct {
 	runtime  *Runtime
@@ -35,31 +47,39 @@ type Result struct {
 	Cause      Cause     `json:"cause"`
 }
 
-type trajectoryCheckpoint struct {
+type TrajectoryCheckpointPayload struct {
 	Messages  []Message `json:"messages"`
 	System    string    `json:"system,omitempty"`
+	Provider  string    `json:"provider,omitempty"`
 	Turns     int       `json:"turns"`
 	ToolCalls int       `json:"tool_calls"`
 	Action    Action    `json:"action"`
 }
 
-type trajectoryProviderRequest struct {
+type TrajectoryProviderRequestPayload struct {
 	Turn     int          `json:"turn"`
 	Provider string       `json:"provider"`
 	Request  ModelRequest `json:"request"`
 }
 
-type trajectoryProviderResponse struct {
+type TrajectoryProviderResponsePayload struct {
 	Turn     int            `json:"turn"`
 	Provider string         `json:"provider"`
 	Response *ModelResponse `json:"response,omitempty"`
 	Error    string         `json:"error,omitempty"`
 }
 
-type trajectoryDecision struct {
+type TrajectoryDecisionPayload struct {
 	Turn   int    `json:"turn"`
 	Action Action `json:"action"`
 }
+
+// Compatibility aliases preserve source compatibility for packages that had
+// tests or tooling inside sdk before the payload contracts became public.
+type trajectoryCheckpoint = TrajectoryCheckpointPayload
+type trajectoryProviderRequest = TrajectoryProviderRequestPayload
+type trajectoryProviderResponse = TrajectoryProviderResponsePayload
+type trajectoryDecision = TrajectoryDecisionPayload
 
 func latestTrajectoryCheckpoint(
 	trajectory Trajectory,
@@ -101,7 +121,19 @@ func (runtime *Runtime) NewSession(
 	if err := validateSessionConfig(runtime, &config); err != nil {
 		return nil, err
 	}
-	if err := runtime.trajectories.Create(ctx, Trajectory{ID: config.ID}); err != nil {
+	lease, err := runtime.acquireSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	environment, err := newTrajectoryEnvironment(runtime, lease.snapshot, config)
+	lease.release()
+	if err != nil {
+		return nil, err
+	}
+	if err := runtime.trajectories.Create(ctx, Trajectory{
+		ID:          config.ID,
+		Environment: environment,
+	}); err != nil {
 		return nil, fmt.Errorf("create session trajectory %q: %w", config.ID, err)
 	}
 	return &Session{runtime: runtime, config: config}, nil
@@ -124,11 +156,35 @@ func (runtime *Runtime) ResumeSession(
 	if err != nil {
 		return nil, err
 	}
-	if checkpoint != nil {
-		config.System = checkpoint.System
+	if config.ResumePolicy == ResumeExact {
+		lease, acquireErr := runtime.acquireSnapshot()
+		if acquireErr != nil {
+			return nil, acquireErr
+		}
+		current, environmentErr := newTrajectoryEnvironment(
+			runtime,
+			lease.snapshot,
+			config,
+		)
+		lease.release()
+		if environmentErr != nil {
+			return nil, environmentErr
+		}
+		if err := validateResumeEnvironment(trajectory.Environment, current); err != nil {
+			return nil, err
+		}
+		if checkpoint != nil {
+			config.System = checkpoint.System
+			if checkpoint.Provider != "" {
+				config.Provider = checkpoint.Provider
+			} else if trajectory.Environment.RequestedProvider != "" {
+				config.Provider = trajectory.Environment.RequestedProvider
+			}
+		}
 	}
 	head := trajectory.Head
-	if trajectory.Head != "" && checkpointID != trajectory.Head {
+	if trajectory.Head != checkpointID &&
+		!trajectoryHeadRestoresCheckpoint(trajectory, checkpointID) {
 		payload, marshalErr := json.Marshal(map[string]string{
 			"from": trajectory.Head,
 			"to":   checkpointID,
@@ -169,6 +225,24 @@ func (runtime *Runtime) ResumeSession(
 	return session, nil
 }
 
+func trajectoryHeadRestoresCheckpoint(
+	trajectory Trajectory,
+	checkpointID string,
+) bool {
+	if trajectory.Head == "" {
+		return checkpointID == ""
+	}
+	for _, entry := range trajectory.Entries {
+		if entry.ID != trajectory.Head {
+			continue
+		}
+		return (entry.Kind == TrajectoryKindRestore ||
+			entry.Kind == TrajectoryKindRollback) &&
+			entry.ParentID == checkpointID
+	}
+	return false
+}
+
 func validateSessionConfig(runtime *Runtime, config *SessionConfig) error {
 	if runtime == nil {
 		return errors.New("runtime is nil")
@@ -184,6 +258,14 @@ func validateSessionConfig(runtime *Runtime, config *SessionConfig) error {
 	}
 	if config.MaxTurns < 1 {
 		return errors.New("session max turns must be positive")
+	}
+	if config.ResumePolicy == "" {
+		config.ResumePolicy = ResumeExact
+	}
+	switch config.ResumePolicy {
+	case ResumeExact, ResumeCurrent:
+	default:
+		return fmt.Errorf("unknown resume policy %q", config.ResumePolicy)
 	}
 	return nil
 }
@@ -303,6 +385,9 @@ func (session *Session) Rollback(
 	}
 	session.messages = cloneMessages(checkpoint.Messages)
 	session.config.System = checkpoint.System
+	if checkpoint.Provider != "" {
+		session.config.Provider = checkpoint.Provider
+	}
 	session.head = trajectory.Head
 	return nil
 }
@@ -310,18 +395,33 @@ func (session *Session) Rollback(
 func (session *Session) Prompt(
 	ctx context.Context,
 	prompt string,
-) (Result, error) {
+) (result Result, returnErr error) {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if strings.TrimSpace(prompt) == "" {
 		return Result{}, errors.New("prompt is empty")
 	}
+	mutated := false
+	defer func() {
+		if !mutated || returnErr == nil {
+			return
+		}
+		restoreCtx, cancel := context.WithTimeout(
+			context.Background(),
+			5*time.Second,
+		)
+		defer cancel()
+		returnErr = errors.Join(
+			returnErr,
+			session.restoreLatestCheckpoint(restoreCtx),
+		)
+	}()
 
 	messages := cloneMessages(session.messages)
 	userMessage := Message{Role: RoleUser, Content: prompt}
 	messages = append(messages, userMessage)
 	system := session.config.System
-	result := Result{}
+	result = Result{}
 
 	startLease, err := session.runtime.acquireSnapshot()
 	if err != nil {
@@ -336,6 +436,7 @@ func (session *Session) Prompt(
 		startLease.release()
 		return Result{}, err
 	}
+	mutated = true
 	startDispatch, err := session.runtime.dispatch(
 		ctx,
 		startLease.snapshot,
@@ -358,6 +459,17 @@ func (session *Session) Prompt(
 		cause := Cause{
 			Code:   "prompt_blocked",
 			Detail: startDispatch.Block.Reason,
+		}
+		if err := session.checkpointTrajectory(
+			ctx,
+			startLease.snapshot.generation,
+			messages,
+			result,
+			Action{Kind: ActionStop, Cause: &cause},
+			system,
+		); err != nil {
+			startLease.release()
+			return Result{}, err
 		}
 		result, err = session.finish(
 			ctx,
@@ -1009,18 +1121,80 @@ func (session *Session) checkpointTrajectory(
 	action Action,
 	system string,
 ) error {
-	return session.appendTrajectory(
+	err := session.appendTrajectory(
 		ctx,
 		TrajectoryKindCheckpoint,
 		generation,
 		trajectoryCheckpoint{
 			Messages:  cloneMessages(messages),
 			System:    system,
+			Provider:  session.config.Provider,
 			Turns:     result.Turns,
 			ToolCalls: result.ToolCalls,
 			Action:    action,
 		},
 	)
+	if err == nil {
+		session.config.System = system
+	}
+	return err
+}
+
+func (session *Session) restoreLatestCheckpoint(ctx context.Context) error {
+	trajectory, err := session.runtime.trajectories.Load(ctx, session.config.ID)
+	if err != nil {
+		return fmt.Errorf("load trajectory for failure restore: %w", err)
+	}
+	checkpointID, checkpoint, err := latestTrajectoryCheckpoint(trajectory)
+	if err != nil {
+		return err
+	}
+	head := trajectory.Head
+	if !trajectoryHeadRestoresCheckpoint(trajectory, checkpointID) {
+		payload, marshalErr := json.Marshal(map[string]string{
+			"from": trajectory.Head,
+			"to":   checkpointID,
+		})
+		if marshalErr != nil {
+			return marshalErr
+		}
+		restore := TrajectoryEntry{
+			ID:        newDispatchID(),
+			ParentID:  checkpointID,
+			Kind:      TrajectoryKindRestore,
+			Timestamp: time.Now().UTC(),
+			Payload:   payload,
+		}
+		head, err = session.runtime.trajectories.Append(
+			ctx,
+			session.config.ID,
+			trajectory.Head,
+			restore,
+		)
+		if err != nil {
+			return fmt.Errorf("restore failed prompt trajectory: %w", err)
+		}
+		session.runtime.emitTrajectoryEvent(
+			ctx,
+			EventTrajectoryRestore,
+			TrajectoryEventPayload{
+				TrajectoryID: session.config.ID,
+				EntryID:      head,
+				EntryKind:    TrajectoryKindRestore,
+				From:         trajectory.Head,
+				To:           checkpointID,
+			},
+		)
+	}
+	session.head = head
+	session.messages = cloneMessages(checkpointMessages(checkpoint))
+	if checkpoint != nil {
+		session.config.System = checkpoint.System
+		if checkpoint.Provider != "" {
+			session.config.Provider = checkpoint.Provider
+		}
+	}
+	return nil
 }
 
 func selectProvider(

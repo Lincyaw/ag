@@ -1,4 +1,4 @@
-package sdk
+package storage
 
 import (
 	"context"
@@ -7,13 +7,15 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	. "github.com/lincyaw/ag/sdk"
 )
 
-func TestFileOutboxSurvivesRestartAndRecoversExpiredLease(t *testing.T) {
+func TestFileDeliveryStoreSurvivesRestartAndRecoversExpiredLease(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	directory := t.TempDir()
-	firstStore, err := NewFileOutboxStore(directory)
+	firstStore, err := NewFileDeliveryStore(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +40,7 @@ func TestFileOutboxSurvivesRestartAndRecoversExpiredLease(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := NewFileOutboxStore(directory)
+	reopened, err := NewFileDeliveryStore(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +68,7 @@ func TestFileOutboxSurvivesRestartAndRecoversExpiredLease(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	thirdStore, err := NewFileOutboxStore(directory)
+	thirdStore, err := NewFileDeliveryStore(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,19 +94,19 @@ func TestFileOutboxSurvivesRestartAndRecoversExpiredLease(t *testing.T) {
 	}
 }
 
-func TestFileOutboxSerializesConcurrentStoreInstances(t *testing.T) {
+func TestFileDeliveryStoreSerializesConcurrentInstances(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	directory := t.TempDir()
-	left, err := NewFileOutboxStore(directory)
+	left, err := NewFileDeliveryStore(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	right, err := NewFileOutboxStore(directory)
+	right, err := NewFileDeliveryStore(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stores := []*FileOutboxStore{left, right}
+	stores := []*FileDeliveryStore{left, right}
 	const count = 32
 	var wait sync.WaitGroup
 	errorsChannel := make(chan error, count)

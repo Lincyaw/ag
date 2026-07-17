@@ -1,4 +1,4 @@
-package sdk
+package runtime
 
 import (
 	"context"
@@ -19,19 +19,31 @@ import (
 
 const instrumentationName = "github.com/lincyaw/ag/sdk"
 
+type StorageOwnership string
+
+const (
+	StorageOwned    StorageOwnership = "owned"
+	StorageBorrowed StorageOwnership = "borrowed"
+)
+
 type RuntimeConfig struct {
+	RuntimeVersion      string
 	Logger              *slog.Logger
 	Tracer              trace.Tracer
 	Meter               metric.Meter
+	Storage             StateBackend
+	StorageOwnership    StorageOwnership
 	Trajectories        TrajectoryStore
 	Operations          OperationStore
-	Outbox              OutboxStore
+	Outbox              DeliveryStore
 	DeliveryWorkers     int
 	DeliveryLease       time.Duration
 	DeliveryPoll        time.Duration
 	DeliveryTimeout     time.Duration
 	DeliveryMaxAttempts int
+	HookTimeout         time.Duration
 	OperationPoll       time.Duration
+	OperationLease      time.Duration
 }
 
 type Runtime struct {
@@ -39,12 +51,16 @@ type Runtime struct {
 	current             atomic.Pointer[registrySnapshot]
 	closed              bool
 	nextSequence        uint64
+	version             string
 	logger              *slog.Logger
 	tracer              trace.Tracer
 	mounts              metric.Int64Counter
 	unmounts            metric.Int64Counter
 	events              metric.Int64Counter
 	hooks               metric.Int64Counter
+	hookTimeout         time.Duration
+	storage             StateBackend
+	closeStorage        bool
 	trajectories        TrajectoryStore
 	operations          OperationStore
 	operationContext    context.Context
@@ -52,7 +68,7 @@ type Runtime struct {
 	operationMu         sync.Mutex
 	operationCancels    map[string]context.CancelFunc
 	operationWait       sync.WaitGroup
-	outbox              OutboxStore
+	outbox              DeliveryStore
 	deliveryWorkers     int
 	deliveryLease       time.Duration
 	deliveryPoll        time.Duration
@@ -63,9 +79,14 @@ type Runtime struct {
 	deliveryOnce        sync.Once
 	deliveryWait        sync.WaitGroup
 	operationPoll       time.Duration
+	operationLease      time.Duration
+	operationWorkerID   string
 }
 
 func NewRuntime(config RuntimeConfig) (*Runtime, error) {
+	if strings.TrimSpace(config.RuntimeVersion) == "" {
+		config.RuntimeVersion = "development"
+	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
@@ -75,14 +96,57 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	if config.Meter == nil {
 		config.Meter = otel.Meter(instrumentationName)
 	}
-	if config.Trajectories == nil {
-		config.Trajectories = NewMemoryTrajectoryStore()
+	if config.Storage != nil &&
+		(config.Trajectories != nil || config.Operations != nil || config.Outbox != nil) {
+		return nil, errors.New(
+			"runtime storage backend and individual stores are mutually exclusive",
+		)
 	}
-	if config.Operations == nil {
-		config.Operations = NewMemoryOperationStore()
+	if config.StorageOwnership == "" {
+		config.StorageOwnership = StorageOwned
 	}
-	if config.Outbox == nil {
-		config.Outbox = NewMemoryOutboxStore()
+	switch config.StorageOwnership {
+	case StorageOwned, StorageBorrowed:
+	default:
+		return nil, fmt.Errorf(
+			"unknown storage ownership %q",
+			config.StorageOwnership,
+		)
+	}
+	if config.Storage == nil {
+		if config.Trajectories == nil &&
+			config.Operations == nil &&
+			config.Outbox == nil {
+			config.Storage = NewMemoryStateBackend()
+		} else {
+			if config.Trajectories == nil {
+				config.Trajectories = NewMemoryTrajectoryStore()
+			}
+			if config.Operations == nil {
+				config.Operations = NewMemoryOperationStore()
+			}
+			if config.Outbox == nil {
+				config.Outbox = NewMemoryDeliveryStore()
+			}
+			config.Storage = composedStateBackend{
+				trajectories: config.Trajectories,
+				operations:   config.Operations,
+				outbox:       config.Outbox,
+			}
+		}
+	}
+	if err := config.Storage.Health(context.Background()); err != nil {
+		return nil, fmt.Errorf("state backend health: %w", err)
+	}
+	config.Trajectories = config.Storage.Trajectories()
+	config.Operations = config.Storage.Operations()
+	var err error
+	config.Outbox, err = config.Storage.Deliveries(HostOutboxQueue)
+	if err != nil {
+		return nil, fmt.Errorf("open host outbox: %w", err)
+	}
+	if config.Trajectories == nil || config.Operations == nil || config.Outbox == nil {
+		return nil, errors.New("state backend returned a nil store")
 	}
 	if config.DeliveryWorkers == 0 {
 		config.DeliveryWorkers = 2
@@ -99,13 +163,25 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	if config.DeliveryMaxAttempts == 0 {
 		config.DeliveryMaxAttempts = 8
 	}
+	if config.HookTimeout == 0 {
+		config.HookTimeout = time.Second
+	}
 	if config.OperationPoll == 0 {
 		config.OperationPoll = 100 * time.Millisecond
 	}
+	if config.OperationLease == 0 {
+		config.OperationLease = 30 * time.Second
+	}
 	if config.DeliveryWorkers < 1 || config.DeliveryLease <= 0 ||
 		config.DeliveryPoll <= 0 || config.DeliveryTimeout <= 0 ||
-		config.DeliveryMaxAttempts < 1 || config.OperationPoll <= 0 {
+		config.DeliveryMaxAttempts < 1 || config.HookTimeout <= 0 ||
+		config.OperationPoll <= 0 || config.OperationLease <= 0 {
 		return nil, errors.New("delivery and operation settings must be positive")
+	}
+	if config.DeliveryTimeout >= config.DeliveryLease {
+		return nil, errors.New(
+			"delivery timeout must be shorter than the delivery lease",
+		)
 	}
 
 	mounts, err := config.Meter.Int64Counter(
@@ -139,12 +215,16 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	deliveryContext, cancelDeliveries := context.WithCancel(context.Background())
 	operationContext, cancelOperations := context.WithCancel(context.Background())
 	runtime := &Runtime{
+		version:             config.RuntimeVersion,
 		logger:              config.Logger,
 		tracer:              config.Tracer,
 		mounts:              mounts,
 		unmounts:            unmounts,
 		events:              events,
 		hooks:               hooks,
+		hookTimeout:         config.HookTimeout,
+		storage:             config.Storage,
+		closeStorage:        config.StorageOwnership == StorageOwned,
 		trajectories:        config.Trajectories,
 		operations:          config.Operations,
 		operationContext:    operationContext,
@@ -159,6 +239,8 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 		deliveryContext:     deliveryContext,
 		cancelDeliveries:    cancelDeliveries,
 		operationPoll:       config.OperationPoll,
+		operationLease:      config.OperationLease,
+		operationWorkerID:   "runtime-" + newDispatchID(),
 	}
 	runtime.current.Store(initialSnapshot())
 	return runtime, nil
@@ -178,7 +260,7 @@ func (runtime *Runtime) Operations() OperationStore {
 	return runtime.operations
 }
 
-func (runtime *Runtime) Outbox() OutboxStore {
+func (runtime *Runtime) Outbox() DeliveryStore {
 	if runtime == nil {
 		return nil
 	}
@@ -264,7 +346,7 @@ func (runtime *Runtime) Mount(
 		recordSpanError(span, err)
 		return closeOnError(err)
 	}
-	runtime.wrapSynchronousResources(staged)
+	runtime.wrapSynchronousResources(staged, manifest)
 
 	state := newMountState(manifest, sourceDescription(source), connection)
 	runtime.mu.Lock()
@@ -273,7 +355,12 @@ func (runtime *Runtime) Mount(
 		return closeOnError(errors.New("runtime is closed"))
 	}
 	next := runtime.current.Load().clone()
-	if err := next.add(state, staged, &runtime.nextSequence); err != nil {
+	if err := next.add(
+		state,
+		staged,
+		&runtime.nextSequence,
+		runtime.hookTimeout,
+	); err != nil {
 		runtime.mu.Unlock()
 		recordSpanError(span, err)
 		return closeOnError(err)
@@ -461,6 +548,11 @@ func (runtime *Runtime) Close(ctx context.Context) error {
 			}
 		}
 	}
+	if runtime.storage != nil && runtime.closeStorage {
+		if err := runtime.storage.Close(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("close state backend: %w", err))
+		}
+	}
 	return errors.Join(errs...)
 }
 
@@ -484,7 +576,13 @@ type CatalogSnapshot struct {
 }
 
 func (runtime *Runtime) Catalog() CatalogSnapshot {
-	snapshot := runtime.current.Load()
+	if runtime == nil {
+		return CatalogSnapshot{}
+	}
+	return catalogFromSnapshot(runtime.current.Load())
+}
+
+func catalogFromSnapshot(snapshot *registrySnapshot) CatalogSnapshot {
 	result := CatalogSnapshot{Generation: snapshot.generation}
 	for _, state := range snapshot.plugins {
 		result.Plugins = append(result.Plugins, MountedPlugin{

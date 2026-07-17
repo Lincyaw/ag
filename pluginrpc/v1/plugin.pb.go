@@ -242,6 +242,8 @@ type Manifest struct {
 	Requires      []string               `protobuf:"bytes,5,rep,name=requires,proto3" json:"requires,omitempty"`
 	Conflicts     []string               `protobuf:"bytes,6,rep,name=conflicts,proto3" json:"conflicts,omitempty"`
 	Registers     []string               `protobuf:"bytes,7,rep,name=registers,proto3" json:"registers,omitempty"`
+	MinApiVersion uint32                 `protobuf:"varint,8,opt,name=min_api_version,json=minApiVersion,proto3" json:"min_api_version,omitempty"`
+	MaxApiVersion uint32                 `protobuf:"varint,9,opt,name=max_api_version,json=maxApiVersion,proto3" json:"max_api_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -323,6 +325,20 @@ func (x *Manifest) GetRegisters() []string {
 		return x.Registers
 	}
 	return nil
+}
+
+func (x *Manifest) GetMinApiVersion() uint32 {
+	if x != nil {
+		return x.MinApiVersion
+	}
+	return 0
+}
+
+func (x *Manifest) GetMaxApiVersion() uint32 {
+	if x != nil {
+		return x.MaxApiVersion
+	}
+	return 0
 }
 
 type ProviderSpec struct {
@@ -2074,16 +2090,18 @@ func (x *HandleHookResponse) GetEffect() *Effect {
 }
 
 type Delivery struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Sequence      uint64                 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	Plugin        string                 `protobuf:"bytes,3,opt,name=plugin,proto3" json:"plugin,omitempty"`
-	Subscription  string                 `protobuf:"bytes,4,opt,name=subscription,proto3" json:"subscription,omitempty"`
-	Partition     string                 `protobuf:"bytes,5,opt,name=partition,proto3" json:"partition,omitempty"`
-	Event         *EventEnvelope         `protobuf:"bytes,6,opt,name=event,proto3" json:"event,omitempty"`
-	Attempt       int32                  `protobuf:"varint,7,opt,name=attempt,proto3" json:"attempt,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Id               string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Sequence         uint64                 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	Plugin           string                 `protobuf:"bytes,3,opt,name=plugin,proto3" json:"plugin,omitempty"`
+	Subscription     string                 `protobuf:"bytes,4,opt,name=subscription,proto3" json:"subscription,omitempty"`
+	Partition        string                 `protobuf:"bytes,5,opt,name=partition,proto3" json:"partition,omitempty"`
+	Event            *EventEnvelope         `protobuf:"bytes,6,opt,name=event,proto3" json:"event,omitempty"`
+	Attempt          int32                  `protobuf:"varint,7,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	PluginVersion    string                 `protobuf:"bytes,8,opt,name=plugin_version,json=pluginVersion,proto3" json:"plugin_version,omitempty"`
+	ResourceRevision string                 `protobuf:"bytes,9,opt,name=resource_revision,json=resourceRevision,proto3" json:"resource_revision,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Delivery) Reset() {
@@ -2163,6 +2181,20 @@ func (x *Delivery) GetAttempt() int32 {
 		return x.Attempt
 	}
 	return 0
+}
+
+func (x *Delivery) GetPluginVersion() string {
+	if x != nil {
+		return x.PluginVersion
+	}
+	return ""
+}
+
+func (x *Delivery) GetResourceRevision() string {
+	if x != nil {
+		return x.ResourceRevision
+	}
+	return ""
 }
 
 type DeliverRequest struct {
@@ -2721,7 +2753,7 @@ var File_pluginrpc_v1_plugin_proto protoreflect.FileDescriptor
 
 const file_pluginrpc_v1_plugin_proto_rawDesc = "" +
 	"\n" +
-	"\x19pluginrpc/v1/plugin.proto\x12\fpluginrpc.v1\x1a\x1cgoogle/protobuf/struct.proto\"\xd3\x01\n" +
+	"\x19pluginrpc/v1/plugin.proto\x12\fpluginrpc.v1\x1a\x1cgoogle/protobuf/struct.proto\"\xa3\x02\n" +
 	"\bManifest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12 \n" +
@@ -2730,7 +2762,9 @@ const file_pluginrpc_v1_plugin_proto_rawDesc = "" +
 	"apiVersion\x12\x1a\n" +
 	"\brequires\x18\x05 \x03(\tR\brequires\x12\x1c\n" +
 	"\tconflicts\x18\x06 \x03(\tR\tconflicts\x12\x1c\n" +
-	"\tregisters\x18\a \x03(\tR\tregisters\"8\n" +
+	"\tregisters\x18\a \x03(\tR\tregisters\x12&\n" +
+	"\x0fmin_api_version\x18\b \x01(\rR\rminApiVersion\x12&\n" +
+	"\x0fmax_api_version\x18\t \x01(\rR\rmaxApiVersion\"8\n" +
 	"\fProviderSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\"y\n" +
@@ -2857,7 +2891,7 @@ const file_pluginrpc_v1_plugin_proto_rawDesc = "" +
 	"\x04hook\x18\x01 \x01(\tR\x04hook\x121\n" +
 	"\x05event\x18\x02 \x01(\v2\x1b.pluginrpc.v1.EventEnvelopeR\x05event\"B\n" +
 	"\x12HandleHookResponse\x12,\n" +
-	"\x06effect\x18\x01 \x01(\v2\x14.pluginrpc.v1.EffectR\x06effect\"\xdd\x01\n" +
+	"\x06effect\x18\x01 \x01(\v2\x14.pluginrpc.v1.EffectR\x06effect\"\xb1\x02\n" +
 	"\bDelivery\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12\x16\n" +
@@ -2865,7 +2899,9 @@ const file_pluginrpc_v1_plugin_proto_rawDesc = "" +
 	"\fsubscription\x18\x04 \x01(\tR\fsubscription\x12\x1c\n" +
 	"\tpartition\x18\x05 \x01(\tR\tpartition\x121\n" +
 	"\x05event\x18\x06 \x01(\v2\x1b.pluginrpc.v1.EventEnvelopeR\x05event\x12\x18\n" +
-	"\aattempt\x18\a \x01(\x05R\aattempt\"D\n" +
+	"\aattempt\x18\a \x01(\x05R\aattempt\x12%\n" +
+	"\x0eplugin_version\x18\b \x01(\tR\rpluginVersion\x12+\n" +
+	"\x11resource_revision\x18\t \x01(\tR\x10resourceRevision\"D\n" +
 	"\x0eDeliverRequest\x122\n" +
 	"\bdelivery\x18\x01 \x01(\v2\x16.pluginrpc.v1.DeliveryR\bdelivery\"-\n" +
 	"\x0fDeliverResponse\x12\x1a\n" +

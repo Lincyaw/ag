@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/lincyaw/ag/sdk"
+	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -38,7 +39,7 @@ func TestPluginProjectsOrderedEventsIntoSpansAndMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := sdk.NewRuntime(sdk.RuntimeConfig{
+	runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{
 		DeliveryWorkers: 4,
 		DeliveryPoll:    time.Millisecond,
 	})

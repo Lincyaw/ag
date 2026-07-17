@@ -1,10 +1,11 @@
-package sdk
+package runtime
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 type operationExecutor func(context.Context, json.RawMessage) (json.RawMessage, error)
@@ -12,6 +13,7 @@ type operationExecutor func(context.Context, json.RawMessage) (json.RawMessage, 
 type localAsyncProvider struct {
 	runtime     *Runtime
 	synchronous SyncProvider
+	revision    string
 }
 
 func (provider localAsyncProvider) Spec() ProviderSpec {
@@ -26,6 +28,7 @@ func (provider localAsyncProvider) SubmitCompletion(
 		ctx,
 		OperationKindProvider,
 		provider.Spec().Name,
+		provider.revision,
 		request,
 		func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 			var modelRequest ModelRequest
@@ -59,11 +62,13 @@ func (provider localAsyncProvider) CancelCompletion(
 type localAsyncTool struct {
 	runtime     *Runtime
 	synchronous SyncTool
+	revision    string
 }
 
 type localAsyncCapability struct {
 	runtime     *Runtime
 	synchronous SyncCapability
+	revision    string
 }
 
 func (capability localAsyncCapability) Spec() CapabilitySpec {
@@ -78,6 +83,7 @@ func (capability localAsyncCapability) SubmitInvoke(
 		ctx,
 		OperationKindCapability,
 		capability.Spec().Name,
+		capability.revision,
 		request,
 		func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 			return capability.synchronous.Invoke(ctx, input)
@@ -114,6 +120,7 @@ func (tool localAsyncTool) SubmitCall(
 		ctx,
 		OperationKindTool,
 		tool.Spec().Name,
+		tool.revision,
 		request,
 		func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 			result, err := tool.synchronous.Call(ctx, input)
@@ -140,13 +147,23 @@ func (tool localAsyncTool) CancelCall(
 	return tool.runtime.cancelLocalOperation(ctx, OperationKindTool, tool.Spec().Name, id)
 }
 
-func (runtime *Runtime) wrapSynchronousResources(registrar *stagingRegistrar) {
+func (runtime *Runtime) wrapSynchronousResources(
+	registrar *stagingRegistrar,
+	manifest Manifest,
+) {
 	for name, provider := range registrar.providers {
 		if _, asynchronous := provider.(AsyncProvider); asynchronous {
 			continue
 		}
 		registrar.providers[name] = localAsyncProvider{
-			runtime: runtime, synchronous: provider.(SyncProvider),
+			runtime:     runtime,
+			synchronous: provider.(SyncProvider),
+			revision: ResourceRevision(
+				manifest,
+				OperationKindProvider,
+				name,
+				provider.Spec(),
+			),
 		}
 	}
 	for name, tool := range registrar.tools {
@@ -154,7 +171,14 @@ func (runtime *Runtime) wrapSynchronousResources(registrar *stagingRegistrar) {
 			continue
 		}
 		registrar.tools[name] = localAsyncTool{
-			runtime: runtime, synchronous: tool.(SyncTool),
+			runtime:     runtime,
+			synchronous: tool.(SyncTool),
+			revision: ResourceRevision(
+				manifest,
+				OperationKindTool,
+				name,
+				tool.Spec(),
+			),
 		}
 	}
 	for name, capability := range registrar.capabilities {
@@ -162,7 +186,14 @@ func (runtime *Runtime) wrapSynchronousResources(registrar *stagingRegistrar) {
 			continue
 		}
 		registrar.capabilities[name] = localAsyncCapability{
-			runtime: runtime, synchronous: capability.(SyncCapability),
+			runtime:     runtime,
+			synchronous: capability.(SyncCapability),
+			revision: ResourceRevision(
+				manifest,
+				OperationKindCapability,
+				name,
+				capability.Spec(),
+			),
 		}
 	}
 }
@@ -171,14 +202,16 @@ func (runtime *Runtime) submitLocalOperation(
 	ctx context.Context,
 	kind OperationKind,
 	resource string,
+	resourceRevision string,
 	request OperationRequest,
 	execute operationExecutor,
 ) (Operation, error) {
 	record, _, err := runtime.operations.Submit(ctx, OperationRecord{
-		Operation: Operation{IdempotencyKey: request.IdempotencyKey},
-		Kind:      kind,
-		Resource:  resource,
-		Input:     append(json.RawMessage(nil), request.Input...),
+		Operation:        Operation{IdempotencyKey: request.IdempotencyKey},
+		Kind:             kind,
+		Resource:         resource,
+		ResourceRevision: resourceRevision,
+		Input:            append(json.RawMessage(nil), request.Input...),
 	})
 	if err != nil {
 		return Operation{}, err
@@ -222,20 +255,70 @@ func (runtime *Runtime) executeLocalOperation(
 	id string,
 	execute operationExecutor,
 ) {
-	record, err := runtime.operations.Get(ctx, id)
-	if err != nil || record.Operation.Terminal() {
+	record, err := runtime.operations.Claim(
+		ctx,
+		id,
+		runtime.operationWorkerID,
+		time.Now().UTC(),
+		runtime.operationLease,
+	)
+	if err != nil {
+		if !errors.Is(err, ErrOperationClaimed) {
+			runtime.logger.Debug(
+				"claim local operation",
+				"operation_id",
+				id,
+				"error",
+				err,
+			)
+		}
 		return
 	}
-	if record.Operation.State == OperationPending {
-		record, err = runtime.operations.Transition(
-			ctx, id, record.Operation.Revision, OperationRunning, nil, "",
+	token := record.Execution.Token
+	executionCtx, cancelExecution := context.WithCancel(ctx)
+	defer cancelExecution()
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	defer stopHeartbeat()
+	heartbeatDone := make(chan struct{})
+	leaseLost := make(chan error, 1)
+	go runtime.renewOperationLease(
+		heartbeatCtx,
+		id,
+		token,
+		cancelExecution,
+		heartbeatDone,
+		leaseLost,
+	)
+	output, executeErr := execute(executionCtx, record.Input)
+	stopHeartbeat()
+	<-heartbeatDone
+	select {
+	case lostErr := <-leaseLost:
+		runtime.logger.Warn(
+			"local operation lease lost",
+			"operation_id",
+			id,
+			"error",
+			lostErr,
 		)
-		if err != nil {
-			return
-		}
+		return
+	default:
 	}
-	output, executeErr := execute(ctx, record.Input)
-	if errors.Is(executeErr, context.Canceled) && ctx.Err() != nil {
+	if ctx.Err() != nil {
+		_, releaseErr := runtime.operations.Release(
+			context.Background(),
+			id,
+			token,
+		)
+		if releaseErr != nil && !errors.Is(releaseErr, ErrOperationFence) {
+			runtime.logger.Error(
+				"release local operation",
+				"operation_id",
+				id,
+				"error",
+				releaseErr,
+			)
+		}
 		return
 	}
 	state := OperationSucceeded
@@ -245,11 +328,55 @@ func (runtime *Runtime) executeLocalOperation(
 		output = nil
 		errorText = executeErr.Error()
 	}
-	_, err = runtime.operations.Transition(
-		context.Background(), id, record.Operation.Revision, state, output, errorText,
+	_, err = runtime.operations.Complete(
+		context.Background(),
+		id,
+		token,
+		state,
+		output,
+		errorText,
 	)
-	if err != nil && !errors.Is(err, ErrOperationConflict) {
+	if err != nil && !errors.Is(err, ErrOperationFence) {
 		runtime.logger.Error("complete local operation", "operation_id", id, "error", err)
+	}
+}
+
+func (runtime *Runtime) renewOperationLease(
+	ctx context.Context,
+	id string,
+	token string,
+	cancelExecution context.CancelFunc,
+	done chan<- struct{},
+	lost chan<- error,
+) {
+	defer close(done)
+	interval := runtime.operationLease / 3
+	if interval < time.Millisecond {
+		interval = time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			_, err := runtime.operations.Renew(
+				ctx,
+				id,
+				token,
+				now.UTC(),
+				runtime.operationLease,
+			)
+			if err != nil {
+				select {
+				case lost <- err:
+				default:
+				}
+				cancelExecution()
+				return
+			}
+		}
 	}
 }
 

@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -16,7 +15,6 @@ type PluginReference struct {
 	URI         string            `json:"uri,omitempty"`
 	Description string            `json:"description,omitempty"`
 	Labels      map[string]string `json:"labels,omitempty"`
-	Config      json.RawMessage   `json:"config,omitempty"`
 	Source      Source            `json:"-"`
 }
 
@@ -86,7 +84,6 @@ func (registry *PluginRegistry) Register(reference PluginReference) error {
 		}
 	}
 	reference.Labels = cloneLabels(reference.Labels)
-	reference.Config = append(json.RawMessage(nil), reference.Config...)
 
 	registry.mu.Lock()
 	defer registry.mu.Unlock()

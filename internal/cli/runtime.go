@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"path/filepath"
+	"net/url"
 	"strings"
 	"time"
 
@@ -19,12 +19,14 @@ import (
 	"github.com/lincyaw/ag/plugins/openai"
 	otelplugin "github.com/lincyaw/ag/plugins/otel"
 	"github.com/lincyaw/ag/sdk"
+	agentruntime "github.com/lincyaw/ag/sdk/runtime"
+	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
 type runningRuntime struct {
-	runtime   *sdk.Runtime
+	runtime   *agentruntime.Runtime
 	telemetry *telemetry.Runtime
 }
 
@@ -52,24 +54,16 @@ func startRuntime(
 		defer cancel()
 		return nil, errors.Join(cause, observability.Shutdown(closeCtx))
 	}
-	trajectories, err := sdk.NewFileTrajectoryStore(filepath.Join(
-		config.State.Directory,
-		"trajectories",
-	))
+	storage, err := openStateBackend(ctx, config)
 	if err != nil {
-		return cleanupTelemetry(err)
+		return cleanupTelemetry(fmt.Errorf("configure state backend: %w", err))
 	}
-	outbox, err := sdk.NewFileOutboxStore(filepath.Join(config.State.Directory, "outbox"))
-	if err != nil {
-		return cleanupTelemetry(err)
-	}
-	operations, err := sdk.NewFileOperationStore(filepath.Join(config.State.Directory, "operations"))
-	if err != nil {
-		return cleanupTelemetry(err)
-	}
-	runtime, err := sdk.NewRuntime(sdk.RuntimeConfig{
-		Logger: logger, Tracer: observability.Tracer, Meter: observability.Meter,
-		Trajectories: trajectories, Operations: operations, Outbox: outbox,
+	runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{
+		RuntimeVersion: version,
+		Logger:         logger,
+		Tracer:         observability.Tracer,
+		Meter:          observability.Meter,
+		Storage:        storage,
 	})
 	if err != nil {
 		return cleanupTelemetry(err)
@@ -92,6 +86,42 @@ func startRuntime(
 		}
 	}
 	return running, nil
+}
+
+func openStateBackend(
+	ctx context.Context,
+	config appconfig.Config,
+) (sdk.StateBackend, error) {
+	namespace := strings.TrimSpace(config.State.Namespace)
+	if strings.TrimSpace(config.State.BackendURI) != "" {
+		rawURI := config.State.BackendURI
+		if namespace != "" {
+			parsed, err := url.Parse(rawURI)
+			if err != nil {
+				return nil, fmt.Errorf("parse state backend URI: %w", err)
+			}
+			query := parsed.Query()
+			if existing := strings.TrimSpace(query.Get("namespace")); existing != "" &&
+				existing != namespace {
+				return nil, fmt.Errorf(
+					"state namespace %q conflicts with backend URI namespace %q",
+					namespace,
+					existing,
+				)
+			}
+			query.Set("namespace", namespace)
+			parsed.RawQuery = query.Encode()
+			rawURI = parsed.String()
+		}
+		return sdkstorage.NewDefaultStorageRegistry().Open(ctx, rawURI)
+	}
+	if namespace != "" {
+		return sdkstorage.NewFileStateBackendWithNamespace(
+			config.State.Directory,
+			namespace,
+		)
+	}
+	return sdkstorage.NewFileStateBackend(config.State.Directory)
 }
 
 func (running *runningRuntime) close(stderr io.Writer) {

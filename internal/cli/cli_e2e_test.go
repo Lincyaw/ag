@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/lincyaw/ag/sdk"
+	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 )
 
 func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
@@ -43,8 +44,8 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 		"--bash",
 	)
 	var firstOutput struct {
-		SessionID string     `json:"session_id"`
-		Result    sdk.Result `json:"result"`
+		SessionID string              `json:"session_id"`
+		Result    agentruntime.Result `json:"result"`
 	}
 	decodeJSON(t, first.stdout, &firstOutput)
 	if firstOutput.SessionID != "cli-e2e" || firstOutput.Result.Output != "first run complete" ||
@@ -85,8 +86,8 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 		"--bash",
 	)
 	var secondOutput struct {
-		SessionID string     `json:"session_id"`
-		Result    sdk.Result `json:"result"`
+		SessionID string              `json:"session_id"`
+		Result    agentruntime.Result `json:"result"`
 	}
 	decodeJSON(t, second.stdout, &secondOutput)
 	if secondOutput.Result.Output != "resumed run complete" || secondOutput.Result.Turns != 1 {

@@ -1,4 +1,4 @@
-package sdk
+package storage
 
 import (
 	"context"
@@ -64,4 +64,35 @@ func writeJSONAtomic(
 		return fmt.Errorf("sync %s directory: %w", label, err)
 	}
 	return nil
+}
+
+func WriteJSONAtomic(
+	ctx context.Context,
+	directory string,
+	path string,
+	prefix string,
+	label string,
+	value any,
+) error {
+	return writeJSONAtomic(ctx, directory, path, prefix, label, value)
+}
+
+func syncDirectory(directory string) error {
+	handle, err := os.Open(directory)
+	if err != nil {
+		return fmt.Errorf("open directory for sync: %w", err)
+	}
+	defer handle.Close()
+	if err := handle.Sync(); err != nil {
+		return fmt.Errorf("sync directory: %w", err)
+	}
+	return nil
+}
+
+func SyncDirectory(directory string) error {
+	return syncDirectory(directory)
+}
+
+func FileLocksAreMultiProcessSafe() bool {
+	return fileLocksAreMultiProcessSafe
 }

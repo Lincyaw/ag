@@ -16,6 +16,7 @@ import (
 
 	"github.com/lincyaw/ag/pluginrpc"
 	"github.com/lincyaw/ag/sdk"
+	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -27,6 +28,7 @@ type Config struct {
 	RegistryURI     string
 	LeaseTTL        time.Duration
 	StateDirectory  string
+	StorageURI      string
 	TLSCertFile     string
 	TLSKeyFile      string
 	MaxMessageBytes int
@@ -38,6 +40,7 @@ type Ready struct {
 	Name           string `json:"name"`
 	URI            string `json:"uri"`
 	StateDirectory string `json:"state_directory"`
+	Storage        string `json:"storage"`
 	PID            int    `json:"pid"`
 }
 
@@ -67,20 +70,37 @@ func Serve(ctx context.Context, config Config) error {
 	if err := manifest.Validate(); err != nil {
 		return err
 	}
-	stateDirectory, err := resolveStateDirectory(config.StateDirectory, manifest.Name)
-	if err != nil {
-		return err
+	stateDirectory := ""
+	var storage sdk.StateBackend
+	var err error
+	if strings.TrimSpace(config.StorageURI) != "" {
+		storage, err = sdkstorage.NewDefaultStorageRegistry().Open(
+			ctx,
+			config.StorageURI,
+		)
+	} else {
+		stateDirectory, err = resolveStateDirectory(config.StateDirectory, manifest.Name)
+		if err == nil {
+			storage, err = sdkstorage.NewFileStateBackend(stateDirectory)
+		}
 	}
-	operations, err := sdk.NewFileOperationStore(filepath.Join(stateDirectory, "operations"))
 	if err != nil {
-		return err
+		return fmt.Errorf("configure plugin state backend: %w", err)
 	}
-	inbox, err := sdk.NewFileOutboxStore(filepath.Join(stateDirectory, "inbox"))
+	closeStorage := true
+	defer func() {
+		if closeStorage {
+			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = storage.Close(closeCtx)
+		}
+	}()
+	inbox, err := storage.Deliveries(sdk.PluginInboxQueue)
 	if err != nil {
 		return err
 	}
 	adapter, err := pluginrpc.NewServer(ctx, pluginrpc.ServerConfig{
-		Plugin: config.Plugin, Operations: operations, Inbox: inbox, Logger: config.Logger,
+		Plugin: config.Plugin, Operations: storage.Operations(), Inbox: inbox, Logger: config.Logger,
 	})
 	if err != nil {
 		return err
@@ -132,7 +152,8 @@ func Serve(ctx context.Context, config Config) error {
 		go renewLease(runContext, registry, lease, config.LeaseTTL, leaseDone)
 	}
 	if err := json.NewEncoder(config.ReadyWriter).Encode(Ready{
-		Name: manifest.Name, URI: uri, StateDirectory: stateDirectory, PID: os.Getpid(),
+		Name: manifest.Name, URI: uri, StateDirectory: stateDirectory,
+		Storage: storage.String(), PID: os.Getpid(),
 	}); err != nil {
 		cancel()
 		stopServer(server)
@@ -161,6 +182,8 @@ func Serve(ctx context.Context, config Config) error {
 	}
 	closeContext, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	runErr = errors.Join(runErr, adapter.Close(closeContext))
+	runErr = errors.Join(runErr, storage.Close(closeContext))
+	closeStorage = false
 	closeCancel()
 	stopServer(server)
 	select {

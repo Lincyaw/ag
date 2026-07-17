@@ -13,13 +13,15 @@ import (
 
 func toProtoManifest(manifest sdk.Manifest) *pluginv1.Manifest {
 	return &pluginv1.Manifest{
-		Name:        manifest.Name,
-		Version:     manifest.Version,
-		Description: manifest.Description,
-		ApiVersion:  uint32(manifest.APIVersion),
-		Requires:    append([]string(nil), manifest.Requires...),
-		Conflicts:   append([]string(nil), manifest.Conflicts...),
-		Registers:   append([]string(nil), manifest.Registers...),
+		Name:          manifest.Name,
+		Version:       manifest.Version,
+		Description:   manifest.Description,
+		ApiVersion:    uint32(manifest.APIVersion),
+		MinApiVersion: uint32(manifest.MinAPIVersion),
+		MaxApiVersion: uint32(manifest.MaxAPIVersion),
+		Requires:      append([]string(nil), manifest.Requires...),
+		Conflicts:     append([]string(nil), manifest.Conflicts...),
+		Registers:     append([]string(nil), manifest.Registers...),
 	}
 }
 
@@ -28,13 +30,15 @@ func fromProtoManifest(manifest *pluginv1.Manifest) (sdk.Manifest, error) {
 		return sdk.Manifest{}, errors.New("plugin description has no manifest")
 	}
 	result := sdk.Manifest{
-		Name:        manifest.GetName(),
-		Version:     manifest.GetVersion(),
-		Description: manifest.GetDescription(),
-		APIVersion:  int(manifest.GetApiVersion()),
-		Requires:    append([]string(nil), manifest.GetRequires()...),
-		Conflicts:   append([]string(nil), manifest.GetConflicts()...),
-		Registers:   append([]string(nil), manifest.GetRegisters()...),
+		Name:          manifest.GetName(),
+		Version:       manifest.GetVersion(),
+		Description:   manifest.GetDescription(),
+		APIVersion:    int(manifest.GetApiVersion()),
+		MinAPIVersion: int(manifest.GetMinApiVersion()),
+		MaxAPIVersion: int(manifest.GetMaxApiVersion()),
+		Requires:      append([]string(nil), manifest.GetRequires()...),
+		Conflicts:     append([]string(nil), manifest.GetConflicts()...),
+		Registers:     append([]string(nil), manifest.GetRegisters()...),
 	}
 	if err := result.Validate(); err != nil {
 		return sdk.Manifest{}, err
@@ -372,9 +376,15 @@ func toProtoDelivery(delivery sdk.Delivery) (*pluginv1.Delivery, error) {
 		return nil, err
 	}
 	return &pluginv1.Delivery{
-		Id: delivery.ID, Sequence: delivery.Sequence, Plugin: delivery.Plugin,
-		Subscription: delivery.Subscription, Partition: delivery.Partition,
-		Event: event, Attempt: int32(delivery.Attempt),
+		Id:               delivery.ID,
+		Sequence:         delivery.Sequence,
+		Plugin:           delivery.Plugin,
+		PluginVersion:    delivery.PluginVersion,
+		Subscription:     delivery.Subscription,
+		ResourceRevision: delivery.ResourceRevision,
+		Partition:        delivery.Partition,
+		Event:            event,
+		Attempt:          int32(delivery.Attempt),
 	}, nil
 }
 
@@ -388,9 +398,13 @@ func fromProtoDelivery(delivery *pluginv1.Delivery) (sdk.Delivery, error) {
 	}
 	return sdk.Delivery{
 		ID: delivery.GetId(), Sequence: delivery.GetSequence(),
-		Plugin: delivery.GetPlugin(), Subscription: delivery.GetSubscription(),
-		Partition: delivery.GetPartition(), Event: event,
-		Attempt: int(delivery.GetAttempt()),
+		Plugin:           delivery.GetPlugin(),
+		PluginVersion:    delivery.GetPluginVersion(),
+		Subscription:     delivery.GetSubscription(),
+		ResourceRevision: delivery.GetResourceRevision(),
+		Partition:        delivery.GetPartition(),
+		Event:            event,
+		Attempt:          int(delivery.GetAttempt()),
 	}, nil
 }
 

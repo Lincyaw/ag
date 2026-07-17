@@ -1,9 +1,11 @@
-package sdk
+package storage
 
 import (
 	"context"
 	"errors"
 	"testing"
+
+	. "github.com/lincyaw/ag/sdk"
 )
 
 func TestFileOperationStorePreservesIdempotencyAndCASAcrossRestart(t *testing.T) {

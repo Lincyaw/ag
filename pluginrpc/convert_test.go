@@ -49,3 +49,23 @@ func TestSchemaConversionNormalizesGoJSONValues(t *testing.T) {
 		t.Fatalf("capability required = %#v", got)
 	}
 }
+
+func TestManifestAPIRangeRoundTripsThroughProtocol(t *testing.T) {
+	t.Parallel()
+	manifest := sdk.Manifest{
+		Name:          "range-aware",
+		Version:       "1.2.3",
+		Description:   "supports a protocol range",
+		MinAPIVersion: sdk.APIVersion,
+		MaxAPIVersion: sdk.APIVersion + 1,
+		Requires:      []string{sdk.ToolResource("reader")},
+		Registers:     []string{sdk.ProviderResource("model")},
+	}
+	roundTripped, err := fromProtoManifest(toProtoManifest(manifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(roundTripped, manifest) {
+		t.Fatalf("manifest round trip = %#v, want %#v", roundTripped, manifest)
+	}
+}

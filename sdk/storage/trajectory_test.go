@@ -1,4 +1,4 @@
-package sdk
+package storage
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	. "github.com/lincyaw/ag/sdk"
 )
 
 func TestTrajectoryStoresPreserveBranchesAndRejectConcurrentLostUpdates(

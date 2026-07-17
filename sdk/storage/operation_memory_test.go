@@ -1,4 +1,4 @@
-package sdk
+package storage
 
 import (
 	"context"
@@ -6,6 +6,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	. "github.com/lincyaw/ag/sdk"
 )
 
 func TestMemoryOperationStoreConcurrentIdempotentSubmitAndCAS(t *testing.T) {
@@ -22,7 +25,7 @@ func TestMemoryOperationStoreConcurrentIdempotentSubmitAndCAS(t *testing.T) {
 			defer wait.Done()
 			record, wasCreated, err := store.Submit(ctx, OperationRecord{
 				Operation: Operation{
-					ID:             newDispatchID(),
+					ID:             NewID(),
 					IdempotencyKey: "trajectory-entry-1",
 				},
 				Kind:     OperationKindTool,
@@ -103,6 +106,78 @@ func TestMemoryOperationStoreConcurrentIdempotentSubmitAndCAS(t *testing.T) {
 		"",
 	); err == nil {
 		t.Fatal("terminal operation transitioned back to running")
+	}
+}
+
+func TestOperationLeaseFencesExpiredWorker(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := NewMemoryOperationStore()
+	submitted, _, err := store.Submit(ctx, OperationRecord{
+		Operation: Operation{IdempotencyKey: "fenced-request"},
+		Kind:      OperationKindTool,
+		Resource:  "writer",
+		Input:     []byte(`{"value":"one"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	first, err := store.Claim(
+		ctx,
+		submitted.Operation.ID,
+		"worker-a",
+		now,
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(
+		ctx,
+		submitted.Operation.ID,
+		"worker-b",
+		now.Add(30*time.Minute),
+		time.Hour,
+	); !errors.Is(err, ErrOperationClaimed) {
+		t.Fatalf("live lease claim = %v, want ErrOperationClaimed", err)
+	}
+	second, err := store.Claim(
+		ctx,
+		submitted.Operation.ID,
+		"worker-b",
+		now.Add(2*time.Hour),
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Execution.Token == second.Execution.Token {
+		t.Fatal("takeover reused the prior fencing token")
+	}
+	if _, err := store.Complete(
+		ctx,
+		submitted.Operation.ID,
+		first.Execution.Token,
+		OperationSucceeded,
+		[]byte(`{"winner":"a"}`),
+		"",
+	); !errors.Is(err, ErrOperationFence) {
+		t.Fatalf("stale completion = %v, want ErrOperationFence", err)
+	}
+	completed, err := store.Complete(
+		ctx,
+		submitted.Operation.ID,
+		second.Execution.Token,
+		OperationSucceeded,
+		[]byte(`{"winner":"b"}`),
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(completed.Operation.Output) != `{"winner":"b"}` {
+		t.Fatalf("completed output = %s", completed.Operation.Output)
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/lincyaw/ag/pluginrpc"
 	pluginv1 "github.com/lincyaw/ag/pluginrpc/v1"
 	"github.com/lincyaw/ag/sdk"
+	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -87,7 +88,7 @@ func TestPythonPluginProcessImplementsCrossLanguageContract(t *testing.T) {
 	if err := pluginrpc.RegisterDrivers(registry, pluginrpc.ClientConfig{}); err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := sdk.NewRuntime(sdk.RuntimeConfig{
+	runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{
 		OperationPoll:       time.Millisecond,
 		DeliveryPoll:        time.Millisecond,
 		DeliveryWorkers:     2,
@@ -118,11 +119,14 @@ func TestPythonPluginProcessImplementsCrossLanguageContract(t *testing.T) {
 		t.Fatalf("Python plugin catalog = %#v", catalog)
 	}
 
-	session, err := runtime.NewSession(context.Background(), sdk.SessionConfig{
-		ID:       "python-session",
-		Provider: "python-model",
-		MaxTurns: 3,
-	})
+	session, err := runtime.NewSession(
+		context.Background(),
+		agentruntime.SessionConfig{
+			ID:       "python-session",
+			Provider: "python-model",
+			MaxTurns: 3,
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,8 +201,8 @@ func TestPythonPluginProcessImplementsCrossLanguageContract(t *testing.T) {
 		)
 	}
 	var cliOutput struct {
-		SessionID string     `json:"session_id"`
-		Result    sdk.Result `json:"result"`
+		SessionID string              `json:"session_id"`
+		Result    agentruntime.Result `json:"result"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &cliOutput); err != nil {
 		t.Fatalf("decode Python CLI output: %v\n%s", err, stdout.String())

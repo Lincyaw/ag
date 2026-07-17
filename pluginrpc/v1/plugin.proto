@@ -43,6 +43,8 @@ message Manifest {
   repeated string requires = 5;
   repeated string conflicts = 6;
   repeated string registers = 7;
+  uint32 min_api_version = 8;
+  uint32 max_api_version = 9;
 }
 
 message ProviderSpec {
@@ -227,6 +229,8 @@ message Delivery {
   string partition = 5;
   EventEnvelope event = 6;
   int32 attempt = 7;
+  string plugin_version = 8;
+  string resource_revision = 9;
 }
 
 message DeliverRequest {

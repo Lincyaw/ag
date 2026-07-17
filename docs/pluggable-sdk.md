@@ -37,24 +37,82 @@ identical mount, ownership, dispatch, and unmount behavior.
 
 ```text
 application / CLI / gateway
-            |
-            v
-           sdk
-            |
-            v
-      plugin protocol
-            ^
-            |
- standalone plugins and optional language helpers
+        |             |
+        v             v
+   sdk/runtime       sdk contracts and ports
+        |             ^
+        +-------------+
+        |
+        v
+ sdk/storage (optional reference implementations)
 
-sdk implementation -> internal mechanisms only
-kernel -> no concrete plugin package
+pluginrpc -> sdk contracts and ports
+standalone plugins -> versioned plugin protocol
 ```
 
-Presenters import the public `sdk` package and never runtime internals.
-Plugins implement the versioned protocol. In-process Go plugins may use public
-SDK interfaces as a convenience, but must never import runtime internals or
-another plugin package.
+The package layout makes those dependency layers visible:
+
+```text
+sdk/*.go           data contracts and ports only
+sdk/runtime/       execution, sessions, dispatch, and recovery
+sdk/storage/       memory/file implementations and storage URI drivers
+pluginrpc/         protobuf transport adapters
+plugins/           optional plugin implementations
+```
+
+Presenters compose `sdk/runtime` with SDK ports. Plugins implement the
+versioned protocol. In-process Go plugins may use public SDK interfaces as a
+convenience, but must never import `sdk/runtime` or another plugin package.
+The execution engine depends on `TrajectoryStore`, `OperationStore`,
+`DeliveryStore`, and `StateBackend`; it does not depend on file store types.
+
+## State backend bootstrap boundary
+
+Trajectory, operation, and delivery persistence are SDK ports. Their concrete
+shape is not assumed to be a file:
+
+```go
+type StateBackend interface {
+    Trajectories() TrajectoryStore
+    Operations() OperationStore
+    Deliveries(name string) (DeliveryStore, error)
+    Capabilities() StorageCapabilities
+    Namespace() string
+    Prune(context.Context, RetentionPolicy) (PruneResult, error)
+    Health(context.Context) error
+    Close(context.Context) error
+}
+
+type StorageDriver interface {
+    Scheme() string
+    Open(context.Context, *url.URL) (StateBackend, error)
+}
+```
+
+Applications can register `postgres://`, `s3://`, network, or other drivers
+with `StorageRegistry` without changing the runtime. `memory://` and `file://`
+are reference drivers in `sdk/storage`.
+
+Storage is a bootstrap extension rather than an ordinary runtime plugin. The
+runtime needs its source of truth before it can recover operations, load a
+trajectory, deliver plugin events, or mount plugins. Making storage depend on
+the plugin composition it must restore would create a boot cycle.
+
+`StorageCapabilities` explicitly reports durability, multi-process safety,
+cross-store atomicity, fencing, pagination, maintenance, namespace isolation,
+and encryption-at-rest. Callers must not infer these properties from a URI
+scheme. Built-in memory and file backends do not claim cross-store atomicity or
+encryption at rest.
+
+The built-in file backend is a local/reference implementation. It uses
+cross-process file locks where the platform supports them, atomic file
+replacement, restrictive permissions, namespace partitions, pagination, and
+retention cleanup. It still rewrites whole JSON state files and does not provide
+one transaction across trajectory, operation, and delivery state; large or
+distributed deployments should provide a database/object/network backend.
+
+The runtime owns and closes a supplied backend by default.
+`StorageBorrowed` transfers lifecycle ownership to the embedding application.
 
 ## Unified plugin entry
 
@@ -111,15 +169,21 @@ Each plugin has a manifest:
 
 ```go
 type Manifest struct {
-    Name        string
-    Version     string
-    Description string
-    APIVersion  int
-    Requires    []string
-    Conflicts   []string
-    Registers   []string
+    Name          string
+    Version       string
+    Description   string
+    APIVersion    int // legacy exact version
+    MinAPIVersion int
+    MaxAPIVersion int
+    Requires      []string
+    Conflicts     []string
+    Registers     []string
 }
 ```
+
+A plugin can declare a compatible API range. `APIVersion` remains the legacy
+exact-version form. Mount succeeds only when the current SDK API is inside the
+declared range.
 
 Contribution resource IDs are stable strings:
 
@@ -206,13 +270,16 @@ the next hook receives the event.
 
 Hooks are synchronous only because their Patch, Block, or Action is required
 before the loop can cross the boundary. They have an explicit short timeout;
-active hooks default to `fail_closed`, so a broken permission or mutation
-policy cannot silently disappear.
+zero uses the runtime default (one second unless configured). Active hooks
+default to `fail_closed`, so a broken permission or mutation policy cannot
+silently disappear or block the runtime indefinitely.
 
 Passive observation is not a Hook. A `Subscriber` receives an immutable event
-from a durable outbox through its inbox. Delivery is asynchronous and cannot
-delay or fail the producer. Subscribers cannot patch, block, or choose an
-action. The OpenTelemetry projection is the first built-in subscriber plugin.
+from a durable delivery queue through its inbox. Subscriber execution is
+asynchronous and cannot delay the producer. The durable enqueue is part of
+publishing the event: an enqueue failure is returned instead of being logged
+and lost. Subscribers cannot patch, block, or choose an action. The
+OpenTelemetry projection is the first built-in subscriber plugin.
 
 Each delivery has a stable delivery ID, event ID, subscription ID, attempt,
 and timestamp. Delivery is at-least-once: the receiver durably deduplicates by
@@ -278,11 +345,19 @@ optimization may later resume a suspended trajectory without changing this
 operation contract. Cancellation is best-effort once an external side effect
 has started.
 
+Workers claim operations with a time-bounded lease and unique fencing token,
+renew the lease while working, and must present the token to complete. A worker
+whose lease expired cannot overwrite a result committed by its replacement.
+This fences stale state writes; it does not make an external side effect
+exactly-once.
+
 Operation IDs and idempotency keys are distinct. Retrying Submit with the same
-idempotency key returns the original operation. Receivers may execute a command
-more than once after a crash unless the concrete effect is idempotent or uses a
-plugin-owned transaction. The SDK therefore guarantees at-least-once delivery,
-not exactly-once effects.
+idempotency key and resource revision returns the original operation. Resource
+revision includes plugin version and the resource specification, so a new
+plugin version cannot inherit an incompatible old result. Receivers may execute
+a command more than once after a crash unless the concrete effect is idempotent
+or uses a plugin-owned transaction. The SDK therefore guarantees at-least-once
+execution, not exactly-once effects.
 
 ## Inbox and outbox
 
@@ -293,12 +368,23 @@ host outbox --event/command--> plugin inbox
 host inbox  <--state/result--- plugin outbox
 ```
 
+Inbox and outbox are topology roles, not two persistence interfaces. Both use
+the neutral `DeliveryStore` port and are opened as different named queues
+(`host-outbox` and `plugin-inbox`) from `StateBackend`. This intentionally
+shares queue mechanics without accidentally sharing queue contents.
+
 An outbox record is appended before publication. An inbox record is persisted
 and deduplicated before acknowledgement. Dispatch workers lease records, renew
 while processing, retry expired leases, and move repeatedly failing records to
-a dead-letter state. Queue storage is a pluggable SDK port; the first durable
-implementation targets one process/host and the RPC protocol remains suitable
-for external brokers later.
+a dead-letter state. Delivery identity includes the target plugin version and
+resource revision, so stale work is dead-lettered instead of being delivered to
+a newly mounted implementation. Queue storage remains replaceable by an
+external broker-backed `StateBackend`.
+
+The built-in backends do not offer a transaction spanning event state and the
+delivery queue (`AtomicState` is false). Enqueue errors therefore propagate to
+the caller; the runtime does not claim transactional-outbox semantics it cannot
+provide.
 
 ## Trajectory contract
 
@@ -307,12 +393,13 @@ state. It is distinct from telemetry.
 
 ```go
 type TrajectoryEntry struct {
-    ID         string
-    ParentID   string
-    Kind       string
-    Timestamp  time.Time
-    Generation uint64
-    Payload    json.RawMessage
+    ID             string
+    ParentID       string
+    Kind           string
+    Timestamp      time.Time
+    Generation     uint64
+    PayloadVersion uint32
+    Payload        json.RawMessage
 }
 
 type TrajectoryStore interface {
@@ -320,6 +407,8 @@ type TrajectoryStore interface {
     Append(... expectedHead ...)
     Load(...)
     List(...)
+    ListPage(...)
+    Delete(...)
 }
 ```
 
@@ -340,8 +429,19 @@ Rollback restores agent/runtime state only. External effects such as file
 writes or network calls require an explicit compensating capability from the
 owning plugin; the kernel never pretends those effects were undone.
 
-`TrajectoryStore` is pluggable. The SDK provides an in-memory implementation
-for tests and a durable local implementation for CLI/gateway use.
+Trajectory and entry payloads carry explicit schema versions. A trajectory also
+captures the runtime version, SDK API version, requested provider, system and
+composition digests, mounted plugin versions, and resource specifications.
+`ResumeExact` (the default) restores checkpoint state and rejects a changed
+composition; `ResumeCurrent` deliberately reuses recorded messages with the
+current configuration. Legacy trajectories without an environment snapshot
+remain readable but cannot provide the exact-composition guarantee.
+
+`TrajectoryStore` is the runtime dependency and is fully pluggable. The SDK
+ships memory and file implementations under `sdk/storage`; database, object
+store, and network implementations satisfy the same interface. CLI trajectory
+commands open a `StateBackend` and use `backend.Trajectories()` rather than
+constructing a file store.
 
 The loop emits complete events carrying trajectory, entry, turn, plugin, and
 generation identifiers. An OpenTelemetry plugin subscribes to those events and
@@ -428,6 +528,8 @@ ag plugin inspect <name-or-uri>
 ag trajectory list
 ag trajectory show <id> [--head <entry-id>]
 ag trajectory rollback <id> <checkpoint-id>
+ag state inspect
+ag state prune --before <RFC3339-or-duration>
 ag version
 ```
 

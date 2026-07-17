@@ -1,10 +1,11 @@
-package sdk
+package runtime
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -278,7 +279,29 @@ func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	if failed.Head == stableHead {
-		t.Fatal("failed attempt did not leave an observable partial tail")
+		t.Fatal("failed attempt did not record a restore")
+	}
+	var failedUserID string
+	for _, entry := range failed.Entries {
+		if entry.Kind == TrajectoryKindUserMessage &&
+			strings.Contains(string(entry.Payload), "this attempt fails") {
+			failedUserID = entry.ID
+		}
+	}
+	if failedUserID == "" {
+		t.Fatal("failed attempt was not retained for audit")
+	}
+	failedBranch, err := failed.Branch(failed.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failedBranch[len(failedBranch)-1].Kind != TrajectoryKindRestore {
+		t.Fatalf("failed prompt head = %#v, want restore", failedBranch[len(failedBranch)-1])
+	}
+	for _, entry := range failedBranch {
+		if entry.ID == failedUserID {
+			t.Fatalf("failed entry %q remained on active branch", failedUserID)
+		}
 	}
 
 	resumed, err := runtime.ResumeSession(ctx, session.ID(), SessionConfig{
@@ -292,13 +315,16 @@ func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if restored.Head != failed.Head {
+		t.Fatalf("resume appended a redundant restore: %q -> %q", failed.Head, restored.Head)
+	}
 	branch, err := restored.Branch(restored.Head)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, entry := range branch {
-		if entry.ParentID == failed.Head || entry.ID == failed.Head {
-			t.Fatalf("restored branch retained failed tail entry %q", failed.Head)
+		if entry.ID == failedUserID {
+			t.Fatalf("restored branch retained failed tail entry %q", failedUserID)
 		}
 	}
 	if got := resumed.Messages(); len(got) != len(result.Messages) {

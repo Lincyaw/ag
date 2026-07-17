@@ -13,6 +13,7 @@ import (
 
 	pluginv1 "github.com/lincyaw/ag/pluginrpc/v1"
 	"github.com/lincyaw/ag/sdk"
+	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -20,13 +21,14 @@ import (
 type ServerConfig struct {
 	Plugin            sdk.Plugin
 	Operations        sdk.OperationStore
-	Inbox             sdk.OutboxStore
+	Inbox             sdk.DeliveryStore
 	Logger            *slog.Logger
 	InboxWorkers      int
 	InboxLease        time.Duration
 	InboxPoll         time.Duration
 	SubscriberTimeout time.Duration
 	InboxMaxAttempts  int
+	OperationLease    time.Duration
 }
 
 type Server struct {
@@ -34,13 +36,15 @@ type Server struct {
 	manifest          sdk.Manifest
 	registrar         *serverRegistrar
 	operations        sdk.OperationStore
-	inbox             sdk.OutboxStore
+	inbox             sdk.DeliveryStore
 	logger            *slog.Logger
 	inboxWorkers      int
 	inboxLease        time.Duration
 	inboxPoll         time.Duration
 	subscriberTimeout time.Duration
 	inboxMaxAttempts  int
+	operationLease    time.Duration
+	operationWorkerID string
 	context           context.Context
 	cancel            context.CancelFunc
 	wait              sync.WaitGroup
@@ -64,10 +68,10 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 		return nil, err
 	}
 	if config.Operations == nil {
-		config.Operations = sdk.NewMemoryOperationStore()
+		config.Operations = sdkstorage.NewMemoryOperationStore()
 	}
 	if config.Inbox == nil {
-		config.Inbox = sdk.NewMemoryOutboxStore()
+		config.Inbox = sdkstorage.NewMemoryDeliveryStore()
 	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
@@ -87,10 +91,18 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 	if config.InboxMaxAttempts == 0 {
 		config.InboxMaxAttempts = 8
 	}
+	if config.OperationLease == 0 {
+		config.OperationLease = 30 * time.Second
+	}
 	if config.InboxWorkers < 1 || config.InboxLease <= 0 ||
 		config.InboxPoll <= 0 || config.SubscriberTimeout <= 0 ||
-		config.InboxMaxAttempts < 1 {
+		config.InboxMaxAttempts < 1 || config.OperationLease <= 0 {
 		return nil, errors.New("RPC server worker settings must be positive")
+	}
+	if config.SubscriberTimeout >= config.InboxLease {
+		return nil, errors.New(
+			"subscriber timeout must be shorter than the inbox lease",
+		)
 	}
 	serverContext, cancel := context.WithCancel(context.Background())
 	server := &Server{
@@ -104,9 +116,15 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 		inboxPoll:         config.InboxPoll,
 		subscriberTimeout: config.SubscriberTimeout,
 		inboxMaxAttempts:  config.InboxMaxAttempts,
-		context:           serverContext,
-		cancel:            cancel,
-		operationCancels:  make(map[string]context.CancelFunc),
+		operationLease:    config.OperationLease,
+		operationWorkerID: fmt.Sprintf(
+			"plugin-%s-%d",
+			manifest.Name,
+			time.Now().UnixNano(),
+		),
+		context:          serverContext,
+		cancel:           cancel,
+		operationCancels: make(map[string]context.CancelFunc),
 	}
 	if len(registrar.subscribers) > 0 {
 		for worker := range server.inboxWorkers {
@@ -371,8 +389,33 @@ func (server *Server) Deliver(
 	if delivery.Plugin != server.manifest.Name {
 		return nil, status.Errorf(codes.InvalidArgument, "delivery targets plugin %q", delivery.Plugin)
 	}
-	if server.registrar.subscribers[delivery.Subscription] == nil {
+	subscriber := server.registrar.subscribers[delivery.Subscription]
+	if subscriber == nil {
 		return nil, status.Errorf(codes.NotFound, "subscriber %q not found", delivery.Subscription)
+	}
+	expectedRevision := sdk.PluginResourceRevision(
+		server.manifest,
+		"subscriber",
+		delivery.Subscription,
+		subscriber.Spec(),
+	)
+	if delivery.PluginVersion != "" &&
+		delivery.PluginVersion != server.manifest.Version {
+		return nil, status.Errorf(
+			codes.FailedPrecondition,
+			"delivery targets plugin version %q, current version is %q",
+			delivery.PluginVersion,
+			server.manifest.Version,
+		)
+	}
+	if delivery.ResourceRevision != "" &&
+		delivery.ResourceRevision != expectedRevision {
+		return nil, status.Errorf(
+			codes.FailedPrecondition,
+			"delivery resource revision %q does not match current revision %q",
+			delivery.ResourceRevision,
+			expectedRevision,
+		)
 	}
 	if err := server.inbox.Enqueue(ctx, delivery); err != nil {
 		return nil, rpcError(err)
@@ -387,10 +430,11 @@ func (server *Server) submitStored(
 	request sdk.OperationRequest,
 ) (sdk.Operation, error) {
 	record, created, err := server.operations.Submit(ctx, sdk.OperationRecord{
-		Operation: sdk.Operation{IdempotencyKey: request.IdempotencyKey},
-		Kind:      kind,
-		Resource:  resource,
-		Input:     request.Input,
+		Operation:        sdk.Operation{IdempotencyKey: request.IdempotencyKey},
+		Kind:             kind,
+		Resource:         resource,
+		ResourceRevision: server.resourceRevision(kind, resource),
+		Input:            request.Input,
 	})
 	if err != nil {
 		return sdk.Operation{}, err
@@ -414,6 +458,9 @@ func (server *Server) getStored(
 	if record.Kind != kind || record.Resource != resource {
 		return sdk.Operation{}, fmt.Errorf("operation %q does not belong to %s %q", id, kind, resource)
 	}
+	if err := server.validateResourceRevision(record); err != nil {
+		return sdk.Operation{}, err
+	}
 	return record.Operation, nil
 }
 
@@ -430,6 +477,9 @@ func (server *Server) cancelStored(
 		}
 		if record.Kind != kind || record.Resource != resource {
 			return sdk.Operation{}, fmt.Errorf("operation %q does not belong to %s %q", id, kind, resource)
+		}
+		if err := server.validateResourceRevision(record); err != nil {
+			return sdk.Operation{}, err
 		}
 		if record.Operation.Terminal() {
 			return record.Operation, nil
@@ -464,7 +514,8 @@ func (server *Server) recoverOperations(ctx context.Context) error {
 		return fmt.Errorf("list operations for recovery: %w", err)
 	}
 	for _, record := range records {
-		if !record.Operation.Terminal() {
+		if !record.Operation.Terminal() &&
+			server.validateResourceRevision(record) == nil {
 			server.startOperation(ctx, record.Operation.ID)
 		}
 	}
@@ -486,32 +537,86 @@ func (server *Server) executeStored(parent context.Context, id string) {
 		stopServerCancel()
 		cancel()
 	}()
-	record, err := server.operations.Get(operationContext, id)
-	if err != nil || record.Operation.Terminal() {
+	record, err := server.operations.Claim(
+		operationContext,
+		id,
+		server.operationWorkerID,
+		time.Now().UTC(),
+		server.operationLease,
+	)
+	if err != nil {
+		if !errors.Is(err, sdk.ErrOperationClaimed) {
+			server.logger.Debug(
+				"claim stored operation",
+				"operation_id",
+				id,
+				"error",
+				err,
+			)
+		}
 		return
 	}
-	if record.Operation.State == sdk.OperationPending {
-		record, err = server.operations.Transition(
-			operationContext,
+	if err := server.validateResourceRevision(record); err != nil {
+		server.logger.Warn(
+			"claimed operation has stale resource revision",
+			"operation_id",
 			id,
-			record.Operation.Revision,
-			sdk.OperationRunning,
-			nil,
-			"",
+			"error",
+			err,
 		)
-		if err != nil {
-			return
-		}
+		return
 	}
+	token := record.Execution.Token
 	server.cancelMu.Lock()
 	server.operationCancels[id] = cancel
 	server.cancelMu.Unlock()
-	output, executeErr := server.executeLocal(operationContext, record)
-	cancel()
+	executionContext, cancelExecution := context.WithCancel(operationContext)
+	heartbeatContext, stopHeartbeat := context.WithCancel(operationContext)
+	heartbeatDone := make(chan struct{})
+	leaseLost := make(chan error, 1)
+	go server.renewOperationLease(
+		heartbeatContext,
+		id,
+		token,
+		cancelExecution,
+		heartbeatDone,
+		leaseLost,
+	)
+	output, executeErr := server.executeLocal(executionContext, record)
+	stopHeartbeat()
+	<-heartbeatDone
+	cancelExecution()
 	server.cancelMu.Lock()
 	delete(server.operationCancels, id)
 	server.cancelMu.Unlock()
-	if errors.Is(executeErr, context.Canceled) && server.context.Err() != nil {
+	select {
+	case lostErr := <-leaseLost:
+		server.logger.Warn(
+			"stored operation lease lost",
+			"operation_id",
+			id,
+			"error",
+			lostErr,
+		)
+		return
+	default:
+	}
+	if operationContext.Err() != nil {
+		_, releaseErr := server.operations.Release(
+			context.Background(),
+			id,
+			token,
+		)
+		if releaseErr != nil &&
+			!errors.Is(releaseErr, sdk.ErrOperationFence) {
+			server.logger.Error(
+				"release stored operation",
+				"operation_id",
+				id,
+				"error",
+				releaseErr,
+			)
+		}
 		return
 	}
 	state := sdk.OperationSucceeded
@@ -521,17 +626,110 @@ func (server *Server) executeStored(parent context.Context, id string) {
 		output = nil
 		errorText = executeErr.Error()
 	}
-	_, err = server.operations.Transition(
+	_, err = server.operations.Complete(
 		context.Background(),
 		id,
-		record.Operation.Revision,
+		token,
 		state,
 		output,
 		errorText,
 	)
-	if err != nil && !errors.Is(err, sdk.ErrOperationConflict) {
+	if err != nil && !errors.Is(err, sdk.ErrOperationFence) {
 		server.logger.Error("complete stored operation", "operation_id", id, "error", err)
 	}
+}
+
+func (server *Server) renewOperationLease(
+	ctx context.Context,
+	id string,
+	token string,
+	cancelExecution context.CancelFunc,
+	done chan<- struct{},
+	lost chan<- error,
+) {
+	defer close(done)
+	interval := server.operationLease / 3
+	if interval < time.Millisecond {
+		interval = time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			_, err := server.operations.Renew(
+				ctx,
+				id,
+				token,
+				now.UTC(),
+				server.operationLease,
+			)
+			if err != nil {
+				select {
+				case lost <- err:
+				default:
+				}
+				cancelExecution()
+				return
+			}
+		}
+	}
+}
+
+func (server *Server) resourceRevision(
+	kind sdk.OperationKind,
+	resource string,
+) string {
+	switch kind {
+	case sdk.OperationKindProvider:
+		if provider := server.registrar.providers[resource]; provider != nil {
+			return sdk.ResourceRevision(
+				server.manifest,
+				kind,
+				resource,
+				provider.Spec(),
+			)
+		}
+	case sdk.OperationKindTool:
+		if tool := server.registrar.tools[resource]; tool != nil {
+			return sdk.ResourceRevision(
+				server.manifest,
+				kind,
+				resource,
+				tool.Spec(),
+			)
+		}
+	case sdk.OperationKindCapability:
+		if capability := server.registrar.capabilities[resource]; capability != nil {
+			return sdk.ResourceRevision(
+				server.manifest,
+				kind,
+				resource,
+				capability.Spec(),
+			)
+		}
+	}
+	return sdk.ResourceRevision(server.manifest, kind, resource, nil)
+}
+
+func (server *Server) validateResourceRevision(
+	record sdk.OperationRecord,
+) error {
+	if record.ResourceRevision == "" {
+		return nil
+	}
+	current := server.resourceRevision(record.Kind, record.Resource)
+	if record.ResourceRevision != current {
+		return fmt.Errorf(
+			"operation %q resource revision %s does not match current revision %s",
+			record.Operation.ID,
+			record.ResourceRevision,
+			current,
+		)
+	}
+	return nil
 }
 
 func (server *Server) executeLocal(
@@ -607,6 +805,42 @@ func (server *Server) receiveDelivery(delivery sdk.Delivery) {
 	subscriber := server.registrar.subscribers[delivery.Subscription]
 	if subscriber == nil {
 		server.retryDelivery(delivery, errors.New("subscriber disappeared"))
+		return
+	}
+	expectedRevision := sdk.PluginResourceRevision(
+		server.manifest,
+		"subscriber",
+		delivery.Subscription,
+		subscriber.Spec(),
+	)
+	if (delivery.PluginVersion != "" &&
+		delivery.PluginVersion != server.manifest.Version) ||
+		(delivery.ResourceRevision != "" &&
+			delivery.ResourceRevision != expectedRevision) {
+		err := server.inbox.DeadLetter(
+			server.context,
+			delivery.ID,
+			delivery.LeaseToken,
+			time.Now().UTC(),
+			fmt.Sprintf(
+				"delivery target %s@%s revision %s does not match current %s@%s revision %s",
+				delivery.Plugin,
+				delivery.PluginVersion,
+				delivery.ResourceRevision,
+				server.manifest.Name,
+				server.manifest.Version,
+				expectedRevision,
+			),
+		)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			server.logger.Warn(
+				"dead-letter stale plugin delivery",
+				"delivery_id",
+				delivery.ID,
+				"error",
+				err,
+			)
+		}
 		return
 	}
 	timeout := server.subscriberTimeout

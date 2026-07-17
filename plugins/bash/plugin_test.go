@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lincyaw/ag/sdk"
+	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 )
 
 func TestBashToolExecutesInRootWithExplicitEnvironment(t *testing.T) {
@@ -162,7 +163,7 @@ func TestBashToolConcurrentCallsAndRuntimeMount(t *testing.T) {
 		t.Error(err)
 	}
 
-	runtime, err := sdk.NewRuntime(sdk.RuntimeConfig{})
+	runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

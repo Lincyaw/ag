@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lincyaw/ag/sdk"
+	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 )
 
 func TestFileToolsConfinePathsAndEnforceBounds(t *testing.T) {
@@ -149,7 +150,7 @@ func TestConcurrentWritesAreAtomicAndPluginManifestMatchesMode(t *testing.T) {
 		{name: "writable", enableWrite: true, toolCount: 3},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			runtime, err := sdk.NewRuntime(sdk.RuntimeConfig{})
+			runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -1,4 +1,4 @@
-package sdk
+package storage
 
 import (
 	"context"
@@ -8,59 +8,28 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	. "github.com/lincyaw/ag/sdk"
 )
 
-var (
-	ErrNoDelivery    = errors.New("no delivery available")
-	ErrDeliveryLease = errors.New("delivery lease lost")
-)
-
-type DeliveryState string
-
-const (
-	DeliveryPending    DeliveryState = "pending"
-	DeliveryLeased     DeliveryState = "leased"
-	DeliveryDelivered  DeliveryState = "delivered"
-	DeliveryDeadLetter DeliveryState = "dead_letter"
-)
-
-type Delivery struct {
-	ID             string        `json:"id"`
-	Sequence       uint64        `json:"sequence"`
-	Plugin         string        `json:"plugin"`
-	Subscription   string        `json:"subscription"`
-	Partition      string        `json:"partition,omitempty"`
-	Event          Event         `json:"event"`
-	State          DeliveryState `json:"state"`
-	Attempt        int           `json:"attempt"`
-	AvailableAt    time.Time     `json:"available_at"`
-	LeaseToken     string        `json:"lease_token,omitempty"`
-	LeaseExpiresAt time.Time     `json:"lease_expires_at,omitempty"`
-	LastError      string        `json:"last_error,omitempty"`
-	CreatedAt      time.Time     `json:"created_at"`
-	UpdatedAt      time.Time     `json:"updated_at"`
-}
-
-type OutboxStore interface {
-	Enqueue(context.Context, ...Delivery) error
-	Lease(context.Context, time.Time, time.Duration) (Delivery, error)
-	Ack(context.Context, string, string, time.Time) error
-	Retry(context.Context, string, string, time.Time, string) error
-	DeadLetter(context.Context, string, string, time.Time, string) error
-	List(context.Context) ([]Delivery, error)
-}
-
-type MemoryOutboxStore struct {
+type MemoryDeliveryStore struct {
 	mu           sync.Mutex
 	deliveries   map[string]Delivery
 	nextSequence uint64
 }
 
-func NewMemoryOutboxStore() *MemoryOutboxStore {
-	return &MemoryOutboxStore{deliveries: make(map[string]Delivery)}
+// MemoryOutboxStore is kept as a source-compatible alias.
+type MemoryOutboxStore = MemoryDeliveryStore
+
+func NewMemoryDeliveryStore() *MemoryDeliveryStore {
+	return &MemoryDeliveryStore{deliveries: make(map[string]Delivery)}
 }
 
-func (store *MemoryOutboxStore) Enqueue(
+func NewMemoryOutboxStore() *MemoryDeliveryStore {
+	return NewMemoryDeliveryStore()
+}
+
+func (store *MemoryDeliveryStore) Enqueue(
 	ctx context.Context,
 	deliveries ...Delivery,
 ) error {
@@ -110,7 +79,7 @@ func (store *MemoryOutboxStore) Enqueue(
 	return nil
 }
 
-func (store *MemoryOutboxStore) Lease(
+func (store *MemoryDeliveryStore) Lease(
 	ctx context.Context,
 	now time.Time,
 	duration time.Duration,
@@ -152,14 +121,14 @@ func (store *MemoryOutboxStore) Lease(
 	delivery := candidates[0]
 	delivery.State = DeliveryLeased
 	delivery.Attempt++
-	delivery.LeaseToken = newDispatchID()
+	delivery.LeaseToken = NewID()
 	delivery.LeaseExpiresAt = now.Add(duration)
 	delivery.UpdatedAt = now
 	store.deliveries[delivery.ID] = delivery
 	return cloneDelivery(delivery), nil
 }
 
-func (store *MemoryOutboxStore) Ack(
+func (store *MemoryDeliveryStore) Ack(
 	ctx context.Context,
 	id string,
 	token string,
@@ -168,7 +137,7 @@ func (store *MemoryOutboxStore) Ack(
 	return store.transition(ctx, id, token, now, DeliveryDelivered, time.Time{}, "")
 }
 
-func (store *MemoryOutboxStore) Retry(
+func (store *MemoryDeliveryStore) Retry(
 	ctx context.Context,
 	id string,
 	token string,
@@ -186,7 +155,7 @@ func (store *MemoryOutboxStore) Retry(
 	)
 }
 
-func (store *MemoryOutboxStore) DeadLetter(
+func (store *MemoryDeliveryStore) DeadLetter(
 	ctx context.Context,
 	id string,
 	token string,
@@ -204,7 +173,7 @@ func (store *MemoryOutboxStore) DeadLetter(
 	)
 }
 
-func (store *MemoryOutboxStore) transition(
+func (store *MemoryDeliveryStore) transition(
 	ctx context.Context,
 	id string,
 	token string,
@@ -237,7 +206,7 @@ func (store *MemoryOutboxStore) transition(
 	return nil
 }
 
-func (store *MemoryOutboxStore) List(
+func (store *MemoryDeliveryStore) List(
 	ctx context.Context,
 ) ([]Delivery, error) {
 	if err := ctx.Err(); err != nil {
@@ -253,14 +222,55 @@ func (store *MemoryOutboxStore) List(
 	return result, nil
 }
 
+func (store *MemoryDeliveryStore) ListPage(
+	ctx context.Context,
+	request PageRequest,
+) (DeliveryPage, error) {
+	items, err := store.List(ctx)
+	if err != nil {
+		return DeliveryPage{}, err
+	}
+	page, next, err := PageWindow(items, request, func(item Delivery) string {
+		return item.ID
+	})
+	if err != nil {
+		return DeliveryPage{}, err
+	}
+	return DeliveryPage{Items: page, Next: next}, nil
+}
+
+func (store *MemoryDeliveryStore) PurgeTerminal(
+	ctx context.Context,
+	before time.Time,
+) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if before.IsZero() {
+		return 0, errors.New("delivery purge cutoff is required")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	removed := 0
+	for id, delivery := range store.deliveries {
+		if (delivery.State == DeliveryDelivered ||
+			delivery.State == DeliveryDeadLetter) &&
+			delivery.UpdatedAt.Before(before) {
+			delete(store.deliveries, id)
+			removed++
+		}
+	}
+	return removed, nil
+}
+
 func validateNewDelivery(delivery Delivery) error {
 	if delivery.ID == "" {
 		return errors.New("delivery ID is empty")
 	}
-	if err := validateResourceName("plugin", delivery.Plugin); err != nil {
+	if err := ValidateResourceName("plugin", delivery.Plugin); err != nil {
 		return err
 	}
-	if err := validateResourceName("subscription", delivery.Subscription); err != nil {
+	if err := ValidateResourceName("subscription", delivery.Subscription); err != nil {
 		return err
 	}
 	if delivery.Event.ID == "" || delivery.Event.Name == "" {
@@ -275,7 +285,9 @@ func validateNewDelivery(delivery Delivery) error {
 func sameDeliveryIdentity(left, right Delivery) bool {
 	return left.ID == right.ID &&
 		left.Plugin == right.Plugin &&
+		left.PluginVersion == right.PluginVersion &&
 		left.Subscription == right.Subscription &&
+		left.ResourceRevision == right.ResourceRevision &&
 		left.Event.ID == right.Event.ID
 }
 
