@@ -11,7 +11,7 @@ import (
 	"github.com/lincyaw/ag/sdk"
 )
 
-func (server *Server) submitStored(
+func (server *server) submitStored(
 	ctx context.Context,
 	kind sdk.OperationKind,
 	resource string,
@@ -43,7 +43,7 @@ func (server *Server) submitStored(
 	return record.Operation, nil
 }
 
-func (server *Server) getStored(
+func (server *server) getStored(
 	ctx context.Context,
 	kind sdk.OperationKind,
 	resource string,
@@ -62,7 +62,7 @@ func (server *Server) getStored(
 	return record.Operation, nil
 }
 
-func (server *Server) cancelStored(
+func (server *server) cancelStored(
 	ctx context.Context,
 	kind sdk.OperationKind,
 	resource string,
@@ -106,7 +106,7 @@ func (server *Server) cancelStored(
 	}
 }
 
-func (server *Server) recoverOperations(ctx context.Context) error {
+func (server *server) recoverOperations(ctx context.Context) error {
 	records, err := server.operations.List(ctx)
 	if err != nil {
 		return fmt.Errorf("list operations for recovery: %w", err)
@@ -143,7 +143,7 @@ func (server *Server) recoverOperations(ctx context.Context) error {
 	return nil
 }
 
-func (server *Server) reserveOperation() bool {
+func (server *server) reserveOperation() bool {
 	server.lifecycleMu.Lock()
 	defer server.lifecycleMu.Unlock()
 	if server.closed {
@@ -153,14 +153,14 @@ func (server *Server) reserveOperation() bool {
 	return true
 }
 
-func (server *Server) startReservedOperation(parent context.Context, id string) {
+func (server *server) startReservedOperation(parent context.Context, id string) {
 	go func() {
 		defer server.wait.Done()
 		server.executeStored(parent, id)
 	}()
 }
 
-func (server *Server) executeStored(parent context.Context, id string) {
+func (server *server) executeStored(parent context.Context, id string) {
 	operationContext, cancel := context.WithCancel(context.WithoutCancel(parent))
 	stopServerCancel := context.AfterFunc(server.context, cancel)
 	defer func() {
@@ -269,7 +269,7 @@ func (server *Server) executeStored(parent context.Context, id string) {
 	}
 }
 
-func (server *Server) renewOperationLease(
+func (server *server) renewOperationLease(
 	ctx context.Context,
 	id string,
 	token string,
@@ -308,7 +308,7 @@ func (server *Server) renewOperationLease(
 	}
 }
 
-func (server *Server) resourceRevision(
+func (server *server) resourceRevision(
 	kind sdk.OperationKind,
 	resource string,
 ) string {
@@ -330,7 +330,7 @@ func (server *Server) resourceRevision(
 	return sdk.ResourceRevision(server.manifest, string(kind), resource, spec)
 }
 
-func (server *Server) validateResourceRevision(
+func (server *server) validateResourceRevision(
 	record sdk.OperationRecord,
 ) error {
 	if record.ResourceRevision == "" {
@@ -348,7 +348,7 @@ func (server *Server) validateResourceRevision(
 	return nil
 }
 
-func (server *Server) executeLocal(
+func (server *server) executeLocal(
 	ctx context.Context,
 	record sdk.OperationRecord,
 ) (output json.RawMessage, err error) {

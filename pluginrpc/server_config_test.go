@@ -180,7 +180,7 @@ func TestClosedServerRejectsStoredOperationBeforePersistence(t *testing.T) {
 			return registrar.RegisterTool(serverConfigTool{})
 		},
 	}
-	server, err := NewServer(context.Background(), ServerConfig{
+	service, err := NewServer(context.Background(), ServerConfig{
 		Plugin:     plugin,
 		Operations: operations,
 		Inbox:      sdkstorage.NewMemoryDeliveryStore(),
@@ -188,6 +188,7 @@ func TestClosedServerRejectsStoredOperationBeforePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	server := service.(*server)
 	if err := server.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +364,7 @@ func TestServerDeadLettersPersistedDeliveryForAnotherPlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{
+	server := &server{
 		manifest:  sdk.Manifest{Name: "expected-plugin", Version: "1.0.0"},
 		registrar: registrar,
 		inbox:     inbox,

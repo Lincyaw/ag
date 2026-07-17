@@ -51,7 +51,7 @@ func Serve(ctx context.Context, config Config) (returnErr error) {
 	runContext, runCancel := context.WithCancel(ctx)
 	var (
 		storage       sdk.StateBackend
-		adapter       *pluginrpc.Server
+		adapter       pluginrpc.Server
 		listener      net.Listener
 		server        *grpc.Server
 		registry      *pluginrpc.RegistryClient

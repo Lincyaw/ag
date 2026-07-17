@@ -10,7 +10,7 @@ import (
 	"github.com/lincyaw/ag/sdk"
 )
 
-func (server *Server) inboxLoop(worker int) {
+func (server *server) inboxLoop(worker int) {
 	defer server.wait.Done()
 	for {
 		if server.context.Err() != nil {
@@ -34,7 +34,7 @@ func (server *Server) inboxLoop(worker int) {
 	}
 }
 
-func (server *Server) receiveDelivery(delivery sdk.Delivery) {
+func (server *server) receiveDelivery(delivery sdk.Delivery) {
 	subscriber, exists := server.registrar.subscribers[delivery.Subscription]
 	if !exists {
 		server.retryDelivery(delivery, errors.New("subscriber disappeared"))
@@ -93,7 +93,7 @@ func (server *Server) receiveDelivery(delivery sdk.Delivery) {
 	}
 }
 
-func (server *Server) retryDelivery(delivery sdk.Delivery, cause error) {
+func (server *server) retryDelivery(delivery sdk.Delivery, cause error) {
 	if server.context.Err() != nil {
 		return
 	}

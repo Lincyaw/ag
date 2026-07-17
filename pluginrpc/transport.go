@@ -11,7 +11,7 @@ import (
 )
 
 func NewGRPCServer(
-	plugin *Server,
+	plugin Server,
 	maxMessageBytes int,
 	options ...grpc.ServerOption,
 ) (*grpc.Server, error) {

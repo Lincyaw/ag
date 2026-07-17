@@ -29,7 +29,12 @@ type ServerConfig struct {
 	OperationLease    time.Duration
 }
 
-type Server struct {
+type Server interface {
+	pluginv1.PluginServiceServer
+	Close(context.Context) error
+}
+
+type server struct {
 	pluginv1.UnimplementedPluginServiceServer
 	manifest          sdk.Manifest
 	registrar         *serverRegistrar
@@ -55,7 +60,7 @@ type Server struct {
 	operationCancels  map[string]context.CancelFunc
 }
 
-func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
+func NewServer(ctx context.Context, config ServerConfig) (Server, error) {
 	if config.Plugin == nil {
 		return nil, errors.New("plugin is nil")
 	}
@@ -111,7 +116,7 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 		return nil, err
 	}
 	serverContext, cancel := context.WithCancel(context.Background())
-	server := &Server{
+	server := &server{
 		manifest:          manifest,
 		registrar:         registrar,
 		operations:        config.Operations,
@@ -145,7 +150,7 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 	return server, nil
 }
 
-func (server *Server) Close(ctx context.Context) error {
+func (server *server) Close(ctx context.Context) error {
 	server.lifecycleMu.Lock()
 	if !server.closed {
 		server.closed = true
@@ -178,7 +183,7 @@ func (server *Server) Close(ctx context.Context) error {
 	}
 }
 
-func (server *Server) Describe(
+func (server *server) Describe(
 	context.Context,
 	*pluginv1.DescribeRequest,
 ) (*pluginv1.DescribeResponse, error) {
@@ -212,7 +217,7 @@ func (server *Server) Describe(
 	return response, nil
 }
 
-func (server *Server) SubmitOperation(
+func (server *server) SubmitOperation(
 	ctx context.Context,
 	request *pluginv1.SubmitOperationRequest,
 ) (*pluginv1.SubmitOperationResponse, error) {
@@ -244,7 +249,7 @@ func (server *Server) SubmitOperation(
 	return &pluginv1.SubmitOperationResponse{Operation: converted}, nil
 }
 
-func (server *Server) PollOperation(
+func (server *server) PollOperation(
 	ctx context.Context,
 	request *pluginv1.PollOperationRequest,
 ) (*pluginv1.PollOperationResponse, error) {
@@ -268,7 +273,7 @@ func (server *Server) PollOperation(
 	return &pluginv1.PollOperationResponse{Operation: converted}, nil
 }
 
-func (server *Server) CancelOperation(
+func (server *server) CancelOperation(
 	ctx context.Context,
 	request *pluginv1.CancelOperationRequest,
 ) (*pluginv1.CancelOperationResponse, error) {
@@ -294,7 +299,7 @@ type operationResource struct {
 	cancel func(context.Context, string) (sdk.Operation, error)
 }
 
-func (server *Server) operationResource(
+func (server *server) operationResource(
 	kind sdk.OperationKind,
 	name string,
 ) (operationResource, error) {
@@ -344,7 +349,7 @@ func (server *Server) operationResource(
 	return server.storedOperationResource(kind, name), nil
 }
 
-func (server *Server) storedOperationResource(
+func (server *server) storedOperationResource(
 	kind sdk.OperationKind,
 	name string,
 ) operationResource {
@@ -361,7 +366,7 @@ func (server *Server) storedOperationResource(
 	}
 }
 
-func (server *Server) HandleHook(
+func (server *server) HandleHook(
 	ctx context.Context,
 	request *pluginv1.HandleHookRequest,
 ) (*pluginv1.HandleHookResponse, error) {
@@ -384,7 +389,7 @@ func (server *Server) HandleHook(
 	return &pluginv1.HandleHookResponse{Effect: converted}, nil
 }
 
-func (server *Server) Deliver(
+func (server *server) Deliver(
 	ctx context.Context,
 	request *pluginv1.DeliverRequest,
 ) (*pluginv1.DeliverResponse, error) {
