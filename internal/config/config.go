@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,7 @@ type Config struct {
 	Workspace     Workspace     `mapstructure:"workspace" json:"workspace" yaml:"workspace"`
 	Bash          Bash          `mapstructure:"bash" json:"bash" yaml:"bash"`
 	Plugins       Plugins       `mapstructure:"plugins" json:"plugins" yaml:"plugins"`
+	Registry      Registry      `mapstructure:"registry" json:"registry" yaml:"registry"`
 	State         State         `mapstructure:"state" json:"state" yaml:"state"`
 	Observability Observability `mapstructure:"observability" json:"observability" yaml:"observability"`
 	Logging       Logging       `mapstructure:"logging" json:"logging" yaml:"logging"`
@@ -89,8 +91,18 @@ func (bash Bash) MarshalJSON() ([]byte, error) {
 }
 
 type Plugins struct {
-	Remote      []string `mapstructure:"remote" json:"remote" yaml:"remote"`
-	RegistryURI string   `mapstructure:"registry_uri" json:"registry_uri" yaml:"registry_uri"`
+	Remote            []string `mapstructure:"remote" json:"remote" yaml:"remote"`
+	RegistryURI       string   `mapstructure:"registry_uri" json:"registry_uri" yaml:"registry_uri"`
+	RegistryNamespace string   `mapstructure:"registry_namespace" json:"registry_namespace" yaml:"registry_namespace"`
+}
+
+type Registry struct {
+	Listen          string `mapstructure:"listen" json:"listen" yaml:"listen"`
+	AdvertiseURI    string `mapstructure:"advertise_uri" json:"advertise_uri,omitempty" yaml:"advertise_uri,omitempty"`
+	BackendURI      string `mapstructure:"backend_uri" json:"backend_uri" yaml:"backend_uri"`
+	TLSCertFile     string `mapstructure:"tls_cert_file" json:"tls_cert_file,omitempty" yaml:"tls_cert_file,omitempty"`
+	TLSKeyFile      string `mapstructure:"tls_key_file" json:"tls_key_file,omitempty" yaml:"tls_key_file,omitempty"`
+	MaxMessageBytes int    `mapstructure:"max_message_bytes" json:"max_message_bytes" yaml:"max_message_bytes"`
 }
 
 type State struct {
@@ -195,6 +207,24 @@ func (c Config) Validate() error {
 			return errors.New("plugins.remote contains an empty entry")
 		}
 	}
+	if strings.TrimSpace(c.Plugins.RegistryNamespace) == "" {
+		return errors.New("plugins.registry_namespace is required")
+	}
+	if strings.TrimSpace(c.Registry.Listen) == "" {
+		return errors.New("registry.listen is required")
+	}
+	if strings.TrimSpace(c.Registry.BackendURI) == "" {
+		return errors.New("registry.backend_uri is required")
+	}
+	if (strings.TrimSpace(c.Registry.TLSCertFile) == "") !=
+		(strings.TrimSpace(c.Registry.TLSKeyFile) == "") {
+		return errors.New(
+			"registry.tls_cert_file and registry.tls_key_file must be configured together",
+		)
+	}
+	if c.Registry.MaxMessageBytes < 0 {
+		return errors.New("registry.max_message_bytes cannot be negative")
+	}
 	switch strings.ToLower(strings.TrimSpace(c.Logging.Level)) {
 	case "debug", "info", "warn", "warning", "error":
 	default:
@@ -240,6 +270,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("bash.environment", []string{})
 	v.SetDefault("plugins.remote", []string{})
 	v.SetDefault("plugins.registry_uri", "")
+	v.SetDefault("plugins.registry_namespace", "default")
+	v.SetDefault("registry.listen", "127.0.0.1:9090")
+	v.SetDefault("registry.advertise_uri", "")
+	v.SetDefault("registry.backend_uri", defaultRegistryBackendURI())
+	v.SetDefault("registry.tls_cert_file", "")
+	v.SetDefault("registry.tls_key_file", "")
+	v.SetDefault("registry.max_message_bytes", 0)
 	v.SetDefault("state.directory", defaultStateDirectory())
 	v.SetDefault("state.backend_uri", "")
 	v.SetDefault("state.namespace", "")
@@ -265,33 +302,40 @@ func configureEnvironment(v *viper.Viper) {
 
 func bindFlags(v *viper.Viper, flags *pflag.FlagSet) error {
 	bindings := map[string]string{
-		"agent.system":              "system",
-		"agent.provider":            "provider",
-		"agent.max_turns":           "max-turns",
-		"agent.timeout":             "timeout",
-		"openai.enabled":            "openai",
-		"openai.model":              "model",
-		"openai.base_url":           "base-url",
-		"openai.max_retries":        "max-retries",
-		"workspace.enabled":         "file",
-		"workspace.root":            "cwd",
-		"workspace.enable_write":    "write",
-		"workspace.max_read_bytes":  "max-read-bytes",
-		"workspace.max_write_bytes": "max-write-bytes",
-		"workspace.max_entries":     "max-entries",
-		"bash.enabled":              "bash",
-		"bash.shell":                "shell",
-		"bash.default_timeout":      "bash-timeout",
-		"bash.max_timeout":          "bash-max-timeout",
-		"bash.max_output_bytes":     "bash-max-output-bytes",
-		"plugins.remote":            "plugin",
-		"plugins.registry_uri":      "registry-uri",
-		"state.directory":           "state-dir",
-		"state.backend_uri":         "storage",
-		"state.namespace":           "state-namespace",
-		"observability.enabled":     "otel",
-		"logging.level":             "log-level",
-		"logging.format":            "log-format",
+		"agent.system":               "system",
+		"agent.provider":             "provider",
+		"agent.max_turns":            "max-turns",
+		"agent.timeout":              "timeout",
+		"openai.enabled":             "openai",
+		"openai.model":               "model",
+		"openai.base_url":            "base-url",
+		"openai.max_retries":         "max-retries",
+		"workspace.enabled":          "file",
+		"workspace.root":             "cwd",
+		"workspace.enable_write":     "write",
+		"workspace.max_read_bytes":   "max-read-bytes",
+		"workspace.max_write_bytes":  "max-write-bytes",
+		"workspace.max_entries":      "max-entries",
+		"bash.enabled":               "bash",
+		"bash.shell":                 "shell",
+		"bash.default_timeout":       "bash-timeout",
+		"bash.max_timeout":           "bash-max-timeout",
+		"bash.max_output_bytes":      "bash-max-output-bytes",
+		"plugins.remote":             "plugin",
+		"plugins.registry_uri":       "registry-uri",
+		"plugins.registry_namespace": "registry-namespace",
+		"registry.listen":            "listen",
+		"registry.advertise_uri":     "advertise-uri",
+		"registry.backend_uri":       "registry-backend",
+		"registry.tls_cert_file":     "tls-cert",
+		"registry.tls_key_file":      "tls-key",
+		"registry.max_message_bytes": "max-message-bytes",
+		"state.directory":            "state-dir",
+		"state.backend_uri":          "storage",
+		"state.namespace":            "state-namespace",
+		"observability.enabled":      "otel",
+		"logging.level":              "log-level",
+		"logging.format":             "log-format",
 	}
 	for key, name := range bindings {
 		flag := flags.Lookup(name)
@@ -311,6 +355,19 @@ func defaultStateDirectory() string {
 		return filepath.Join(".ag", "state")
 	}
 	return filepath.Join(directory, AppName, "state")
+}
+
+func defaultRegistryBackendURI() string {
+	directory, err := os.UserHomeDir()
+	if err != nil {
+		directory = ".ag"
+	} else {
+		directory = filepath.Join(directory, ".ag")
+	}
+	return (&url.URL{
+		Scheme: "file",
+		Path:   filepath.Join(directory, "registry"),
+	}).String()
 }
 
 func resolveConfigFile(explicit string) (

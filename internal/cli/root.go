@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	appconfig "github.com/lincyaw/ag/internal/config"
@@ -32,7 +33,11 @@ type app struct {
 type usageError struct{ error }
 
 func Run(args []string, stdout, stderr io.Writer, version string) int {
-	signalContext, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	signalContext, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
 	defer stop()
 	command := New(stdout, stderr, version)
 	command.SetArgs(args)
@@ -110,6 +115,7 @@ func New(stdout, stderr io.Writer, version string) *cobra.Command {
 		application.runCommand(),
 		application.configCommand(),
 		application.pluginCommand(),
+		application.registryCommand(),
 		application.trajectoryCommand(),
 		application.stateCommand(),
 		application.versionCommand(),
@@ -151,9 +157,14 @@ func addPluginConfigFlags(flags *pflag.FlagSet) {
 	flags.StringSlice(
 		"plugin",
 		nil,
-		"Explicit remote plugin as name=grpc[s]://host:port (repeatable).",
+		"Remote plugin as name=grpc[s]://host:port or name[@instance-id] (repeatable).",
 	)
 	flags.String("registry-uri", "", "Remote lease registry grpc[s] URI.")
+	flags.String(
+		"registry-namespace",
+		"",
+		"Registry namespace used for discovery.",
+	)
 }
 
 func commandContext(command *cobra.Command, timeout time.Duration) (context.Context, context.CancelFunc) {

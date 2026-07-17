@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -95,6 +96,30 @@ func TestDefaultConfigPathUsesDotAGInHome(t *testing.T) {
 			candidate,
 			required,
 			want,
+		)
+	}
+}
+
+func TestDefaultRegistryConfigurationUsesDotAG(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENTM_CONFIG", "")
+	loaded, err := Load(LoadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(loaded.Config.Registry.BackendURI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Config.Registry.Listen != "127.0.0.1:9090" ||
+		parsed.Scheme != "file" ||
+		parsed.Path != filepath.Join(home, ".ag", "registry") ||
+		loaded.Config.Plugins.RegistryNamespace != "default" {
+		t.Fatalf(
+			"registry defaults = %#v, plugins = %#v",
+			loaded.Config.Registry,
+			loaded.Config.Plugins,
 		)
 	}
 }

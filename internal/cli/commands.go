@@ -9,6 +9,7 @@ import (
 
 	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/lincyaw/ag/internal/logging"
+	pluginregistry "github.com/lincyaw/ag/registry"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 	"github.com/spf13/cobra"
@@ -122,24 +123,97 @@ func (application *app) pluginCommand() *cobra.Command {
 			return application.writePlugins(descriptors)
 		},
 	}
+	var (
+		discoverName       string
+		discoverInstanceID string
+		discoverVersion    string
+		discoverResource   string
+		discoverLabels     map[string]string
+	)
 	discover := &cobra.Command{
 		Use:   "discover",
-		Short: "List configured plugins plus active registry leases",
+		Short: "Discover active plugin instances from the registry",
 		Args:  noArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			registry, _, err := application.configuredRegistry(command)
+			if discoverInstanceID != "" && discoverName == "" {
+				return usageError{errors.New(
+					"--instance-id requires --name",
+				)}
+			}
+			loaded, err := application.load(command)
 			if err != nil {
 				return err
 			}
-			descriptors, err := registry.Discover(command.Context(), sdk.DiscoveryQuery{IncludeDrivers: true})
+			directory, err := openPluginDirectory(
+				command.Context(),
+				loaded.Config.Plugins,
+			)
 			if err != nil {
 				return err
 			}
-			return application.writePlugins(descriptors)
+			instances, listErr := listPluginInstances(
+				command.Context(),
+				directory,
+				pluginregistry.DiscoveryQuery{
+					Namespace: loaded.Config.Plugins.RegistryNamespace,
+					Name:      discoverName,
+					Version:   discoverVersion,
+					Resource:  discoverResource,
+					Labels:    discoverLabels,
+				},
+			)
+			if discoverInstanceID != "" {
+				filtered := instances[:0]
+				for _, instance := range instances {
+					if instance.InstanceID == discoverInstanceID {
+						filtered = append(filtered, instance)
+					}
+				}
+				instances = filtered
+			}
+			writeErr := error(nil)
+			if listErr == nil {
+				writeErr = application.writePluginInstances(instances)
+			}
+			return errors.Join(
+				listErr,
+				writeErr,
+				directory.Close(context.Background()),
+			)
 		},
 	}
+	discover.Flags().StringVar(
+		&discoverName,
+		"name",
+		"",
+		"Filter by plugin name.",
+	)
+	discover.Flags().StringVar(
+		&discoverInstanceID,
+		"instance-id",
+		"",
+		"Filter by instance ID (requires --name).",
+	)
+	discover.Flags().StringVar(
+		&discoverVersion,
+		"version",
+		"",
+		"Filter by exact plugin version.",
+	)
+	discover.Flags().StringVar(
+		&discoverResource,
+		"resource",
+		"",
+		"Filter by registered resource.",
+	)
+	discover.Flags().StringToStringVar(
+		&discoverLabels,
+		"label",
+		nil,
+		"Filter by label key=value (repeatable).",
+	)
 	inspect := &cobra.Command{
-		Use:   "inspect <name-or-uri>",
+		Use:   "inspect <name[@instance-id]|uri>",
 		Short: "Describe one local or remote plugin",
 		Args:  exactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
@@ -147,7 +221,11 @@ func (application *app) pluginCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			source, err := resolvePlugin(command.Context(), registry, args[0])
+			source, err := application.resolvePluginSelection(
+				command,
+				registry,
+				args[0],
+			)
 			if err != nil {
 				return err
 			}
@@ -177,7 +255,53 @@ func (application *app) configuredRegistry(
 	if err != nil {
 		return nil, nil, err
 	}
-	return buildRegistry(loaded.Config, logger, nil, nil)
+	return buildRegistry(
+		command.Context(),
+		loaded.Config,
+		logger,
+		nil,
+		nil,
+	)
+}
+
+func (application *app) resolvePluginSelection(
+	command *cobra.Command,
+	catalog *sdk.PluginRegistry,
+	nameOrURI string,
+) (sdk.Source, error) {
+	source, err := resolvePlugin(
+		command.Context(),
+		catalog,
+		nameOrURI,
+	)
+	if err == nil || strings.Contains(nameOrURI, "://") {
+		return source, err
+	}
+	loaded, loadErr := application.load(command)
+	if loadErr != nil {
+		return nil, loadErr
+	}
+	if strings.TrimSpace(loaded.Config.Plugins.RegistryURI) == "" {
+		return nil, err
+	}
+	directory, openErr := openPluginDirectory(
+		command.Context(),
+		loaded.Config.Plugins,
+	)
+	if openErr != nil {
+		return nil, openErr
+	}
+	instance, selectErr := selectPluginInstance(
+		command.Context(),
+		directory,
+		loaded.Config.Plugins.RegistryNamespace,
+		nameOrURI,
+	)
+	closeErr := directory.Close(context.Background())
+	if selectErr != nil || closeErr != nil {
+		return nil, errors.Join(selectErr, closeErr)
+	}
+	return catalog.Resolve(command.Context(), instance.URI)
 }
 
 func resolvePlugin(

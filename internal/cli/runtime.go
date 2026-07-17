@@ -19,6 +19,7 @@ import (
 	fileplugin "github.com/lincyaw/ag/plugins/file"
 	"github.com/lincyaw/ag/plugins/openai"
 	otelplugin "github.com/lincyaw/ag/plugins/otel"
+	"github.com/lincyaw/ag/registry"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 	sdkstorage "github.com/lincyaw/ag/sdk/storage"
@@ -74,6 +75,7 @@ func startRuntime(
 	}
 	running := &runningRuntime{runtime: runtime, telemetry: observability}
 	registry, names, err := buildRegistry(
+		ctx,
 		config,
 		logger,
 		observability.Tracer,
@@ -159,21 +161,23 @@ func closeContext() (context.Context, context.CancelFunc) {
 }
 
 func buildRegistry(
+	ctx context.Context,
 	config appconfig.Config,
 	logger *slog.Logger,
 	tracer trace.Tracer,
 	meter metric.Meter,
 ) (*sdk.PluginRegistry, []string, error) {
-	registry := sdk.NewPluginRegistry()
-	if err := pluginrpc.RegisterDrivers(registry, pluginrpc.ClientConfig{
-		RegistryURI: config.Plugins.RegistryURI,
-	}); err != nil {
+	catalog := sdk.NewPluginRegistry()
+	if err := pluginrpc.RegisterDrivers(
+		catalog,
+		pluginrpc.ClientConfig{},
+	); err != nil {
 		return nil, nil, err
 	}
 	names := make([]string, 0, 4+len(config.Plugins.Remote))
 	registerLocal := func(plugin sdk.Plugin) error {
 		manifest := plugin.Manifest()
-		if err := registry.Register(sdk.PluginReference{
+		if err := catalog.Register(sdk.PluginReference{
 			Name: manifest.Name, Description: manifest.Description, Source: sdk.Local(plugin),
 		}); err != nil {
 			return err
@@ -220,19 +224,63 @@ func buildRegistry(
 			return nil, nil, err
 		}
 	}
+	var directory registry.Directory
+	defer func() {
+		if directory != nil {
+			_ = directory.Close(context.Background())
+		}
+	}()
 	for _, raw := range config.Plugins.Remote {
-		name, uri, ok := strings.Cut(raw, "=")
+		name, uri, mapped := strings.Cut(raw, "=")
 		name, uri = strings.TrimSpace(name), strings.TrimSpace(uri)
-		if !ok || name == "" || uri == "" {
-			return nil, nil, fmt.Errorf(
-				"remote plugin %q must be name=grpc[s]://host:port",
+		var reference sdk.PluginReference
+		if mapped {
+			if name == "" || uri == "" {
+				return nil, nil, fmt.Errorf(
+					"remote plugin %q must be name=grpc[s]://host:port",
+					raw,
+				)
+			}
+			reference = sdk.PluginReference{Name: name, URI: uri}
+		} else {
+			selector, selectorErr := parsePluginSelector(raw)
+			if selectorErr != nil {
+				return nil, nil, fmt.Errorf(
+					"parse remote plugin selector %q: %w",
+					raw,
+					selectorErr,
+				)
+			}
+			if directory == nil {
+				opened, openErr := openPluginDirectory(
+					ctx,
+					config.Plugins,
+				)
+				if openErr != nil {
+					return nil, nil, openErr
+				}
+				directory = opened
+			}
+			instance, selectErr := selectPluginInstance(
+				ctx,
+				directory,
+				config.Plugins.RegistryNamespace,
 				raw,
 			)
+			if selectErr != nil {
+				return nil, nil, selectErr
+			}
+			reference = sdk.PluginReference{
+				Name:        selector.Name,
+				URI:         instance.URI,
+				Description: instance.Manifest.Description,
+				Labels:      instance.Labels,
+			}
 		}
-		if err := registry.Register(sdk.PluginReference{Name: name, URI: uri}); err != nil {
+		if err := catalog.Register(reference); err != nil {
 			return nil, nil, err
 		}
-		names = append(names, name)
+		names = append(names, reference.Name)
 	}
-	return registry, names, nil
+	return catalog, names, nil
 }

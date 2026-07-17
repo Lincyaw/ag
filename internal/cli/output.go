@@ -7,12 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"net/url"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
 	"unicode"
 
 	appconfig "github.com/lincyaw/ag/internal/config"
+	"github.com/lincyaw/ag/registry"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 	"github.com/spf13/cobra"
@@ -43,6 +47,22 @@ type stateOutput struct {
 	Backend      string                  `json:"backend"`
 	Namespace    string                  `json:"namespace"`
 	Capabilities sdk.StorageCapabilities `json:"capabilities"`
+}
+
+type pluginDiscovery struct {
+	Name         string            `json:"name"`
+	URI          string            `json:"uri,omitempty"`
+	Description  string            `json:"description,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	Scheme       string            `json:"scheme"`
+	Namespace    string            `json:"namespace"`
+	InstanceID   string            `json:"instance_id"`
+	Version      string            `json:"version"`
+	RegisteredAt time.Time         `json:"registered_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+	ExpiresAt    time.Time         `json:"expires_at"`
+	Revision     uint64            `json:"revision"`
+	Epoch        uint64            `json:"epoch"`
 }
 
 type cliErrorOutput struct {
@@ -241,6 +261,16 @@ func (application *app) writeConfig(loaded appconfig.Loaded) error {
 		if err := writeSection(writer, "Plugins",
 			[2]string{"Remote", listOrNone(config.Plugins.Remote)},
 			[2]string{"Registry", emptyAs(config.Plugins.RegistryURI, "none")},
+			[2]string{"Registry namespace", config.Plugins.RegistryNamespace},
+		); err != nil {
+			return err
+		}
+		if err := writeSection(writer, "Registry service",
+			[2]string{"Listen", config.Registry.Listen},
+			[2]string{"Advertise URI", emptyAs(config.Registry.AdvertiseURI, "derived")},
+			[2]string{"Backend URI", config.Registry.BackendURI},
+			[2]string{"TLS", yesNo(config.Registry.TLSCertFile != "")},
+			[2]string{"Max message bytes", fmt.Sprint(config.Registry.MaxMessageBytes)},
 		); err != nil {
 			return err
 		}
@@ -282,6 +312,77 @@ func (application *app) writePlugins(descriptors []sdk.PluginDescriptor) error {
 				tableCell(descriptor.Scheme),
 				tableCell(emptyAs(descriptor.URI, "-")),
 				tableCell(emptyAs(descriptor.Description, "-")),
+			)
+		}
+		return table.Flush()
+	})
+}
+
+func (application *app) writeRegistryReady(value registryReady) error {
+	return application.render(value, func(writer io.Writer) error {
+		if _, err := fmt.Fprintln(writer, "Registry ready"); err != nil {
+			return err
+		}
+		return writeSection(
+			writer,
+			"Endpoint",
+			[2]string{"URI", value.URI},
+			[2]string{"Listen", value.Listen},
+			[2]string{"Backend", value.Backend},
+			[2]string{"PID", fmt.Sprint(value.PID)},
+		)
+	})
+}
+
+func (application *app) writePluginInstances(
+	instances []registry.PluginInstance,
+) error {
+	values := make([]pluginDiscovery, 0, len(instances))
+	for _, instance := range instances {
+		scheme := ""
+		if parsed, err := url.Parse(instance.URI); err == nil {
+			scheme = parsed.Scheme
+		}
+		values = append(values, pluginDiscovery{
+			Name:         instance.Name,
+			URI:          instance.URI,
+			Description:  instance.Manifest.Description,
+			Labels:       instance.Labels,
+			Scheme:       scheme,
+			Namespace:    instance.Namespace,
+			InstanceID:   instance.InstanceID,
+			Version:      instance.Manifest.Version,
+			RegisteredAt: instance.RegisteredAt,
+			UpdatedAt:    instance.UpdatedAt,
+			ExpiresAt:    instance.ExpiresAt,
+			Revision:     instance.Revision,
+			Epoch:        instance.Epoch,
+		})
+	}
+	return application.render(values, func(writer io.Writer) error {
+		if len(values) == 0 {
+			_, err := fmt.Fprintln(
+				writer,
+				"No active plugin instances found.",
+			)
+			return err
+		}
+		table := newTable(writer)
+		fmt.Fprintln(
+			table,
+			"NAMESPACE\tNAME\tINSTANCE\tVERSION\tURI\tEXPIRES\tLABELS",
+		)
+		for _, value := range values {
+			fmt.Fprintf(
+				table,
+				"%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				tableCell(value.Namespace),
+				tableCell(value.Name),
+				tableCell(value.InstanceID),
+				tableCell(value.Version),
+				tableCell(value.URI),
+				formatTime(value.ExpiresAt),
+				tableCell(formatLabels(value.Labels)),
 			)
 		}
 		return table.Flush()
@@ -369,7 +470,7 @@ func (application *app) writeTrajectory(trajectory sdk.Trajectory) error {
 				entries,
 				"%s\t%s\t%s\t%s\n",
 				formatTime(entry.Timestamp),
-				tableCell(entry.Kind),
+				tableCell(string(entry.Kind)),
 				tableCell(entry.ID),
 				tableCell(trajectoryEntryDetail(entry)),
 			)
@@ -487,6 +588,18 @@ func listOrNone(values []string) string {
 		cells[index] = tableCell(value)
 	}
 	return strings.Join(cells, ", ")
+}
+
+func formatLabels(labels map[string]string) string {
+	if len(labels) == 0 {
+		return "-"
+	}
+	keys := slices.Sorted(maps.Keys(labels))
+	values := make([]string, 0, len(keys))
+	for _, key := range keys {
+		values = append(values, key+"="+labels[key])
+	}
+	return strings.Join(values, ",")
 }
 
 func tableCell(value string) string {
