@@ -183,22 +183,26 @@ func (driver etcdDriver) Open(
 	if parsed == nil {
 		return nil, errors.New("etcd registry URI is nil")
 	}
-	if parsed.Scheme != driver.scheme {
+	if !strings.EqualFold(parsed.Scheme, driver.scheme) {
 		return nil, fmt.Errorf(
 			"%s registry driver cannot open %q",
 			driver.scheme,
 			parsed.Scheme,
 		)
 	}
-	if parsed.User != nil {
+	if parsed.Opaque != "" || parsed.User != nil ||
+		parsed.ForceQuery || parsed.Fragment != "" {
 		return nil, errors.New(
-			"etcd registry URI must not contain credentials",
+			"etcd registry URI must not contain opaque data, credentials, an empty query, or a fragment",
 		)
 	}
 	if strings.TrimSpace(parsed.Host) == "" {
 		return nil, errors.New("etcd registry URI has no endpoint")
 	}
-	query := parsed.Query()
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return nil, fmt.Errorf("parse etcd registry URI query: %w", err)
+	}
 	for key := range query {
 		switch key {
 		case "dial_timeout", "endpoint", "server_name":
@@ -209,14 +213,21 @@ func (driver etcdDriver) Open(
 			)
 		}
 	}
+	rawDialTimeout, err := etcdQueryValue(query, "dial_timeout")
+	if err != nil {
+		return nil, err
+	}
+	serverName, err := etcdQueryValue(query, "server_name")
+	if err != nil {
+		return nil, err
+	}
 	dialTimeout := 5 * time.Second
-	if raw := strings.TrimSpace(query.Get("dial_timeout")); raw != "" {
-		var err error
-		dialTimeout, err = time.ParseDuration(raw)
+	if rawDialTimeout != "" {
+		dialTimeout, err = time.ParseDuration(rawDialTimeout)
 		if err != nil || dialTimeout <= 0 {
 			return nil, fmt.Errorf(
 				"parse etcd registry dial timeout %q",
-				raw,
+				rawDialTimeout,
 			)
 		}
 	}
@@ -226,11 +237,9 @@ func (driver etcdDriver) Open(
 		transportScheme = "https"
 		tlsConfig = &tls.Config{
 			MinVersion: tls.VersionTLS12,
-			ServerName: strings.TrimSpace(
-				query.Get("server_name"),
-			),
+			ServerName: serverName,
 		}
-	} else if query.Get("server_name") != "" {
+	} else if serverName != "" {
 		return nil, errors.New(
 			"etcd server_name requires an etcds:// URI",
 		)
@@ -259,6 +268,27 @@ func (driver etcdDriver) Open(
 	})
 }
 
+func etcdQueryValue(query url.Values, key string) (string, error) {
+	values, exists := query[key]
+	if !exists {
+		return "", nil
+	}
+	if len(values) != 1 {
+		return "", fmt.Errorf(
+			"etcd registry URI query parameter %q must appear once",
+			key,
+		)
+	}
+	value := strings.TrimSpace(values[0])
+	if value == "" {
+		return "", fmt.Errorf(
+			"etcd registry URI query parameter %q is empty",
+			key,
+		)
+	}
+	return value, nil
+}
+
 func normalizeEtcdEndpoint(
 	raw string,
 	scheme string,
@@ -268,14 +298,16 @@ func normalizeEtcdEndpoint(
 		return "", errors.New("etcd registry endpoint is empty")
 	}
 	if !strings.Contains(raw, "://") {
-		return scheme + "://" + raw, nil
+		raw = scheme + "://" + raw
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != scheme ||
-		parsed.Host == "" || parsed.Path != "" {
+	if err != nil || !strings.EqualFold(parsed.Scheme, scheme) ||
+		parsed.Host == "" || parsed.Opaque != "" ||
+		parsed.User != nil || parsed.Path != "" ||
+		parsed.ForceQuery || parsed.RawQuery != "" ||
+		parsed.Fragment != "" {
 		return "", fmt.Errorf(
-			"etcd registry endpoint %q must use %s://host:port",
-			raw,
+			"etcd registry endpoint must use %s://host:port without credentials, path, query, or fragment",
 			scheme,
 		)
 	}

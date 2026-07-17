@@ -39,9 +39,19 @@ func TestEtcdDriverValidatesAndRedactsConfiguration(t *testing.T) {
 	}
 	for _, raw := range []string{
 		"etcd://user:secret@127.0.0.1:2379/registry",
+		"etcd://127.0.0.1:2379/registry?",
+		"etcd://127.0.0.1:2379/registry#ignored",
 		"etcd://127.0.0.1:2379/registry?unknown=true",
+		"etcd://127.0.0.1:2379/registry?dial_timeout=1s;ignored=true",
+		"etcd://127.0.0.1:2379/registry?dial_timeout=",
+		"etcd://127.0.0.1:2379/registry?dial_timeout=1s&dial_timeout=2s",
 		"etcd://127.0.0.1:2379/registry?server_name=etcd.local",
+		"etcd://127.0.0.1:2379/registry?endpoint=other%3A2379%2Fnested",
+		"etcd://127.0.0.1:2379/registry?endpoint=http%3A%2F%2Fother%3A2379%3Fignored%3Dtrue",
+		"etcd://127.0.0.1:2379/registry?endpoint=http%3A%2F%2Fother%3A2379%23ignored",
+		"etcd://127.0.0.1:2379/registry?endpoint=http%3A%2F%2Fuser%3Asecret%40other%3A2379",
 		"etcds://127.0.0.1:2379/registry?endpoint=http%3A%2F%2Fother%3A2379",
+		"etcds://127.0.0.1:2379/registry?server_name=one&server_name=two",
 	} {
 		if _, err := backends.Open(
 			context.Background(),
