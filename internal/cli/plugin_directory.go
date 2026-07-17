@@ -58,7 +58,7 @@ func openPluginDirectory(
 		pluginrpc.ClientConfig{},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("connect plugin registry %q: %w", uri, err)
+		return nil, fmt.Errorf("connect plugin registry: %w", err)
 	}
 	return directory, nil
 }
