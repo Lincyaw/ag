@@ -21,7 +21,7 @@ type FileConfig struct {
 	MaxChanges   int
 }
 
-type FileDirectory struct {
+type fileDirectory struct {
 	directory    string
 	statePath    string
 	lockPath     string
@@ -31,7 +31,7 @@ type FileDirectory struct {
 	closed       atomic.Bool
 }
 
-func NewFileDirectory(config FileConfig) (*FileDirectory, error) {
+func NewFileDirectory(config FileConfig) (Directory, error) {
 	directory := strings.TrimSpace(config.Directory)
 	if directory == "" {
 		return nil, errors.New("registry directory is empty")
@@ -52,7 +52,7 @@ func NewFileDirectory(config FileConfig) (*FileDirectory, error) {
 	if config.MaxChanges < 1 {
 		config.MaxChanges = 1024
 	}
-	result := &FileDirectory{
+	result := &fileDirectory{
 		directory:    absolute,
 		statePath:    filepath.Join(absolute, "registry.json"),
 		lockPath:     filepath.Join(absolute, "registry.lock"),
@@ -70,7 +70,7 @@ func NewFileDirectory(config FileConfig) (*FileDirectory, error) {
 	return result, nil
 }
 
-func (directory *FileDirectory) Register(
+func (directory *fileDirectory) Register(
 	ctx context.Context,
 	registration PluginRegistration,
 	options LeaseOptions,
@@ -92,7 +92,7 @@ func (directory *FileDirectory) Register(
 	return lease, err
 }
 
-func (directory *FileDirectory) Renew(
+func (directory *fileDirectory) Renew(
 	ctx context.Context,
 	credential LeaseCredential,
 	ttl time.Duration,
@@ -114,7 +114,7 @@ func (directory *FileDirectory) Renew(
 	return lease, err
 }
 
-func (directory *FileDirectory) Unregister(
+func (directory *fileDirectory) Unregister(
 	ctx context.Context,
 	credential LeaseCredential,
 ) error {
@@ -129,7 +129,7 @@ func (directory *FileDirectory) Unregister(
 	})
 }
 
-func (directory *FileDirectory) Get(
+func (directory *fileDirectory) Get(
 	ctx context.Context,
 	key InstanceKey,
 ) (PluginInstance, error) {
@@ -149,7 +149,7 @@ func (directory *FileDirectory) Get(
 	return instance, err
 }
 
-func (directory *FileDirectory) List(
+func (directory *fileDirectory) List(
 	ctx context.Context,
 	query DiscoveryQuery,
 	request PageRequest,
@@ -171,7 +171,7 @@ func (directory *FileDirectory) List(
 	return page, err
 }
 
-func (directory *FileDirectory) Poll(
+func (directory *fileDirectory) Poll(
 	ctx context.Context,
 	request ChangePollRequest,
 ) (ChangePage, error) {
@@ -215,7 +215,7 @@ func (directory *FileDirectory) Poll(
 	}
 }
 
-func (*FileDirectory) Capabilities() Capabilities {
+func (*fileDirectory) Capabilities() Capabilities {
 	return Capabilities{
 		Durable:          true,
 		MultiProcessSafe: fileLocksAreMultiProcessSafe,
@@ -223,16 +223,16 @@ func (*FileDirectory) Capabilities() Capabilities {
 	}
 }
 
-func (directory *FileDirectory) String() string {
+func (directory *fileDirectory) String() string {
 	return (&url.URL{Scheme: "file", Path: directory.directory}).String()
 }
 
-func (directory *FileDirectory) Close(context.Context) error {
+func (directory *fileDirectory) Close(context.Context) error {
 	directory.closed.Store(true)
 	return nil
 }
 
-func (directory *FileDirectory) withState(
+func (directory *fileDirectory) withState(
 	ctx context.Context,
 	action func(*directoryState) (bool, error),
 ) error {
@@ -263,7 +263,7 @@ func (directory *FileDirectory) withState(
 	})
 }
 
-func (directory *FileDirectory) readState() (directoryState, error) {
+func (directory *fileDirectory) readState() (directoryState, error) {
 	raw, err := os.ReadFile(directory.statePath)
 	if errors.Is(err, fs.ErrNotExist) {
 		return newDirectoryState(), nil
@@ -281,7 +281,7 @@ func (directory *FileDirectory) readState() (directoryState, error) {
 	return state, nil
 }
 
-func (directory *FileDirectory) writeState(
+func (directory *fileDirectory) writeState(
 	ctx context.Context,
 	state directoryState,
 ) error {

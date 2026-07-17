@@ -11,7 +11,7 @@ type MemoryConfig struct {
 	MaxChanges int
 }
 
-type MemoryDirectory struct {
+type memoryDirectory struct {
 	mu         sync.Mutex
 	state      directoryState
 	clock      func() time.Time
@@ -20,14 +20,14 @@ type MemoryDirectory struct {
 	closed     bool
 }
 
-func NewMemoryDirectory(config MemoryConfig) *MemoryDirectory {
+func NewMemoryDirectory(config MemoryConfig) Directory {
 	if config.Clock == nil {
 		config.Clock = func() time.Time { return time.Now().UTC() }
 	}
 	if config.MaxChanges < 1 {
 		config.MaxChanges = 1024
 	}
-	return &MemoryDirectory{
+	return &memoryDirectory{
 		state:      newDirectoryState(),
 		clock:      config.Clock,
 		maxChanges: config.MaxChanges,
@@ -35,7 +35,7 @@ func NewMemoryDirectory(config MemoryConfig) *MemoryDirectory {
 	}
 }
 
-func (directory *MemoryDirectory) Register(
+func (directory *memoryDirectory) Register(
 	ctx context.Context,
 	registration PluginRegistration,
 	options LeaseOptions,
@@ -59,7 +59,7 @@ func (directory *MemoryDirectory) Register(
 	return lease, err
 }
 
-func (directory *MemoryDirectory) Renew(
+func (directory *memoryDirectory) Renew(
 	ctx context.Context,
 	credential LeaseCredential,
 	ttl time.Duration,
@@ -83,7 +83,7 @@ func (directory *MemoryDirectory) Renew(
 	return lease, err
 }
 
-func (directory *MemoryDirectory) Unregister(
+func (directory *memoryDirectory) Unregister(
 	ctx context.Context,
 	credential LeaseCredential,
 ) error {
@@ -105,7 +105,7 @@ func (directory *MemoryDirectory) Unregister(
 	return err
 }
 
-func (directory *MemoryDirectory) Get(
+func (directory *memoryDirectory) Get(
 	ctx context.Context,
 	key InstanceKey,
 ) (PluginInstance, error) {
@@ -127,7 +127,7 @@ func (directory *MemoryDirectory) Get(
 	return instance, err
 }
 
-func (directory *MemoryDirectory) List(
+func (directory *memoryDirectory) List(
 	ctx context.Context,
 	query DiscoveryQuery,
 	request PageRequest,
@@ -151,7 +151,7 @@ func (directory *MemoryDirectory) List(
 	return page, err
 }
 
-func (directory *MemoryDirectory) Poll(
+func (directory *memoryDirectory) Poll(
 	ctx context.Context,
 	request ChangePollRequest,
 ) (ChangePage, error) {
@@ -213,13 +213,13 @@ func (directory *MemoryDirectory) Poll(
 	}
 }
 
-func (*MemoryDirectory) Capabilities() Capabilities {
+func (*memoryDirectory) Capabilities() Capabilities {
 	return Capabilities{Poll: true}
 }
 
-func (*MemoryDirectory) String() string { return "memory://local" }
+func (*memoryDirectory) String() string { return "memory://local" }
 
-func (directory *MemoryDirectory) Close(context.Context) error {
+func (directory *memoryDirectory) Close(context.Context) error {
 	directory.mu.Lock()
 	defer directory.mu.Unlock()
 	if directory.closed {
@@ -230,7 +230,7 @@ func (directory *MemoryDirectory) Close(context.Context) error {
 	return nil
 }
 
-func (directory *MemoryDirectory) signalIfChanged(before uint64) {
+func (directory *memoryDirectory) signalIfChanged(before uint64) {
 	if directory.state.Revision == before {
 		return
 	}

@@ -423,7 +423,7 @@ func TestFileDirectoryPersistsAndCoordinatesInstances(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	clock := newTestClock()
-	open := func() *FileDirectory {
+	open := func() Directory {
 		directory, err := NewFileDirectory(FileConfig{
 			Directory: root, Clock: clock.Now,
 			PollInterval: time.Millisecond,
