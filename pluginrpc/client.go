@@ -162,9 +162,6 @@ func (driver *driver) Discover(
 	if parsed.Scheme != driver.scheme {
 		return nil, nil
 	}
-	if len(query.Labels) != 0 {
-		return nil, nil
-	}
 	client, err := NewRegistryClient(ctx, driver.config.RegistryURI, driver.config)
 	if err != nil {
 		return nil, err

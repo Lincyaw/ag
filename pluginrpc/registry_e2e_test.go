@@ -165,6 +165,20 @@ func TestRegistryServiceDirectoryContract(t *testing.T) {
 	if len(discovered) != 2 {
 		t.Fatalf("discovered = %#v", discovered)
 	}
+	discovered, err = discoveryRegistry.Discover(
+		ctx,
+		sdk.DiscoveryQuery{
+			Name:           "discoverable",
+			Labels:         map[string]string{"zone": "north"},
+			IncludeDrivers: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("discover by label: %v", err)
+	}
+	if len(discovered) != 1 || discovered[0].Labels["zone"] != "north" {
+		t.Fatalf("label-filtered discovery = %#v", discovered)
+	}
 
 	if _, err := client.Renew(
 		ctx,
