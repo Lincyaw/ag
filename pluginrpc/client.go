@@ -20,10 +20,11 @@ import (
 const defaultMaxMessageBytes = 16 << 20
 
 type ClientConfig struct {
-	TLSConfig       *tls.Config
-	MaxMessageBytes int
-	DialOptions     []grpc.DialOption
-	RegistryURI     string
+	TLSConfig         *tls.Config
+	MaxMessageBytes   int
+	DialOptions       []grpc.DialOption
+	RegistryURI       string
+	RegistryNamespace string
 }
 
 type source struct {
@@ -39,6 +40,16 @@ func normalizeClientConfig(config ClientConfig) (ClientConfig, error) {
 		return ClientConfig{}, errors.New("RPC max message bytes must be positive")
 	}
 	config.RegistryURI = strings.TrimSpace(config.RegistryURI)
+	config.RegistryNamespace = strings.TrimSpace(config.RegistryNamespace)
+	if config.RegistryNamespace == "" {
+		config.RegistryNamespace = registry.DefaultNamespace
+	}
+	if err := sdk.ValidateResourceName(
+		"registry namespace",
+		config.RegistryNamespace,
+	); err != nil {
+		return ClientConfig{}, err
+	}
 	config.DialOptions = append([]grpc.DialOption(nil), config.DialOptions...)
 	if config.TLSConfig != nil {
 		config.TLSConfig = config.TLSConfig.Clone()
@@ -170,7 +181,9 @@ func (driver *driver) Discover(
 	pageRequest := registry.PageRequest{Limit: registry.MaxPageSize}
 	for {
 		page, listErr := client.List(ctx, registry.DiscoveryQuery{
-			Name: query.Name, Labels: query.Labels,
+			Namespace: driver.config.RegistryNamespace,
+			Name:      query.Name,
+			Labels:    query.Labels,
 		}, pageRequest)
 		if listErr != nil {
 			err = listErr

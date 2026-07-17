@@ -16,10 +16,11 @@ func TestClientConstructorsSnapshotConfig(t *testing.T) {
 	}
 	options := []grpc.DialOption{grpc.WithAuthority("original.example")}
 	config := ClientConfig{
-		TLSConfig:       tlsConfig,
-		DialOptions:     options,
-		RegistryURI:     "  grpcs://registry.example  ",
-		MaxMessageBytes: 1024,
+		TLSConfig:         tlsConfig,
+		DialOptions:       options,
+		RegistryURI:       "  grpcs://registry.example  ",
+		RegistryNamespace: "  tenant-a  ",
+		MaxMessageBytes:   1024,
 	}
 	source, err := newSource("grpcs://plugin.example", config)
 	if err != nil {
@@ -45,6 +46,13 @@ func TestClientConstructorsSnapshotConfig(t *testing.T) {
 		}
 		if snapshot.RegistryURI != "grpcs://registry.example" {
 			t.Errorf("%s registry URI = %q", name, snapshot.RegistryURI)
+		}
+		if snapshot.RegistryNamespace != "tenant-a" {
+			t.Errorf(
+				"%s registry namespace = %q",
+				name,
+				snapshot.RegistryNamespace,
+			)
 		}
 	}
 }

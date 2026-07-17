@@ -271,6 +271,35 @@ func TestRegistryServiceDirectoryContract(t *testing.T) {
 	); status.Code(err) != codes.NotFound {
 		t.Fatalf("stale renew status = %s, error = %v", status.Code(err), err)
 	}
+	defaultRegistration := registration("node-default", "default")
+	if _, err := client.Register(
+		ctx,
+		defaultRegistration,
+		registry.LeaseOptions{TTL: time.Minute},
+	); err != nil {
+		t.Fatal(err)
+	}
+	tenantRegistration := registration("node-tenant", "tenant")
+	tenantRegistration.Namespace = "tenant-a"
+	if _, err := client.Register(
+		ctx,
+		tenantRegistration,
+		registry.LeaseOptions{TTL: time.Minute},
+	); err != nil {
+		t.Fatal(err)
+	}
+	scoped, err := discoveryRegistry.Discover(
+		ctx,
+		sdk.DiscoveryQuery{
+			Name: "discoverable", IncludeDrivers: true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scoped) != 1 || scoped[0].Labels["zone"] != "default" {
+		t.Fatalf("default namespace discovery = %#v", scoped)
+	}
 }
 
 func TestRegistryClientRejectsUnrepresentableRequests(t *testing.T) {
