@@ -129,11 +129,11 @@ func (directory *etcdDirectory) Register(
 	}
 	registration, err := normalizeRegistration(registration)
 	if err != nil {
-		return PluginLease{}, err
+		return PluginLease{}, invalidRequest(err)
 	}
 	ttlSeconds, err := etcdTTLSeconds(options.TTL)
 	if err != nil {
-		return PluginLease{}, err
+		return PluginLease{}, invalidRequest(err)
 	}
 	key := registration.Key()
 	instancePath := directory.instancePath(key)
@@ -270,7 +270,7 @@ func (directory *etcdDirectory) Renew(
 	}
 	ttlSeconds, err := etcdTTLSeconds(ttl)
 	if err != nil {
-		return PluginLease{}, err
+		return PluginLease{}, invalidRequest(err)
 	}
 	index, indexRevision, record, recordRevision, err :=
 		directory.loadLease(ctx, credential)
@@ -446,7 +446,7 @@ func (directory *etcdDirectory) Get(
 		key.Namespace = DefaultNamespace
 	}
 	if err := validateKey(key); err != nil {
-		return PluginInstance{}, err
+		return PluginInstance{}, invalidRequest(err)
 	}
 	response, err := directory.client.Get(
 		ctx,
@@ -489,18 +489,18 @@ func (directory *etcdDirectory) List(
 	}
 	query, err := normalizeQuery(query)
 	if err != nil {
-		return DiscoveryPage{}, err
+		return DiscoveryPage{}, invalidRequest(err)
 	}
 	request, after, err := validatePage(request)
 	if err != nil {
-		return DiscoveryPage{}, err
+		return DiscoveryPage{}, invalidRequest(err)
 	}
 	start := directory.instancePrefix
 	if after != "" {
 		if !strings.HasPrefix(after, directory.instancePrefix) {
-			return DiscoveryPage{}, errors.New(
+			return DiscoveryPage{}, invalidRequest(errors.New(
 				"registry page cursor belongs to another backend",
-			)
+			))
 		}
 		start = after + "\x00"
 	}
@@ -580,12 +580,12 @@ func (directory *etcdDirectory) Poll(
 	}
 	request, err := validatePoll(request)
 	if err != nil {
-		return ChangePage{}, err
+		return ChangePage{}, invalidRequest(err)
 	}
 	if request.AfterRevision > math.MaxInt64 {
-		return ChangePage{}, errors.New(
+		return ChangePage{}, invalidRequest(errors.New(
 			"registry poll revision exceeds etcd revision range",
-		)
+		))
 	}
 	currentResponse, err := directory.client.Get(
 		ctx,
@@ -601,11 +601,11 @@ func (directory *etcdDirectory) Poll(
 	}
 	currentRevision := uint64(currentResponse.Header.Revision)
 	if request.AfterRevision > currentRevision {
-		return ChangePage{}, fmt.Errorf(
+		return ChangePage{}, invalidRequest(fmt.Errorf(
 			"poll revision %d is ahead of current revision %d",
 			request.AfterRevision,
 			currentRevision,
-		)
+		))
 	}
 	page := ChangePage{
 		NextRevision:    request.AfterRevision,

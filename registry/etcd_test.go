@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"errors"
+	"math"
 	"net/url"
 	"os"
 	"path"
@@ -51,6 +52,91 @@ func TestEtcdDriverValidatesAndRedactsConfiguration(t *testing.T) {
 		) {
 			t.Fatalf("invalid etcd URI %q error = %v", raw, err)
 		}
+	}
+}
+
+func TestEtcdDirectoryClassifiesInvalidRequests(t *testing.T) {
+	t.Parallel()
+	directory, err := NewEtcdDirectory(EtcdConfig{
+		Endpoints: []string{"http://127.0.0.1:1"},
+		Prefix:    "/test/invalid-requests",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := directory.Close(context.Background()); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	registration := testRegistration(
+		"file",
+		"node-a",
+		"grpc://127.0.0.1:9001",
+	)
+	tests := map[string]func() error{
+		"registration": func() error {
+			registration := registration
+			registration.Name = "invalid name"
+			_, err := directory.Register(
+				context.Background(),
+				registration,
+				LeaseOptions{TTL: time.Minute},
+			)
+			return err
+		},
+		"lease TTL": func() error {
+			_, err := directory.Renew(
+				context.Background(),
+				LeaseCredential{ID: "1", Token: "token"},
+				0,
+			)
+			return err
+		},
+		"instance key": func() error {
+			_, err := directory.Get(context.Background(), InstanceKey{
+				Name: "invalid name", InstanceID: "node-a",
+			})
+			return err
+		},
+		"discovery query": func() error {
+			_, err := directory.List(
+				context.Background(),
+				DiscoveryQuery{Name: "invalid name"},
+				PageRequest{},
+			)
+			return err
+		},
+		"page cursor": func() error {
+			_, err := directory.List(
+				context.Background(),
+				DiscoveryQuery{},
+				PageRequest{After: "not-base64!"},
+			)
+			return err
+		},
+		"poll request": func() error {
+			_, err := directory.Poll(
+				context.Background(),
+				ChangePollRequest{Wait: -time.Second},
+			)
+			return err
+		},
+		"poll revision": func() error {
+			_, err := directory.Poll(
+				context.Background(),
+				ChangePollRequest{AfterRevision: math.MaxUint64},
+			)
+			return err
+		},
+	}
+	for name, run := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := run(); !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }
 
