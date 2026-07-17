@@ -39,6 +39,7 @@ func NewFileSessionStateFactory(
 	if err != nil {
 		return nil, fmt.Errorf("resolve gateway session state root: %w", err)
 	}
+	registry := sdkstorage.NewDefaultStorageRegistry()
 	return StateBackendFactoryFunc(func(
 		ctx context.Context,
 		session Session,
@@ -50,6 +51,6 @@ func NewFileSessionStateFactory(
 				"namespace": {session.ID},
 			}.Encode(),
 		}).String()
-		return sdkstorage.NewDefaultStorageRegistry().Open(ctx, uri)
+		return registry.Open(ctx, uri)
 	}), nil
 }
