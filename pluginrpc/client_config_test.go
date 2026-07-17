@@ -2,6 +2,7 @@ package pluginrpc
 
 import (
 	"crypto/tls"
+	"strings"
 	"testing"
 
 	"github.com/lincyaw/ag/sdk"
@@ -54,6 +55,31 @@ func TestClientConstructorsSnapshotConfig(t *testing.T) {
 				snapshot.RegistryNamespace,
 			)
 		}
+	}
+}
+
+func TestClientConstructorsRejectAmbiguousRPCURIs(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{
+		"http://plugin.example",
+		"grpc:opaque",
+		"grpc://user:secret@plugin.example",
+		"grpc://plugin.example/path",
+		"grpc://plugin.example?token=secret",
+		"grpc://plugin.example#secret",
+	} {
+		if _, err := NewSource(raw, ClientConfig{}); err == nil ||
+			strings.Contains(err.Error(), "secret") {
+			t.Fatalf("source URI %q error = %v", raw, err)
+		}
+	}
+	if err := RegisterDrivers(
+		sdk.NewPluginRegistry(),
+		ClientConfig{
+			RegistryURI: "grpc://registry.example?token=secret",
+		},
+	); err == nil || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("registry URI error = %v", err)
 	}
 }
 

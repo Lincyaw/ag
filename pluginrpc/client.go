@@ -40,6 +40,16 @@ func normalizeClientConfig(config ClientConfig) (ClientConfig, error) {
 		return ClientConfig{}, errors.New("RPC max message bytes must be positive")
 	}
 	config.RegistryURI = strings.TrimSpace(config.RegistryURI)
+	if config.RegistryURI != "" {
+		parsed, err := parseSourceURI(config.RegistryURI)
+		if err != nil {
+			return ClientConfig{}, fmt.Errorf(
+				"validate registry RPC URI: %w",
+				err,
+			)
+		}
+		config.RegistryURI = parsed.String()
+	}
 	config.RegistryNamespace = strings.TrimSpace(config.RegistryNamespace)
 	if config.RegistryNamespace == "" {
 		config.RegistryNamespace = registry.DefaultNamespace
@@ -65,9 +75,6 @@ func newSource(uri string, config ClientConfig) (*source, error) {
 	parsed, err := parseSourceURI(uri)
 	if err != nil {
 		return nil, err
-	}
-	if parsed.Scheme != "grpc" && parsed.Scheme != "grpcs" {
-		return nil, fmt.Errorf("unsupported plugin RPC scheme %q", parsed.Scheme)
 	}
 	config, err = normalizeClientConfig(config)
 	if err != nil {
@@ -491,6 +498,19 @@ func parseSourceURI(raw string) (*url.URL, error) {
 		return nil, fmt.Errorf("parse plugin RPC URI: %w", err)
 	}
 	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	if parsed.Scheme != "grpc" && parsed.Scheme != "grpcs" {
+		return nil, fmt.Errorf(
+			"unsupported plugin RPC scheme %q",
+			parsed.Scheme,
+		)
+	}
+	if parsed.Opaque != "" || parsed.User != nil ||
+		parsed.ForceQuery || parsed.RawQuery != "" ||
+		parsed.Fragment != "" {
+		return nil, errors.New(
+			"plugin RPC URI must not contain opaque data, credentials, query, or fragment",
+		)
+	}
 	if parsed.Host == "" {
 		return nil, fmt.Errorf("plugin RPC URI %q has no host", raw)
 	}
@@ -499,8 +519,6 @@ func parseSourceURI(raw string) (*url.URL, error) {
 	}
 	parsed.Path = ""
 	parsed.RawPath = ""
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
 	return parsed, nil
 }
 
