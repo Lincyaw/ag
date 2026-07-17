@@ -42,6 +42,14 @@ func NewHTTPHandler(
 	}
 	api := &httpAPI{service: service, authenticate: authenticate}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(
+		writer http.ResponseWriter,
+		_ *http.Request,
+	) {
+		writeJSON(writer, http.StatusOK, map[string]string{
+			"status": "ok",
+		})
+	})
 	mux.HandleFunc("POST /v1/sessions", api.createSession)
 	mux.HandleFunc("GET /v1/sessions", api.listSessions)
 	mux.HandleFunc("GET /v1/sessions/{session}", api.getSession)
@@ -413,7 +421,10 @@ func writeHTTPError(writer http.ResponseWriter, err error) {
 		errors.Is(err, ErrExecutionActive),
 		errors.Is(err, ErrPluginAmbiguous),
 		errors.Is(err, ErrPluginNotBound),
-		errors.Is(err, ErrBindingStale):
+		errors.Is(err, ErrBindingStale),
+		errors.Is(err, sdk.ErrTrajectoryExecution),
+		errors.Is(err, sdk.ErrTrajectoryClaimed),
+		errors.Is(err, sdk.ErrTrajectoryFence):
 		writeErrorCode(writer, http.StatusConflict, "conflict", err)
 	case errors.Is(err, ErrInvalidRequest),
 		errors.Is(err, registry.ErrInvalidRequest):

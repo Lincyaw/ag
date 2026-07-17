@@ -31,11 +31,18 @@ type ExecutionBackend interface {
 	Close(context.Context) error
 }
 
+type ExecutionRecoveryBackend interface {
+	Recover(context.Context, Session) (Execution, error)
+}
+
 type ServiceConfig struct {
 	Store            SessionStore
 	Directory        registry.Directory
 	Executions       ExecutionBackend
 	DefaultNamespace string
+	DefaultProvider  string
+	DefaultSystem    string
+	DefaultMaxTurns  int
 }
 
 type Service struct {
@@ -43,16 +50,36 @@ type Service struct {
 	directory  registry.Directory
 	executions ExecutionBackend
 	manager    *Manager
+	defaults   Session
 }
 
 func NewService(config ServiceConfig) (*Service, error) {
 	if config.Executions == nil {
 		return nil, errors.New("gateway execution backend is nil")
 	}
+	config.DefaultProvider = strings.TrimSpace(config.DefaultProvider)
+	if config.DefaultProvider != "" {
+		if err := sdk.ValidateResourceName(
+			"gateway default provider",
+			config.DefaultProvider,
+		); err != nil {
+			return nil, err
+		}
+	}
+	if config.DefaultMaxTurns < 0 {
+		return nil, errors.New(
+			"gateway default max turns cannot be negative",
+		)
+	}
 	service := &Service{
 		store:      config.Store,
 		directory:  config.Directory,
 		executions: config.Executions,
+		defaults: Session{
+			Provider: config.DefaultProvider,
+			System:   config.DefaultSystem,
+			MaxTurns: config.DefaultMaxTurns,
+		},
 	}
 	manager, err := NewManager(ManagerConfig{
 		Store:            config.Store,
@@ -71,6 +98,15 @@ func (service *Service) CreateSession(
 	ctx context.Context,
 	session Session,
 ) (Session, error) {
+	if session.Provider == "" {
+		session.Provider = service.defaults.Provider
+	}
+	if session.System == "" {
+		session.System = service.defaults.System
+	}
+	if session.MaxTurns == 0 {
+		session.MaxTurns = service.defaults.MaxTurns
+	}
 	session, err := normalizeSession(session)
 	if err != nil {
 		return Session{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
@@ -251,6 +287,72 @@ func (service *Service) CancelExecution(
 		session,
 		executionID,
 	)
+}
+
+func (service *Service) RecoverSessions(
+	ctx context.Context,
+) ([]Execution, error) {
+	recovery, ok := service.executions.(ExecutionRecoveryBackend)
+	if !ok {
+		return nil, nil
+	}
+	request := sdk.PageRequest{Limit: sdk.MaxPageSize}
+	var (
+		scheduled []Execution
+		failures  []error
+	)
+	for {
+		page, err := service.store.List(ctx, request)
+		if err != nil {
+			failures = append(failures, err)
+			return scheduled, errors.Join(failures...)
+		}
+		for _, session := range page.Items {
+			current, err := service.executions.Current(ctx, session)
+			if errors.Is(err, ErrExecutionNotFound) {
+				continue
+			}
+			if err != nil {
+				failures = append(failures, fmt.Errorf(
+					"inspect gateway session %s recovery: %w",
+					session.ID,
+					err,
+				))
+				continue
+			}
+			if current.Execution.Terminal() {
+				continue
+			}
+			if _, err := service.manager.ResolvePlugins(
+				ctx,
+				session,
+			); err != nil {
+				failures = append(failures, fmt.Errorf(
+					"recover gateway session %s plugins: %w",
+					session.ID,
+					err,
+				))
+				continue
+			}
+			execution, err := recovery.Recover(ctx, session)
+			if errors.Is(err, ErrExecutionNotFound) {
+				continue
+			}
+			if err != nil {
+				failures = append(failures, fmt.Errorf(
+					"recover gateway session %s: %w",
+					session.ID,
+					err,
+				))
+				continue
+			}
+			scheduled = append(scheduled, execution)
+		}
+		if page.Next == "" {
+			return scheduled, errors.Join(failures...)
+		}
+		request.After = page.Next
+	}
 }
 
 func (service *Service) Close(ctx context.Context) error {

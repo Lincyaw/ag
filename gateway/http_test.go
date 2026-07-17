@@ -108,6 +108,17 @@ func TestHTTPGatewaySessionPluginMessageAndCancelFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	health := serveJSON(
+		t,
+		handler,
+		http.MethodGet,
+		"/healthz",
+		"",
+		nil,
+	)
+	if health.Code != http.StatusOK {
+		t.Fatalf("health status=%d body=%s", health.Code, health.Body.String())
+	}
 
 	create := serveJSON(t, handler, http.MethodPost, "/v1/sessions", "user-a", map[string]any{
 		"id": "web-session", "provider": "openai", "max_turns": 8,
@@ -259,6 +270,67 @@ func TestHTTPGatewayRequiresIdentityAndStrictJSON(t *testing.T) {
 	)
 	if unknown.Code != http.StatusBadRequest {
 		t.Fatalf("unknown field status=%d body=%s", unknown.Code, unknown.Body.String())
+	}
+}
+
+func TestHTTPGatewayAppliesConfiguredSessionDefaults(t *testing.T) {
+	directory := registry.NewMemoryDirectory(registry.MemoryConfig{})
+	service, err := NewService(ServiceConfig{
+		Store: NewMemorySessionStore(), Directory: directory,
+		Executions:       newFakeExecutionBackend(),
+		DefaultProvider:  "openai",
+		DefaultSystem:    "gateway system",
+		DefaultMaxTurns:  6,
+		DefaultNamespace: registry.DefaultNamespace,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close(context.Background())
+	handler, err := NewHTTPHandler(service, HeaderAuthenticator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := serveJSON(
+		t,
+		handler,
+		http.MethodPost,
+		"/v1/sessions",
+		"user-a",
+		map[string]any{"id": "defaulted"},
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf(
+			"create status=%d body=%s",
+			response.Code,
+			response.Body.String(),
+		)
+	}
+	var session Session
+	decodeResponse(t, response, &session)
+	if session.Provider != "openai" ||
+		session.System != "gateway system" ||
+		session.MaxTurns != 6 {
+		t.Fatalf("defaulted session = %#v", session)
+	}
+}
+
+func TestHTTPGatewayMapsTrajectoryFencesToConflict(t *testing.T) {
+	for _, err := range []error{
+		sdk.ErrTrajectoryExecution,
+		sdk.ErrTrajectoryClaimed,
+		sdk.ErrTrajectoryFence,
+	} {
+		response := httptest.NewRecorder()
+		writeHTTPError(response, err)
+		if response.Code != http.StatusConflict {
+			t.Fatalf(
+				"error %v status=%d body=%s",
+				err,
+				response.Code,
+				response.Body.String(),
+			)
+		}
 	}
 }
 
