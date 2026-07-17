@@ -183,10 +183,24 @@ func (server *server) Close(ctx context.Context) error {
 	}
 }
 
+func (server *server) beginRPC() error {
+	server.lifecycleMu.Lock()
+	defer server.lifecycleMu.Unlock()
+	if server.closed {
+		return status.Error(codes.Unavailable, "plugin RPC server is closed")
+	}
+	server.wait.Add(1)
+	return nil
+}
+
 func (server *server) Describe(
 	context.Context,
 	*pluginv1.DescribeRequest,
 ) (*pluginv1.DescribeResponse, error) {
+	if err := server.beginRPC(); err != nil {
+		return nil, err
+	}
+	defer server.wait.Done()
 	response := &pluginv1.DescribeResponse{Manifest: toProtoManifest(server.manifest)}
 	for _, name := range sortedKeys(server.registrar.providers) {
 		response.Providers = append(response.Providers, toProtoProviderSpec(server.registrar.providers[name].spec))
@@ -221,6 +235,10 @@ func (server *server) SubmitOperation(
 	ctx context.Context,
 	request *pluginv1.SubmitOperationRequest,
 ) (*pluginv1.SubmitOperationResponse, error) {
+	if err := server.beginRPC(); err != nil {
+		return nil, err
+	}
+	defer server.wait.Done()
 	kind := fromProtoOperationKind(request.GetKind())
 	operationRequest := request.GetRequest()
 	if operationRequest == nil || operationRequest.GetIdempotencyKey() == "" {
@@ -253,6 +271,10 @@ func (server *server) PollOperation(
 	ctx context.Context,
 	request *pluginv1.PollOperationRequest,
 ) (*pluginv1.PollOperationResponse, error) {
+	if err := server.beginRPC(); err != nil {
+		return nil, err
+	}
+	defer server.wait.Done()
 	kind := fromProtoOperationKind(request.GetKind())
 	resource, err := server.operationResource(kind, request.GetResource())
 	if err != nil {
@@ -277,6 +299,10 @@ func (server *server) CancelOperation(
 	ctx context.Context,
 	request *pluginv1.CancelOperationRequest,
 ) (*pluginv1.CancelOperationResponse, error) {
+	if err := server.beginRPC(); err != nil {
+		return nil, err
+	}
+	defer server.wait.Done()
 	kind := fromProtoOperationKind(request.GetKind())
 	resource, err := server.operationResource(kind, request.GetResource())
 	if err != nil {
@@ -370,6 +396,10 @@ func (server *server) HandleHook(
 	ctx context.Context,
 	request *pluginv1.HandleHookRequest,
 ) (*pluginv1.HandleHookResponse, error) {
+	if err := server.beginRPC(); err != nil {
+		return nil, err
+	}
+	defer server.wait.Done()
 	hook, exists := server.registrar.hooks[request.GetHook()]
 	if !exists {
 		return nil, status.Errorf(codes.NotFound, "hook %q not found", request.GetHook())
@@ -393,6 +423,10 @@ func (server *server) Deliver(
 	ctx context.Context,
 	request *pluginv1.DeliverRequest,
 ) (*pluginv1.DeliverResponse, error) {
+	if err := server.beginRPC(); err != nil {
+		return nil, err
+	}
+	defer server.wait.Done()
 	delivery, err := fromProtoDelivery(request.GetDelivery())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())

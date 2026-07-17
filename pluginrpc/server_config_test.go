@@ -13,6 +13,8 @@ import (
 	pluginv1 "github.com/lincyaw/ag/pluginrpc/v1"
 	"github.com/lincyaw/ag/sdk"
 	sdkstorage "github.com/lincyaw/ag/sdk/storage"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type serverConfigTool struct{}
@@ -206,6 +208,83 @@ func TestClosedServerRejectsStoredOperationBeforePersistence(t *testing.T) {
 	}
 	if len(records) != 0 {
 		t.Fatalf("operations persisted after close = %#v", records)
+	}
+}
+
+func TestClosedServerRejectsRPCMethods(t *testing.T) {
+	t.Parallel()
+	service, err := NewServer(context.Background(), ServerConfig{
+		Plugin: sdk.PluginFunc{
+			PluginManifest: sdk.Manifest{
+				Name:        "closed-rpc-server",
+				Version:     "1.0.0",
+				Description: "verifies the RPC lifecycle gate",
+				APIVersion:  sdk.APIVersion,
+			},
+			InstallFunc: func(context.Context, sdk.Registrar) error {
+				return nil
+			},
+		},
+		Operations: sdkstorage.NewMemoryOperationStore(),
+		Inbox:      sdkstorage.NewMemoryDeliveryStore(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	requests := map[string]func() error{
+		"describe": func() error {
+			_, err := service.Describe(
+				context.Background(),
+				&pluginv1.DescribeRequest{},
+			)
+			return err
+		},
+		"submit": func() error {
+			_, err := service.SubmitOperation(
+				context.Background(),
+				&pluginv1.SubmitOperationRequest{},
+			)
+			return err
+		},
+		"poll": func() error {
+			_, err := service.PollOperation(
+				context.Background(),
+				&pluginv1.PollOperationRequest{},
+			)
+			return err
+		},
+		"cancel": func() error {
+			_, err := service.CancelOperation(
+				context.Background(),
+				&pluginv1.CancelOperationRequest{},
+			)
+			return err
+		},
+		"hook": func() error {
+			_, err := service.HandleHook(
+				context.Background(),
+				&pluginv1.HandleHookRequest{},
+			)
+			return err
+		},
+		"deliver": func() error {
+			_, err := service.Deliver(
+				context.Background(),
+				&pluginv1.DeliverRequest{},
+			)
+			return err
+		},
+	}
+	for name, request := range requests {
+		t.Run(name, func(t *testing.T) {
+			if code := status.Code(request()); code != codes.Unavailable {
+				t.Fatalf("status = %s", code)
+			}
+		})
 	}
 }
 
