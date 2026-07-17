@@ -128,6 +128,13 @@ func TestHTTPGatewaySessionPluginMessageAndCancelFlow(t *testing.T) {
 	}
 	var session Session
 	decodeResponse(t, create, &session)
+	if _, err := service.GetSession(
+		ctx,
+		" user-a ",
+		session.ID,
+	); err != nil {
+		t.Fatalf("get session with normalized user ID: %v", err)
+	}
 
 	attach := serveJSON(
 		t,

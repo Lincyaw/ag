@@ -142,11 +142,11 @@ func (service *Service) ListSessions(
 	userID string,
 	request sdk.PageRequest,
 ) (SessionPage, error) {
-	userID = strings.TrimSpace(userID)
-	if err := validateUserID(userID); err != nil {
+	userID, err := normalizeUserID(userID)
+	if err != nil {
 		return SessionPage{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
-	request, err := validatePage(request)
+	request, err = validatePage(request)
 	if err != nil {
 		return SessionPage{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}

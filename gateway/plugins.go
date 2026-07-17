@@ -216,7 +216,8 @@ func (manager *Manager) ownedSession(
 	if err != nil {
 		return Session{}, err
 	}
-	if strings.TrimSpace(userID) == "" || session.UserID != userID {
+	userID, err = normalizeUserID(userID)
+	if err != nil || session.UserID != userID {
 		return Session{}, fmt.Errorf("%w: %s", ErrForbidden, sessionID)
 	}
 	return session, nil

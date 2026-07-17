@@ -67,12 +67,13 @@ type SessionStore interface {
 
 func normalizeSession(session Session) (Session, error) {
 	session.ID = strings.TrimSpace(session.ID)
-	session.UserID = strings.TrimSpace(session.UserID)
 	session.Provider = strings.TrimSpace(session.Provider)
 	if err := sdk.ValidateResourceName("gateway session", session.ID); err != nil {
 		return Session{}, err
 	}
-	if err := validateUserID(session.UserID); err != nil {
+	var err error
+	session.UserID, err = normalizeUserID(session.UserID)
+	if err != nil {
 		return Session{}, err
 	}
 	if session.Provider != "" {
@@ -177,6 +178,14 @@ func validateUserID(value string) error {
 		}
 	}
 	return nil
+}
+
+func normalizeUserID(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if err := validateUserID(value); err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 func cloneSession(session Session) Session {

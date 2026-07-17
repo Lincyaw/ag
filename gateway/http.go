@@ -23,11 +23,7 @@ const (
 type Authenticator func(*http.Request) (string, error)
 
 func HeaderAuthenticator(request *http.Request) (string, error) {
-	userID := strings.TrimSpace(request.Header.Get(UserHeader))
-	if err := validateUserID(userID); err != nil {
-		return "", err
-	}
-	return userID, nil
+	return normalizeUserID(request.Header.Get(UserHeader))
 }
 
 func NewHTTPHandler(
@@ -341,9 +337,8 @@ func (api *httpAPI) user(
 	request *http.Request,
 ) (string, bool) {
 	userID, err := api.authenticate(request)
-	userID = strings.TrimSpace(userID)
 	if err == nil {
-		err = validateUserID(userID)
+		userID, err = normalizeUserID(userID)
 	}
 	if err != nil {
 		writeErrorCode(
