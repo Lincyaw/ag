@@ -5,33 +5,49 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
+
+	"github.com/lincyaw/ag/sdk"
 )
 
 type operationExecutor func(context.Context, json.RawMessage) (json.RawMessage, error)
 
+type operationRuntime struct {
+	store    sdk.OperationStore
+	context  context.Context
+	cancel   context.CancelFunc
+	mu       sync.Mutex
+	cancels  map[string]context.CancelFunc
+	wait     sync.WaitGroup
+	poll     time.Duration
+	lease    time.Duration
+	workerID string
+}
+
 type localAsyncProvider struct {
 	runtime     *Runtime
-	synchronous SyncProvider
+	synchronous sdk.SyncProvider
+	spec        sdk.ProviderSpec
 	revision    string
 }
 
-func (provider localAsyncProvider) Spec() ProviderSpec {
-	return provider.synchronous.Spec()
+func (provider localAsyncProvider) Spec() sdk.ProviderSpec {
+	return provider.spec
 }
 
 func (provider localAsyncProvider) SubmitCompletion(
 	ctx context.Context,
-	request OperationRequest,
-) (Operation, error) {
+	request sdk.OperationRequest,
+) (sdk.Operation, error) {
 	return provider.runtime.submitLocalOperation(
 		ctx,
-		OperationKindProvider,
-		provider.Spec().Name,
+		sdk.OperationKindProvider,
+		provider.spec.Name,
 		provider.revision,
 		request,
 		func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-			var modelRequest ModelRequest
+			var modelRequest sdk.ModelRequest
 			if err := json.Unmarshal(input, &modelRequest); err != nil {
 				return nil, err
 			}
@@ -48,41 +64,43 @@ func (provider localAsyncProvider) PollCompletion(
 	ctx context.Context,
 	id string,
 	_ uint64,
-) (Operation, error) {
-	return provider.runtime.pollLocalOperation(ctx, OperationKindProvider, provider.Spec().Name, id)
+) (sdk.Operation, error) {
+	return provider.runtime.pollLocalOperation(ctx, sdk.OperationKindProvider, provider.spec.Name, id)
 }
 
 func (provider localAsyncProvider) CancelCompletion(
 	ctx context.Context,
 	id string,
-) (Operation, error) {
-	return provider.runtime.cancelLocalOperation(ctx, OperationKindProvider, provider.Spec().Name, id)
+) (sdk.Operation, error) {
+	return provider.runtime.cancelLocalOperation(ctx, sdk.OperationKindProvider, provider.spec.Name, id)
 }
 
 type localAsyncTool struct {
 	runtime     *Runtime
-	synchronous SyncTool
+	synchronous sdk.SyncTool
+	spec        sdk.ToolSpec
 	revision    string
 }
 
 type localAsyncCapability struct {
 	runtime     *Runtime
-	synchronous SyncCapability
+	synchronous sdk.SyncCapability
+	spec        sdk.CapabilitySpec
 	revision    string
 }
 
-func (capability localAsyncCapability) Spec() CapabilitySpec {
-	return capability.synchronous.Spec()
+func (capability localAsyncCapability) Spec() sdk.CapabilitySpec {
+	return cloneCapabilitySpec(capability.spec)
 }
 
 func (capability localAsyncCapability) SubmitInvoke(
 	ctx context.Context,
-	request OperationRequest,
-) (Operation, error) {
+	request sdk.OperationRequest,
+) (sdk.Operation, error) {
 	return capability.runtime.submitLocalOperation(
 		ctx,
-		OperationKindCapability,
-		capability.Spec().Name,
+		sdk.OperationKindCapability,
+		capability.spec.Name,
 		capability.revision,
 		request,
 		func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
@@ -95,31 +113,31 @@ func (capability localAsyncCapability) PollInvoke(
 	ctx context.Context,
 	id string,
 	_ uint64,
-) (Operation, error) {
+) (sdk.Operation, error) {
 	return capability.runtime.pollLocalOperation(
-		ctx, OperationKindCapability, capability.Spec().Name, id,
+		ctx, sdk.OperationKindCapability, capability.spec.Name, id,
 	)
 }
 
 func (capability localAsyncCapability) CancelInvoke(
 	ctx context.Context,
 	id string,
-) (Operation, error) {
+) (sdk.Operation, error) {
 	return capability.runtime.cancelLocalOperation(
-		ctx, OperationKindCapability, capability.Spec().Name, id,
+		ctx, sdk.OperationKindCapability, capability.spec.Name, id,
 	)
 }
 
-func (tool localAsyncTool) Spec() ToolSpec { return tool.synchronous.Spec() }
+func (tool localAsyncTool) Spec() sdk.ToolSpec { return cloneToolSpec(tool.spec) }
 
 func (tool localAsyncTool) SubmitCall(
 	ctx context.Context,
-	request OperationRequest,
-) (Operation, error) {
+	request sdk.OperationRequest,
+) (sdk.Operation, error) {
 	return tool.runtime.submitLocalOperation(
 		ctx,
-		OperationKindTool,
-		tool.Spec().Name,
+		sdk.OperationKindTool,
+		tool.spec.Name,
 		tool.revision,
 		request,
 		func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
@@ -136,88 +154,108 @@ func (tool localAsyncTool) PollCall(
 	ctx context.Context,
 	id string,
 	_ uint64,
-) (Operation, error) {
-	return tool.runtime.pollLocalOperation(ctx, OperationKindTool, tool.Spec().Name, id)
+) (sdk.Operation, error) {
+	return tool.runtime.pollLocalOperation(ctx, sdk.OperationKindTool, tool.spec.Name, id)
 }
 
 func (tool localAsyncTool) CancelCall(
 	ctx context.Context,
 	id string,
-) (Operation, error) {
-	return tool.runtime.cancelLocalOperation(ctx, OperationKindTool, tool.Spec().Name, id)
+) (sdk.Operation, error) {
+	return tool.runtime.cancelLocalOperation(ctx, sdk.OperationKindTool, tool.spec.Name, id)
 }
 
 func (runtime *Runtime) wrapSynchronousResources(
 	registrar *stagingRegistrar,
-	manifest Manifest,
+	manifest sdk.Manifest,
 ) {
-	for name, provider := range registrar.providers {
-		if _, asynchronous := provider.(AsyncProvider); asynchronous {
+	for name, staged := range registrar.providers {
+		if _, asynchronous := staged.value.(sdk.AsyncProvider); asynchronous {
 			continue
 		}
-		registrar.providers[name] = localAsyncProvider{
+		staged.value = localAsyncProvider{
 			runtime:     runtime,
-			synchronous: provider.(SyncProvider),
-			revision: ResourceRevision(
+			synchronous: staged.value.(sdk.SyncProvider),
+			spec:        staged.spec,
+			revision: sdk.ResourceRevision(
 				manifest,
-				OperationKindProvider,
+				string(sdk.OperationKindProvider),
 				name,
-				provider.Spec(),
+				staged.spec,
 			),
 		}
+		registrar.providers[name] = staged
 	}
-	for name, tool := range registrar.tools {
-		if _, asynchronous := tool.(AsyncTool); asynchronous {
+	for name, staged := range registrar.tools {
+		if _, asynchronous := staged.value.(sdk.AsyncTool); asynchronous {
 			continue
 		}
-		registrar.tools[name] = localAsyncTool{
+		staged.value = localAsyncTool{
 			runtime:     runtime,
-			synchronous: tool.(SyncTool),
-			revision: ResourceRevision(
+			synchronous: staged.value.(sdk.SyncTool),
+			spec:        staged.spec,
+			revision: sdk.ResourceRevision(
 				manifest,
-				OperationKindTool,
+				string(sdk.OperationKindTool),
 				name,
-				tool.Spec(),
+				staged.spec,
 			),
 		}
+		registrar.tools[name] = staged
 	}
-	for name, capability := range registrar.capabilities {
-		if _, asynchronous := capability.(AsyncCapability); asynchronous {
+	for name, staged := range registrar.capabilities {
+		if _, asynchronous := staged.value.(sdk.AsyncCapability); asynchronous {
 			continue
 		}
-		registrar.capabilities[name] = localAsyncCapability{
+		staged.value = localAsyncCapability{
 			runtime:     runtime,
-			synchronous: capability.(SyncCapability),
-			revision: ResourceRevision(
+			synchronous: staged.value.(sdk.SyncCapability),
+			spec:        staged.spec,
+			revision: sdk.ResourceRevision(
 				manifest,
-				OperationKindCapability,
+				string(sdk.OperationKindCapability),
 				name,
-				capability.Spec(),
+				staged.spec,
 			),
 		}
+		registrar.capabilities[name] = staged
 	}
 }
 
 func (runtime *Runtime) submitLocalOperation(
 	ctx context.Context,
-	kind OperationKind,
+	kind sdk.OperationKind,
 	resource string,
 	resourceRevision string,
-	request OperationRequest,
+	request sdk.OperationRequest,
 	execute operationExecutor,
-) (Operation, error) {
-	record, _, err := runtime.operations.Submit(ctx, OperationRecord{
-		Operation:        Operation{IdempotencyKey: request.IdempotencyKey},
+) (sdk.Operation, error) {
+	runtime.mu.Lock()
+	if runtime.closed {
+		runtime.mu.Unlock()
+		return sdk.Operation{}, errors.New("runtime is closed")
+	}
+	runtime.operation.wait.Add(1)
+	runtime.mu.Unlock()
+	started := false
+	defer func() {
+		if !started {
+			runtime.operation.wait.Done()
+		}
+	}()
+
+	record, _, err := runtime.operation.store.Submit(ctx, sdk.OperationRecord{
+		Operation:        sdk.Operation{IdempotencyKey: request.IdempotencyKey},
 		Kind:             kind,
 		Resource:         resource,
 		ResourceRevision: resourceRevision,
 		Input:            append(json.RawMessage(nil), request.Input...),
 	})
 	if err != nil {
-		return Operation{}, err
+		return sdk.Operation{}, err
 	}
 	if !record.Operation.Terminal() {
-		runtime.startLocalOperation(ctx, record.Operation.ID, execute)
+		started = runtime.startLocalOperation(ctx, record.Operation.ID, execute)
 	}
 	return record.Operation, nil
 }
@@ -226,28 +264,28 @@ func (runtime *Runtime) startLocalOperation(
 	parent context.Context,
 	id string,
 	execute operationExecutor,
-) {
-	runtime.operationMu.Lock()
-	if _, running := runtime.operationCancels[id]; running {
-		runtime.operationMu.Unlock()
-		return
+) bool {
+	runtime.operation.mu.Lock()
+	if _, running := runtime.operation.cancels[id]; running {
+		runtime.operation.mu.Unlock()
+		return false
 	}
 	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
-	stopRuntimeCancel := context.AfterFunc(runtime.operationContext, cancel)
-	runtime.operationCancels[id] = cancel
-	runtime.operationWait.Add(1)
-	runtime.operationMu.Unlock()
+	stopRuntimeCancel := context.AfterFunc(runtime.operation.context, cancel)
+	runtime.operation.cancels[id] = cancel
+	runtime.operation.mu.Unlock()
 	go func() {
-		defer runtime.operationWait.Done()
+		defer runtime.operation.wait.Done()
 		defer func() {
 			stopRuntimeCancel()
 			cancel()
-			runtime.operationMu.Lock()
-			delete(runtime.operationCancels, id)
-			runtime.operationMu.Unlock()
+			runtime.operation.mu.Lock()
+			delete(runtime.operation.cancels, id)
+			runtime.operation.mu.Unlock()
 		}()
 		runtime.executeLocalOperation(ctx, id, execute)
 	}()
+	return true
 }
 
 func (runtime *Runtime) executeLocalOperation(
@@ -255,15 +293,15 @@ func (runtime *Runtime) executeLocalOperation(
 	id string,
 	execute operationExecutor,
 ) {
-	record, err := runtime.operations.Claim(
+	record, err := runtime.operation.store.Claim(
 		ctx,
 		id,
-		runtime.operationWorkerID,
+		runtime.operation.workerID,
 		time.Now().UTC(),
-		runtime.operationLease,
+		runtime.operation.lease,
 	)
 	if err != nil {
-		if !errors.Is(err, ErrOperationClaimed) {
+		if !errors.Is(err, sdk.ErrOperationClaimed) {
 			runtime.logger.Debug(
 				"claim local operation",
 				"operation_id",
@@ -305,12 +343,12 @@ func (runtime *Runtime) executeLocalOperation(
 	default:
 	}
 	if ctx.Err() != nil {
-		_, releaseErr := runtime.operations.Release(
+		_, releaseErr := runtime.operation.store.Release(
 			context.Background(),
 			id,
 			token,
 		)
-		if releaseErr != nil && !errors.Is(releaseErr, ErrOperationFence) {
+		if releaseErr != nil && !errors.Is(releaseErr, sdk.ErrOperationFence) {
 			runtime.logger.Error(
 				"release local operation",
 				"operation_id",
@@ -321,14 +359,14 @@ func (runtime *Runtime) executeLocalOperation(
 		}
 		return
 	}
-	state := OperationSucceeded
+	state := sdk.OperationSucceeded
 	errorText := ""
 	if executeErr != nil {
-		state = OperationFailed
+		state = sdk.OperationFailed
 		output = nil
 		errorText = executeErr.Error()
 	}
-	_, err = runtime.operations.Complete(
+	_, err = runtime.operation.store.Complete(
 		context.Background(),
 		id,
 		token,
@@ -336,7 +374,7 @@ func (runtime *Runtime) executeLocalOperation(
 		output,
 		errorText,
 	)
-	if err != nil && !errors.Is(err, ErrOperationFence) {
+	if err != nil && !errors.Is(err, sdk.ErrOperationFence) {
 		runtime.logger.Error("complete local operation", "operation_id", id, "error", err)
 	}
 }
@@ -350,7 +388,7 @@ func (runtime *Runtime) renewOperationLease(
 	lost chan<- error,
 ) {
 	defer close(done)
-	interval := runtime.operationLease / 3
+	interval := runtime.operation.lease / 3
 	if interval < time.Millisecond {
 		interval = time.Millisecond
 	}
@@ -361,12 +399,12 @@ func (runtime *Runtime) renewOperationLease(
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			_, err := runtime.operations.Renew(
+			_, err := runtime.operation.store.Renew(
 				ctx,
 				id,
 				token,
 				now.UTC(),
-				runtime.operationLease,
+				runtime.operation.lease,
 			)
 			if err != nil {
 				select {
@@ -382,16 +420,16 @@ func (runtime *Runtime) renewOperationLease(
 
 func (runtime *Runtime) pollLocalOperation(
 	ctx context.Context,
-	kind OperationKind,
+	kind sdk.OperationKind,
 	resource string,
 	id string,
-) (Operation, error) {
-	record, err := runtime.operations.Get(ctx, id)
+) (sdk.Operation, error) {
+	record, err := runtime.operation.store.Get(ctx, id)
 	if err != nil {
-		return Operation{}, err
+		return sdk.Operation{}, err
 	}
 	if record.Kind != kind || record.Resource != resource {
-		return Operation{}, fmt.Errorf(
+		return sdk.Operation{}, fmt.Errorf(
 			"operation %q belongs to %s %q, not %s %q",
 			id, record.Kind, record.Resource, kind, resource,
 		)
@@ -401,33 +439,33 @@ func (runtime *Runtime) pollLocalOperation(
 
 func (runtime *Runtime) cancelLocalOperation(
 	ctx context.Context,
-	kind OperationKind,
+	kind sdk.OperationKind,
 	resource string,
 	id string,
-) (Operation, error) {
+) (sdk.Operation, error) {
 	for {
-		record, err := runtime.operations.Get(ctx, id)
+		record, err := runtime.operation.store.Get(ctx, id)
 		if err != nil {
-			return Operation{}, err
+			return sdk.Operation{}, err
 		}
 		if record.Kind != kind || record.Resource != resource {
-			return Operation{}, fmt.Errorf("operation %q does not belong to %s %q", id, kind, resource)
+			return sdk.Operation{}, fmt.Errorf("operation %q does not belong to %s %q", id, kind, resource)
 		}
 		if record.Operation.Terminal() {
 			return record.Operation, nil
 		}
-		cancelled, err := runtime.operations.Transition(
-			ctx, id, record.Operation.Revision, OperationCancelled, nil, "",
+		cancelled, err := runtime.operation.store.Transition(
+			ctx, id, record.Operation.Revision, sdk.OperationCancelled, nil, "",
 		)
-		if errors.Is(err, ErrOperationConflict) {
+		if errors.Is(err, sdk.ErrOperationConflict) {
 			continue
 		}
 		if err != nil {
-			return Operation{}, err
+			return sdk.Operation{}, err
 		}
-		runtime.operationMu.Lock()
-		cancel := runtime.operationCancels[id]
-		runtime.operationMu.Unlock()
+		runtime.operation.mu.Lock()
+		cancel := runtime.operation.cancels[id]
+		runtime.operation.mu.Unlock()
 		if cancel != nil {
 			cancel()
 		}

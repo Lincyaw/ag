@@ -8,15 +8,21 @@ import (
 	"testing"
 	"time"
 
+	pluginv1 "github.com/lincyaw/ag/pluginrpc/v1"
 	"github.com/lincyaw/ag/sdk"
+	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-func TestRegistryServiceDiscoveryExpiryAndMaintain(t *testing.T) {
+func TestRegistryServiceDiscoveryAndExpiry(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	pluginAdapter, err := NewServer(ctx, ServerConfig{Plugin: newE2EPlugin()})
+	pluginAdapter, err := NewServer(ctx, ServerConfig{
+		Plugin:     newE2EPlugin(),
+		Operations: sdkstorage.NewMemoryOperationStore(),
+		Inbox:      sdkstorage.NewMemoryDeliveryStore(),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,9 +47,7 @@ func TestRegistryServiceDiscoveryExpiryAndMaintain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := RegisterRegistryService(grpcServer, registryAdapter); err != nil {
-		t.Fatal(err)
-	}
+	pluginv1.RegisterRegistryServiceServer(grpcServer, registryAdapter)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -114,30 +118,6 @@ func TestRegistryServiceDiscoveryExpiryAndMaintain(t *testing.T) {
 	if _, err := client.Renew(ctx, lease.ID, time.Minute); status.Code(err) != codes.NotFound {
 		t.Fatalf("stale renew status = %s, error = %v", status.Code(err), err)
 	}
-
-	maintained := registration
-	maintained.Name = "maintained"
-	maintained.Manifest.Name = "maintained"
-	maintainCtx, cancelMaintain := context.WithCancel(ctx)
-	maintainDone := make(chan error, 1)
-	go func() { maintainDone <- client.Maintain(maintainCtx, maintained, 30*time.Second) }()
-	eventuallyRPC(t, time.Second, func() bool {
-		registrations, listErr := client.List(ctx)
-		return listErr == nil && len(registrations) == 1 && registrations[0].Name == maintained.Name
-	})
-	cancelMaintain()
-	select {
-	case maintainErr := <-maintainDone:
-		if !errors.Is(maintainErr, context.Canceled) {
-			t.Fatalf("maintain error = %v", maintainErr)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Maintain did not stop after cancellation")
-	}
-	eventuallyRPC(t, time.Second, func() bool {
-		registrations, listErr := client.List(ctx)
-		return listErr == nil && len(registrations) == 0
-	})
 }
 
 func eventuallyRPC(t *testing.T, timeout time.Duration, condition func() bool) {

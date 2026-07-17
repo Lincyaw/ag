@@ -5,14 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/lincyaw/ag/sdk"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -31,11 +30,8 @@ type RuntimeConfig struct {
 	Logger              *slog.Logger
 	Tracer              trace.Tracer
 	Meter               metric.Meter
-	Storage             StateBackend
+	Storage             sdk.StateBackend
 	StorageOwnership    StorageOwnership
-	Trajectories        TrajectoryStore
-	Operations          OperationStore
-	Outbox              DeliveryStore
 	DeliveryWorkers     int
 	DeliveryLease       time.Duration
 	DeliveryPoll        time.Duration
@@ -47,43 +43,28 @@ type RuntimeConfig struct {
 }
 
 type Runtime struct {
-	mu                  sync.Mutex
-	current             atomic.Pointer[registrySnapshot]
-	closed              bool
-	nextSequence        uint64
-	version             string
-	logger              *slog.Logger
-	tracer              trace.Tracer
-	mounts              metric.Int64Counter
-	unmounts            metric.Int64Counter
-	events              metric.Int64Counter
-	hooks               metric.Int64Counter
-	hookTimeout         time.Duration
-	storage             StateBackend
-	closeStorage        bool
-	trajectories        TrajectoryStore
-	operations          OperationStore
-	operationContext    context.Context
-	cancelOperations    context.CancelFunc
-	operationMu         sync.Mutex
-	operationCancels    map[string]context.CancelFunc
-	operationWait       sync.WaitGroup
-	outbox              DeliveryStore
-	deliveryWorkers     int
-	deliveryLease       time.Duration
-	deliveryPoll        time.Duration
-	deliveryTimeout     time.Duration
-	deliveryMaxAttempts int
-	deliveryContext     context.Context
-	cancelDeliveries    context.CancelFunc
-	deliveryOnce        sync.Once
-	deliveryWait        sync.WaitGroup
-	operationPoll       time.Duration
-	operationLease      time.Duration
-	operationWorkerID   string
+	mu           sync.Mutex
+	current      atomic.Pointer[registrySnapshot]
+	closed       bool
+	closeDone    chan struct{}
+	closeErr     error
+	nextSequence uint64
+	version      string
+	logger       *slog.Logger
+	tracer       trace.Tracer
+	mounts       metric.Int64Counter
+	unmounts     metric.Int64Counter
+	events       metric.Int64Counter
+	hooks        metric.Int64Counter
+	hookTimeout  time.Duration
+	storage      sdk.StateBackend
+	closeStorage bool
+	trajectories sdk.TrajectoryStore
+	operation    operationRuntime
+	delivery     deliveryRuntime
 }
 
-func NewRuntime(config RuntimeConfig) (*Runtime, error) {
+func normalizeRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 	if strings.TrimSpace(config.RuntimeVersion) == "" {
 		config.RuntimeVersion = "development"
 	}
@@ -96,11 +77,8 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	if config.Meter == nil {
 		config.Meter = otel.Meter(instrumentationName)
 	}
-	if config.Storage != nil &&
-		(config.Trajectories != nil || config.Operations != nil || config.Outbox != nil) {
-		return nil, errors.New(
-			"runtime storage backend and individual stores are mutually exclusive",
-		)
+	if config.Storage == nil {
+		return RuntimeConfig{}, errors.New("runtime state backend is required")
 	}
 	if config.StorageOwnership == "" {
 		config.StorageOwnership = StorageOwned
@@ -108,45 +86,10 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	switch config.StorageOwnership {
 	case StorageOwned, StorageBorrowed:
 	default:
-		return nil, fmt.Errorf(
+		return RuntimeConfig{}, fmt.Errorf(
 			"unknown storage ownership %q",
 			config.StorageOwnership,
 		)
-	}
-	if config.Storage == nil {
-		if config.Trajectories == nil &&
-			config.Operations == nil &&
-			config.Outbox == nil {
-			config.Storage = NewMemoryStateBackend()
-		} else {
-			if config.Trajectories == nil {
-				config.Trajectories = NewMemoryTrajectoryStore()
-			}
-			if config.Operations == nil {
-				config.Operations = NewMemoryOperationStore()
-			}
-			if config.Outbox == nil {
-				config.Outbox = NewMemoryDeliveryStore()
-			}
-			config.Storage = composedStateBackend{
-				trajectories: config.Trajectories,
-				operations:   config.Operations,
-				outbox:       config.Outbox,
-			}
-		}
-	}
-	if err := config.Storage.Health(context.Background()); err != nil {
-		return nil, fmt.Errorf("state backend health: %w", err)
-	}
-	config.Trajectories = config.Storage.Trajectories()
-	config.Operations = config.Storage.Operations()
-	var err error
-	config.Outbox, err = config.Storage.Deliveries(HostOutboxQueue)
-	if err != nil {
-		return nil, fmt.Errorf("open host outbox: %w", err)
-	}
-	if config.Trajectories == nil || config.Operations == nil || config.Outbox == nil {
-		return nil, errors.New("state backend returned a nil store")
 	}
 	if config.DeliveryWorkers == 0 {
 		config.DeliveryWorkers = 2
@@ -176,12 +119,23 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 		config.DeliveryPoll <= 0 || config.DeliveryTimeout <= 0 ||
 		config.DeliveryMaxAttempts < 1 || config.HookTimeout <= 0 ||
 		config.OperationPoll <= 0 || config.OperationLease <= 0 {
-		return nil, errors.New("delivery and operation settings must be positive")
+		return RuntimeConfig{}, errors.New(
+			"delivery and operation settings must be positive",
+		)
 	}
 	if config.DeliveryTimeout >= config.DeliveryLease {
-		return nil, errors.New(
+		return RuntimeConfig{}, errors.New(
 			"delivery timeout must be shorter than the delivery lease",
 		)
+	}
+	return config, nil
+}
+
+func NewRuntime(config RuntimeConfig) (*Runtime, error) {
+	// Ownership of Storage transfers only when construction succeeds.
+	config, err := normalizeRuntimeConfig(config)
+	if err != nil {
+		return nil, err
 	}
 
 	mounts, err := config.Meter.Int64Counter(
@@ -212,537 +166,119 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create hooks counter: %w", err)
 	}
+	if err := config.Storage.Health(context.Background()); err != nil {
+		return nil, fmt.Errorf("state backend health: %w", err)
+	}
+	trajectories := config.Storage.Trajectories()
+	operations := config.Storage.Operations()
+	deliveryStore, err := config.Storage.Deliveries(sdk.HostOutboxQueue)
+	if err != nil {
+		return nil, fmt.Errorf("open host outbox: %w", err)
+	}
+	if trajectories == nil || operations == nil || deliveryStore == nil {
+		return nil, errors.New("state backend returned a nil store")
+	}
 	deliveryContext, cancelDeliveries := context.WithCancel(context.Background())
 	operationContext, cancelOperations := context.WithCancel(context.Background())
 	runtime := &Runtime{
-		version:             config.RuntimeVersion,
-		logger:              config.Logger,
-		tracer:              config.Tracer,
-		mounts:              mounts,
-		unmounts:            unmounts,
-		events:              events,
-		hooks:               hooks,
-		hookTimeout:         config.HookTimeout,
-		storage:             config.Storage,
-		closeStorage:        config.StorageOwnership == StorageOwned,
-		trajectories:        config.Trajectories,
-		operations:          config.Operations,
-		operationContext:    operationContext,
-		cancelOperations:    cancelOperations,
-		operationCancels:    make(map[string]context.CancelFunc),
-		outbox:              config.Outbox,
-		deliveryWorkers:     config.DeliveryWorkers,
-		deliveryLease:       config.DeliveryLease,
-		deliveryPoll:        config.DeliveryPoll,
-		deliveryTimeout:     config.DeliveryTimeout,
-		deliveryMaxAttempts: config.DeliveryMaxAttempts,
-		deliveryContext:     deliveryContext,
-		cancelDeliveries:    cancelDeliveries,
-		operationPoll:       config.OperationPoll,
-		operationLease:      config.OperationLease,
-		operationWorkerID:   "runtime-" + newDispatchID(),
+		version:      config.RuntimeVersion,
+		logger:       config.Logger,
+		tracer:       config.Tracer,
+		closeDone:    make(chan struct{}),
+		mounts:       mounts,
+		unmounts:     unmounts,
+		events:       events,
+		hooks:        hooks,
+		hookTimeout:  config.HookTimeout,
+		storage:      config.Storage,
+		closeStorage: config.StorageOwnership == StorageOwned,
+		trajectories: trajectories,
+		operation: operationRuntime{
+			store:    operations,
+			context:  operationContext,
+			cancel:   cancelOperations,
+			cancels:  make(map[string]context.CancelFunc),
+			poll:     config.OperationPoll,
+			lease:    config.OperationLease,
+			workerID: "runtime-" + sdk.NewID(),
+		},
+		delivery: deliveryRuntime{
+			store:       deliveryStore,
+			workers:     config.DeliveryWorkers,
+			lease:       config.DeliveryLease,
+			poll:        config.DeliveryPoll,
+			timeout:     config.DeliveryTimeout,
+			maxAttempts: config.DeliveryMaxAttempts,
+			context:     deliveryContext,
+			cancel:      cancelDeliveries,
+		},
 	}
 	runtime.current.Store(initialSnapshot())
 	return runtime, nil
 }
 
-func (runtime *Runtime) Trajectories() TrajectoryStore {
-	if runtime == nil {
-		return nil
-	}
-	return runtime.trajectories
-}
-
-func (runtime *Runtime) Operations() OperationStore {
-	if runtime == nil {
-		return nil
-	}
-	return runtime.operations
-}
-
-func (runtime *Runtime) Outbox() DeliveryStore {
-	if runtime == nil {
-		return nil
-	}
-	return runtime.outbox
-}
-
-type Mount struct {
-	runtime *Runtime
-	state   *mountState
-}
-
-func (mount *Mount) Name() string {
-	if mount == nil || mount.state == nil {
-		return ""
-	}
-	return mount.state.manifest.Name
-}
-
-func (mount *Mount) Unmount(ctx context.Context) error {
-	if mount == nil || mount.runtime == nil || mount.state == nil {
-		return nil
-	}
-	return mount.runtime.unmount(ctx, mount.state)
-}
-
-func (mount *Mount) Done() <-chan struct{} {
-	if mount == nil || mount.state == nil {
-		done := make(chan struct{})
-		close(done)
-		return done
-	}
-	return mount.state.done
-}
-
-func (runtime *Runtime) Mount(
-	ctx context.Context,
-	source Source,
-) (*Mount, error) {
-	if source == nil {
-		return nil, errors.New("plugin source is nil")
-	}
-
-	ctx, span := runtime.tracer.Start(
-		ctx,
-		"plugin.mount",
-		trace.WithAttributes(
-			attribute.String("plugin.source", sourceDescription(source)),
-		),
-	)
-	defer span.End()
-
-	connection, err := source.Open(ctx)
-	if err != nil {
-		recordSpanError(span, err)
-		return nil, fmt.Errorf("open plugin source %s: %w", sourceDescription(source), err)
-	}
-	closeOnError := func(cause error) (*Mount, error) {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return nil, errors.Join(cause, connection.Close(closeCtx))
-	}
-
-	manifest := connection.Manifest()
-	if err := manifest.Validate(); err != nil {
-		recordSpanError(span, err)
-		return closeOnError(fmt.Errorf("validate plugin manifest: %w", err))
-	}
-	span.SetAttributes(
-		attribute.String("plugin.name", manifest.Name),
-		attribute.String("plugin.version", manifest.Version),
-	)
-
-	staged := newStagingRegistrar()
-	if err := connection.Install(ctx, staged); err != nil {
-		recordSpanError(span, err)
-		return closeOnError(fmt.Errorf(
-			"install plugin %q into staging registry: %w",
-			manifest.Name,
-			err,
-		))
-	}
-	if err := staged.validateManifest(manifest); err != nil {
-		recordSpanError(span, err)
-		return closeOnError(err)
-	}
-	runtime.wrapSynchronousResources(staged, manifest)
-
-	state := newMountState(manifest, sourceDescription(source), connection)
-	runtime.mu.Lock()
-	if runtime.closed {
-		runtime.mu.Unlock()
-		return closeOnError(errors.New("runtime is closed"))
-	}
-	next := runtime.current.Load().clone()
-	if err := next.add(
-		state,
-		staged,
-		&runtime.nextSequence,
-		runtime.hookTimeout,
-	); err != nil {
-		runtime.mu.Unlock()
-		recordSpanError(span, err)
-		return closeOnError(err)
-	}
-	next.generation++
-	runtime.current.Store(next)
-	runtime.mu.Unlock()
-	if len(staged.subscribers) > 0 {
-		runtime.startDeliveryWorkers()
-	}
-
-	runtime.mounts.Add(
-		ctx,
-		1,
-		metric.WithAttributes(attribute.String("plugin.name", manifest.Name)),
-	)
-	runtime.logger.InfoContext(
-		ctx,
-		"plugin mounted",
-		"plugin",
-		manifest.Name,
-		"version",
-		manifest.Version,
-		"generation",
-		next.generation,
-		"source",
-		state.source,
-	)
-	if _, emitErr := runtime.Emit(
-		ctx,
-		EventPluginMounted,
-		"",
-		PluginLifecyclePayload{
-			Name:       manifest.Name,
-			Version:    manifest.Version,
-			Source:     state.source,
-			Generation: next.generation,
-		},
-	); emitErr != nil {
-		runtime.logger.WarnContext(
-			ctx,
-			"plugin mounted event failed",
-			"plugin",
-			manifest.Name,
-			"error",
-			emitErr,
-		)
-	}
-	return &Mount{runtime: runtime, state: state}, nil
-}
-
-func (runtime *Runtime) MountRegistered(
-	ctx context.Context,
-	registry *PluginRegistry,
-	nameOrURI string,
-) (*Mount, error) {
-	if registry == nil {
-		return nil, errors.New("plugin registry is nil")
-	}
-	source, err := registry.Resolve(ctx, nameOrURI)
-	if err != nil {
-		return nil, err
-	}
-	return runtime.Mount(ctx, source)
-}
-
-func (runtime *Runtime) unmount(
-	ctx context.Context,
-	state *mountState,
-) error {
-	ctx, span := runtime.tracer.Start(
-		ctx,
-		"plugin.unmount",
-		trace.WithAttributes(attribute.String("plugin.name", state.manifest.Name)),
-	)
-	defer span.End()
-
-	runtime.mu.Lock()
-	current := runtime.current.Load()
-	active, exists := current.plugins[state.manifest.Name]
-	if !exists || active != state {
-		runtime.mu.Unlock()
-		return nil
-	}
-	next := current.without(state)
-	if err := next.validateDependencies(); err != nil {
-		runtime.mu.Unlock()
-		recordSpanError(span, err)
-		return fmt.Errorf("unmount plugin %q: %w", state.manifest.Name, err)
-	}
-	next.generation++
-	runtime.current.Store(next)
-	state.retire()
-	runtime.mu.Unlock()
-
-	runtime.unmounts.Add(
-		ctx,
-		1,
-		metric.WithAttributes(attribute.String("plugin.name", state.manifest.Name)),
-	)
-	runtime.logger.InfoContext(
-		ctx,
-		"plugin unmounted",
-		"plugin",
-		state.manifest.Name,
-		"generation",
-		next.generation,
-	)
-	if _, emitErr := runtime.Emit(
-		ctx,
-		EventPluginUnmounted,
-		"",
-		PluginLifecyclePayload{
-			Name:       state.manifest.Name,
-			Version:    state.manifest.Version,
-			Source:     state.source,
-			Generation: next.generation,
-		},
-	); emitErr != nil {
-		runtime.logger.WarnContext(
-			ctx,
-			"plugin unmounted event failed",
-			"plugin",
-			state.manifest.Name,
-			"error",
-			emitErr,
-		)
-	}
-	return nil
-}
-
+// Close starts shutdown once. A caller timeout stops waiting, not cleanup, so
+// a later call can wait for the same shutdown and receive its final error.
 func (runtime *Runtime) Close(ctx context.Context) error {
-	runtime.mu.Lock()
-	if runtime.closed {
-		runtime.mu.Unlock()
+	if runtime == nil {
 		return nil
 	}
-	runtime.closed = true
-	current := runtime.current.Load()
-	states := make([]*mountState, 0, len(current.plugins))
-	for _, state := range current.plugins {
-		states = append(states, state)
-		state.retire()
+
+	runtime.mu.Lock()
+	var states []*mountState
+	if !runtime.closed {
+		runtime.closed = true
+		current := runtime.current.Load()
+		states = make([]*mountState, 0, len(current.plugins))
+		for _, state := range current.plugins {
+			states = append(states, state)
+			state.retire()
+		}
+		empty := initialSnapshot()
+		empty.generation = current.generation + 1
+		runtime.current.Store(empty)
 	}
-	empty := initialSnapshot()
-	empty.generation = current.generation + 1
-	runtime.current.Store(empty)
+	done := runtime.closeDone
 	runtime.mu.Unlock()
-	runtime.cancelDeliveries()
-	runtime.cancelOperations()
 
-	workersDone := make(chan struct{})
-	go func() {
-		runtime.deliveryWait.Wait()
-		close(workersDone)
-	}()
+	if states != nil {
+		runtime.delivery.cancel()
+		runtime.operation.cancel()
+		go runtime.finishClose(states)
+	}
+
+	select {
+	case <-done:
+		return runtime.closeErr
+	default:
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-workersDone:
+	case <-done:
+		return runtime.closeErr
 	}
-	operationsDone := make(chan struct{})
-	go func() {
-		runtime.operationWait.Wait()
-		close(operationsDone)
-	}()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-operationsDone:
-	}
+}
 
+func (runtime *Runtime) finishClose(states []*mountState) {
+	runtime.delivery.wait.Wait()
+	runtime.operation.wait.Wait()
 	var errs []error
 	for _, state := range states {
-		select {
-		case <-ctx.Done():
-			return errors.Join(append(errs, ctx.Err())...)
-		case <-state.done:
-			if err := state.closeError(); err != nil {
-				errs = append(errs, fmt.Errorf(
-					"close plugin %q: %w",
-					state.manifest.Name,
-					err,
-				))
-			}
+		<-state.done
+		if err := state.closeError(); err != nil {
+			errs = append(errs, fmt.Errorf(
+				"close plugin %q: %w",
+				state.manifest.Name,
+				err,
+			))
 		}
 	}
 	if runtime.storage != nil && runtime.closeStorage {
-		if err := runtime.storage.Close(ctx); err != nil {
+		if err := runtime.storage.Close(context.Background()); err != nil {
 			errs = append(errs, fmt.Errorf("close state backend: %w", err))
 		}
 	}
-	return errors.Join(errs...)
-}
-
-type MountedPlugin struct {
-	Name        string   `json:"name"`
-	Version     string   `json:"version"`
-	Description string   `json:"description"`
-	Source      string   `json:"source"`
-	Registers   []string `json:"registers"`
-}
-
-type CatalogSnapshot struct {
-	Generation   uint64           `json:"generation"`
-	Plugins      []MountedPlugin  `json:"plugins"`
-	Providers    []ProviderSpec   `json:"providers"`
-	Tools        []ToolSpec       `json:"tools"`
-	Hooks        []HookSpec       `json:"hooks"`
-	Subscribers  []SubscriberSpec `json:"subscribers"`
-	Capabilities []CapabilitySpec `json:"capabilities"`
-	Events       []EventContract  `json:"events"`
-}
-
-func (runtime *Runtime) Catalog() CatalogSnapshot {
-	if runtime == nil {
-		return CatalogSnapshot{}
-	}
-	return catalogFromSnapshot(runtime.current.Load())
-}
-
-func catalogFromSnapshot(snapshot *registrySnapshot) CatalogSnapshot {
-	result := CatalogSnapshot{Generation: snapshot.generation}
-	for _, state := range snapshot.plugins {
-		result.Plugins = append(result.Plugins, MountedPlugin{
-			Name:        state.manifest.Name,
-			Version:     state.manifest.Version,
-			Description: state.manifest.Description,
-			Source:      state.source,
-			Registers:   append([]string(nil), state.manifest.Registers...),
-		})
-	}
-	for _, provider := range snapshot.providers {
-		result.Providers = append(result.Providers, provider.provider.Spec())
-	}
-	for _, tool := range snapshot.tools {
-		result.Tools = append(result.Tools, tool.tool.Spec())
-	}
-	for _, hooks := range snapshot.hooks {
-		for _, hook := range hooks {
-			result.Hooks = append(result.Hooks, hook.spec)
-		}
-	}
-	for _, subscriber := range snapshot.subscribers {
-		spec := subscriber.spec
-		spec.Events = append([]string(nil), spec.Events...)
-		result.Subscribers = append(result.Subscribers, spec)
-	}
-	for _, capability := range snapshot.capabilities {
-		result.Capabilities = append(
-			result.Capabilities,
-			capability.capability.Spec(),
-		)
-	}
-	for _, event := range snapshot.events {
-		contract := event.contract
-		contract.MutableFields = append([]string(nil), contract.MutableFields...)
-		result.Events = append(result.Events, contract)
-	}
-	sortCatalog(&result)
-	return result
-}
-
-func sortCatalog(catalog *CatalogSnapshot) {
-	slices.SortFunc(catalog.Plugins, func(left, right MountedPlugin) int {
-		return strings.Compare(left.Name, right.Name)
-	})
-	slices.SortFunc(catalog.Providers, func(left, right ProviderSpec) int {
-		return strings.Compare(left.Name, right.Name)
-	})
-	slices.SortFunc(catalog.Tools, func(left, right ToolSpec) int {
-		return strings.Compare(left.Name, right.Name)
-	})
-	slices.SortFunc(catalog.Hooks, func(left, right HookSpec) int {
-		return strings.Compare(left.Name, right.Name)
-	})
-	slices.SortFunc(catalog.Subscribers, func(left, right SubscriberSpec) int {
-		return strings.Compare(left.Name, right.Name)
-	})
-	slices.SortFunc(catalog.Capabilities, func(left, right CapabilitySpec) int {
-		return strings.Compare(left.Name, right.Name)
-	})
-	slices.SortFunc(catalog.Events, func(left, right EventContract) int {
-		return strings.Compare(left.Name, right.Name)
-	})
-}
-
-type snapshotLease struct {
-	snapshot *registrySnapshot
-	mounts   []*mountState
-}
-
-func (runtime *Runtime) acquireSnapshot() (*snapshotLease, error) {
-	runtime.mu.Lock()
-	defer runtime.mu.Unlock()
-	if runtime.closed {
-		return nil, errors.New("runtime is closed")
-	}
-	snapshot := runtime.current.Load()
-	mounts := make([]*mountState, 0, len(snapshot.plugins))
-	for _, state := range snapshot.plugins {
-		state.acquire()
-		mounts = append(mounts, state)
-	}
-	return &snapshotLease{snapshot: snapshot, mounts: mounts}, nil
-}
-
-func (lease *snapshotLease) release() {
-	if lease == nil {
-		return
-	}
-	for _, state := range lease.mounts {
-		state.release()
-	}
-}
-
-type mountState struct {
-	manifest   Manifest
-	source     string
-	connection Connection
-	mu         sync.Mutex
-	refs       int
-	retired    bool
-	closing    bool
-	closeErr   error
-	done       chan struct{}
-}
-
-func newMountState(
-	manifest Manifest,
-	source string,
-	connection Connection,
-) *mountState {
-	return &mountState{
-		manifest:   manifest,
-		source:     source,
-		connection: connection,
-		done:       make(chan struct{}),
-	}
-}
-
-func (state *mountState) acquire() {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.refs++
-}
-
-func (state *mountState) release() {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.refs--
-	if state.refs < 0 {
-		panic("sdk: negative plugin mount reference count")
-	}
-	state.startCloseLocked()
-}
-
-func (state *mountState) retire() {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.retired = true
-	state.startCloseLocked()
-}
-
-func (state *mountState) startCloseLocked() {
-	if !state.retired || state.refs != 0 || state.closing {
-		return
-	}
-	state.closing = true
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		err := state.connection.Close(ctx)
-		state.mu.Lock()
-		state.closeErr = err
-		close(state.done)
-		state.mu.Unlock()
-	}()
-}
-
-func (state *mountState) closeError() error {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	return state.closeErr
+	runtime.closeErr = errors.Join(errs...)
+	close(runtime.closeDone)
 }

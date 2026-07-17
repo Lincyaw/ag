@@ -5,30 +5,30 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
-	. "github.com/lincyaw/ag/sdk"
+	sdk "github.com/lincyaw/ag/sdk"
 )
 
 type StorageRegistry struct {
 	mu      sync.RWMutex
-	drivers map[string]StorageDriver
+	drivers map[string]sdk.StorageDriver
 }
 
 func NewStorageRegistry() *StorageRegistry {
-	return &StorageRegistry{drivers: make(map[string]StorageDriver)}
+	return &StorageRegistry{drivers: make(map[string]sdk.StorageDriver)}
 }
 
 func NewDefaultStorageRegistry() *StorageRegistry {
-	registry := NewStorageRegistry()
-	_ = registry.RegisterDriver(memoryStorageDriver{})
-	_ = registry.RegisterDriver(fileStorageDriver{})
-	return registry
+	return &StorageRegistry{drivers: map[string]sdk.StorageDriver{
+		"file":   fileStorageDriver{},
+		"memory": memoryStorageDriver{},
+	}}
 }
 
-func (registry *StorageRegistry) RegisterDriver(driver StorageDriver) error {
+func (registry *StorageRegistry) RegisterDriver(driver sdk.StorageDriver) error {
 	if registry == nil {
 		return errors.New("storage registry is nil")
 	}
@@ -36,7 +36,7 @@ func (registry *StorageRegistry) RegisterDriver(driver StorageDriver) error {
 		return errors.New("storage driver is nil")
 	}
 	scheme := strings.ToLower(strings.TrimSpace(driver.Scheme()))
-	if err := ValidateResourceName("storage driver scheme", scheme); err != nil {
+	if err := sdk.ValidateResourceName("storage driver scheme", scheme); err != nil {
 		return err
 	}
 	registry.mu.Lock()
@@ -51,7 +51,7 @@ func (registry *StorageRegistry) RegisterDriver(driver StorageDriver) error {
 func (registry *StorageRegistry) Open(
 	ctx context.Context,
 	rawURI string,
-) (StateBackend, error) {
+) (sdk.StateBackend, error) {
 	if registry == nil {
 		return nil, errors.New("storage registry is nil")
 	}
@@ -77,249 +77,94 @@ func (registry *StorageRegistry) Open(
 		return nil, fmt.Errorf("storage driver %q returned a nil backend", scheme)
 	}
 	if err := backend.Health(ctx); err != nil {
-		_ = backend.Close(context.Background())
-		return nil, fmt.Errorf("check %s state backend health: %w", scheme, err)
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		closeErr := backend.Close(closeCtx)
+		cancel()
+		return nil, fmt.Errorf(
+			"check %s state backend health: %w",
+			scheme,
+			errors.Join(err, closeErr),
+		)
 	}
 	return backend, nil
 }
 
-type memoryStateBackend struct {
-	namespace    string
-	trajectories TrajectoryStore
-	operations   OperationStore
+type backendStores struct {
+	trajectories sdk.TrajectoryStore
+	operations   sdk.OperationStore
 	mu           sync.Mutex
-	deliveries   map[string]DeliveryStore
+	deliveries   map[string]sdk.DeliveryStore
 }
 
-func NewMemoryStateBackend() StateBackend {
-	return NewMemoryStateBackendWithNamespace("default")
-}
-
-func NewMemoryStateBackendWithNamespace(namespace string) StateBackend {
-	if strings.TrimSpace(namespace) == "" {
-		namespace = "default"
-	}
-	return &memoryStateBackend{
-		namespace:    namespace,
-		trajectories: NewMemoryTrajectoryStore(),
-		operations:   NewMemoryOperationStore(),
-		deliveries:   make(map[string]DeliveryStore),
-	}
-}
-
-func (backend *memoryStateBackend) Trajectories() TrajectoryStore {
-	return backend.trajectories
-}
-
-func (backend *memoryStateBackend) Operations() OperationStore {
-	return backend.operations
-}
-
-func (backend *memoryStateBackend) Deliveries(name string) (DeliveryStore, error) {
-	if err := ValidateResourceName("delivery queue", name); err != nil {
-		return nil, err
-	}
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
-	if existing := backend.deliveries[name]; existing != nil {
-		return existing, nil
-	}
-	store := NewMemoryDeliveryStore()
-	backend.deliveries[name] = store
-	return store, nil
-}
-
-func (*memoryStateBackend) Capabilities() StorageCapabilities {
-	return StorageCapabilities{
-		OperationFencing:   true,
-		NamedQueues:        true,
-		Pagination:         true,
-		Maintenance:        true,
-		NamespaceIsolation: true,
-	}
-}
-
-func (backend *memoryStateBackend) Namespace() string { return backend.namespace }
-
-func (backend *memoryStateBackend) Prune(
-	ctx context.Context,
-	policy RetentionPolicy,
-) (PruneResult, error) {
-	var result PruneResult
-	var err error
-	if !policy.OperationsBefore.IsZero() {
-		result.Operations, err = backend.operations.PurgeTerminal(
-			ctx,
-			policy.OperationsBefore,
-		)
-		if err != nil {
-			return result, err
-		}
-	}
-	if !policy.DeliveriesBefore.IsZero() {
-		backend.mu.Lock()
-		queues := make([]DeliveryStore, 0, len(backend.deliveries))
-		for _, queue := range backend.deliveries {
-			queues = append(queues, queue)
-		}
-		backend.mu.Unlock()
-		for _, queue := range queues {
-			removed, purgeErr := queue.PurgeTerminal(
-				ctx,
-				policy.DeliveriesBefore,
-			)
-			result.Deliveries += removed
-			if purgeErr != nil {
-				return result, purgeErr
-			}
-		}
-	}
-	if !policy.TrajectoriesBefore.IsZero() {
-		items, listErr := backend.trajectories.List(ctx)
-		if listErr != nil {
-			return result, listErr
-		}
-		for _, item := range items {
-			if item.UpdatedAt.Before(policy.TrajectoriesBefore) {
-				if deleteErr := backend.trajectories.Delete(
-					ctx,
-					item.ID,
-				); deleteErr != nil {
-					return result, deleteErr
-				}
-				result.Trajectories++
-			}
-		}
-	}
-	return result, nil
-}
-
-func (*memoryStateBackend) Health(ctx context.Context) error { return ctx.Err() }
-func (*memoryStateBackend) Close(context.Context) error      { return nil }
-func (backend *memoryStateBackend) String() string {
-	return "memory://local?namespace=" + url.QueryEscape(backend.namespace)
-}
-
-type memoryStorageDriver struct{}
-
-func (memoryStorageDriver) Scheme() string { return "memory" }
-
-func (memoryStorageDriver) Open(
-	_ context.Context,
-	parsed *url.URL,
-) (StateBackend, error) {
-	namespace := "default"
-	if parsed != nil && strings.TrimSpace(parsed.Query().Get("namespace")) != "" {
-		namespace = parsed.Query().Get("namespace")
-	}
-	if err := ValidateResourceName("storage namespace", namespace); err != nil {
-		return nil, err
-	}
-	return NewMemoryStateBackendWithNamespace(namespace), nil
-}
-
-type fileStateBackend struct {
-	root         string
-	namespace    string
-	trajectories TrajectoryStore
-	operations   OperationStore
-	mu           sync.Mutex
-	deliveries   map[string]DeliveryStore
-}
-
-func NewFileStateBackend(root string) (StateBackend, error) {
-	return newFileStateBackend(root, "default", false)
-}
-
-func NewFileStateBackendWithNamespace(
-	root string,
-	namespace string,
-) (StateBackend, error) {
-	return newFileStateBackend(root, namespace, true)
-}
-
-func newFileStateBackend(
-	root string,
-	namespace string,
-	partition bool,
-) (StateBackend, error) {
-	absolute, err := filepath.Abs(strings.TrimSpace(root))
-	if err != nil {
-		return nil, fmt.Errorf("resolve file state root: %w", err)
-	}
-	if strings.TrimSpace(namespace) == "" {
-		namespace = "default"
-	}
-	if err := ValidateResourceName("storage namespace", namespace); err != nil {
-		return nil, err
-	}
-	if partition {
-		absolute = filepath.Join(absolute, "namespaces", namespace)
-	}
-	trajectories, err := NewFileTrajectoryStore(filepath.Join(absolute, "trajectories"))
-	if err != nil {
-		return nil, err
-	}
-	operations, err := NewFileOperationStore(filepath.Join(absolute, "operations"))
-	if err != nil {
-		return nil, err
-	}
-	return &fileStateBackend{
-		root:         absolute,
-		namespace:    namespace,
+func newBackendStores(
+	trajectories sdk.TrajectoryStore,
+	operations sdk.OperationStore,
+) backendStores {
+	return backendStores{
 		trajectories: trajectories,
 		operations:   operations,
-		deliveries:   make(map[string]DeliveryStore),
-	}, nil
+		deliveries:   make(map[string]sdk.DeliveryStore),
+	}
 }
 
-func (backend *fileStateBackend) Trajectories() TrajectoryStore {
-	return backend.trajectories
+func (stores *backendStores) Trajectories() sdk.TrajectoryStore {
+	return stores.trajectories
 }
 
-func (backend *fileStateBackend) Operations() OperationStore {
-	return backend.operations
+func (stores *backendStores) Operations() sdk.OperationStore {
+	return stores.operations
 }
 
-func (backend *fileStateBackend) Deliveries(name string) (DeliveryStore, error) {
-	if err := ValidateResourceName("delivery queue", name); err != nil {
+func (stores *backendStores) delivery(
+	name string,
+	open func() (sdk.DeliveryStore, error),
+) (sdk.DeliveryStore, error) {
+	if err := sdk.ValidateResourceName("delivery queue", name); err != nil {
 		return nil, err
 	}
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
-	if existing := backend.deliveries[name]; existing != nil {
+	stores.mu.Lock()
+	defer stores.mu.Unlock()
+	if existing := stores.deliveries[name]; existing != nil {
 		return existing, nil
 	}
-	store, err := NewFileDeliveryStore(filepath.Join(backend.root, "deliveries", name))
+	store, err := open()
 	if err != nil {
 		return nil, err
 	}
-	backend.deliveries[name] = store
+	stores.deliveries[name] = store
 	return store, nil
 }
 
-func (*fileStateBackend) Capabilities() StorageCapabilities {
-	return StorageCapabilities{
-		Durable:            true,
-		MultiProcessSafe:   FileLocksAreMultiProcessSafe(),
-		OperationFencing:   true,
-		NamedQueues:        true,
-		Pagination:         true,
-		Maintenance:        true,
-		NamespaceIsolation: true,
+func (stores *backendStores) Prune(
+	ctx context.Context,
+	policy sdk.RetentionPolicy,
+) (sdk.PruneResult, error) {
+	stores.mu.Lock()
+	deliveries := make([]sdk.DeliveryStore, 0, len(stores.deliveries))
+	for _, store := range stores.deliveries {
+		deliveries = append(deliveries, store)
 	}
+	stores.mu.Unlock()
+	return pruneState(
+		ctx,
+		policy,
+		stores.trajectories,
+		stores.operations,
+		deliveries,
+	)
 }
 
-func (backend *fileStateBackend) Namespace() string { return backend.namespace }
-
-func (backend *fileStateBackend) Prune(
+func pruneState(
 	ctx context.Context,
-	policy RetentionPolicy,
-) (PruneResult, error) {
-	var result PruneResult
+	policy sdk.RetentionPolicy,
+	trajectories sdk.TrajectoryStore,
+	operations sdk.OperationStore,
+	deliveries []sdk.DeliveryStore,
+) (sdk.PruneResult, error) {
+	var result sdk.PruneResult
 	var err error
 	if !policy.OperationsBefore.IsZero() {
-		result.Operations, err = backend.operations.PurgeTerminal(
+		result.Operations, err = operations.PurgeTerminal(
 			ctx,
 			policy.OperationsBefore,
 		)
@@ -328,13 +173,7 @@ func (backend *fileStateBackend) Prune(
 		}
 	}
 	if !policy.DeliveriesBefore.IsZero() {
-		backend.mu.Lock()
-		queues := make([]DeliveryStore, 0, len(backend.deliveries))
-		for _, queue := range backend.deliveries {
-			queues = append(queues, queue)
-		}
-		backend.mu.Unlock()
-		for _, queue := range queues {
+		for _, queue := range deliveries {
 			removed, purgeErr := queue.PurgeTerminal(
 				ctx,
 				policy.DeliveriesBefore,
@@ -346,13 +185,13 @@ func (backend *fileStateBackend) Prune(
 		}
 	}
 	if !policy.TrajectoriesBefore.IsZero() {
-		items, listErr := backend.trajectories.List(ctx)
+		items, listErr := trajectories.List(ctx)
 		if listErr != nil {
 			return result, listErr
 		}
 		for _, item := range items {
 			if item.UpdatedAt.Before(policy.TrajectoriesBefore) {
-				if deleteErr := backend.trajectories.Delete(
+				if deleteErr := trajectories.Delete(
 					ctx,
 					item.ID,
 				); deleteErr != nil {
@@ -365,43 +204,45 @@ func (backend *fileStateBackend) Prune(
 	return result, nil
 }
 
-func (backend *fileStateBackend) Health(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
+func pageWindow[T any](
+	items []T,
+	request sdk.PageRequest,
+	id func(T) string,
+) ([]T, string, error) {
+	if request.Limit == 0 {
+		request.Limit = sdk.DefaultPageSize
 	}
-	if backend == nil || backend.root == "" {
-		return errors.New("file state backend is not initialized")
+	if request.Limit < 0 {
+		return nil, "", errors.New("page limit cannot be negative")
 	}
-	return nil
-}
-
-func (*fileStateBackend) Close(context.Context) error { return nil }
-func (backend *fileStateBackend) String() string {
-	return "file://" + backend.root + "?namespace=" +
-		url.QueryEscape(backend.namespace)
-}
-
-type fileStorageDriver struct{}
-
-func (fileStorageDriver) Scheme() string { return "file" }
-
-func (fileStorageDriver) Open(
-	_ context.Context,
-	parsed *url.URL,
-) (StateBackend, error) {
-	if parsed == nil {
-		return nil, errors.New("file storage URI is nil")
+	if request.Limit > sdk.MaxPageSize {
+		return nil, "", fmt.Errorf(
+			"page limit %d exceeds maximum %d",
+			request.Limit,
+			sdk.MaxPageSize,
+		)
 	}
-	path := parsed.Path
-	if parsed.Host != "" && parsed.Host != "localhost" {
-		path = filepath.Join(string(filepath.Separator)+parsed.Host, parsed.Path)
+	start := 0
+	if request.After != "" {
+		start = -1
+		for index, item := range items {
+			if id(item) == request.After {
+				start = index + 1
+				break
+			}
+		}
+		if start < 0 {
+			return nil, "", fmt.Errorf(
+				"pagination cursor %q was not found",
+				request.After,
+			)
+		}
 	}
-	if strings.TrimSpace(path) == "" {
-		return nil, errors.New("file storage URI has no path")
+	end := min(start+request.Limit, len(items))
+	page := append([]T(nil), items[start:end]...)
+	next := ""
+	if end < len(items) && len(page) > 0 {
+		next = id(page[len(page)-1])
 	}
-	namespace := strings.TrimSpace(parsed.Query().Get("namespace"))
-	if namespace == "" {
-		return NewFileStateBackend(path)
-	}
-	return NewFileStateBackendWithNamespace(path, namespace)
+	return page, next, nil
 }

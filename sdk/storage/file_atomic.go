@@ -5,7 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 )
+
+func prepareDirectory(label string, directory string) (string, error) {
+	directory = strings.TrimSpace(directory)
+	if directory == "" {
+		return "", fmt.Errorf("%s directory is empty", label)
+	}
+	absolute, err := filepath.Abs(directory)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s directory: %w", label, err)
+	}
+	if err := os.MkdirAll(absolute, 0o700); err != nil {
+		return "", fmt.Errorf("create %s directory: %w", label, err)
+	}
+	return absolute, nil
+}
 
 func writeJSONAtomic(
 	ctx context.Context,
@@ -66,17 +83,6 @@ func writeJSONAtomic(
 	return nil
 }
 
-func WriteJSONAtomic(
-	ctx context.Context,
-	directory string,
-	path string,
-	prefix string,
-	label string,
-	value any,
-) error {
-	return writeJSONAtomic(ctx, directory, path, prefix, label, value)
-}
-
 func syncDirectory(directory string) error {
 	handle, err := os.Open(directory)
 	if err != nil {
@@ -87,12 +93,4 @@ func syncDirectory(directory string) error {
 		return fmt.Errorf("sync directory: %w", err)
 	}
 	return nil
-}
-
-func SyncDirectory(directory string) error {
-	return syncDirectory(directory)
-}
-
-func FileLocksAreMultiProcessSafe() bool {
-	return fileLocksAreMultiProcessSafe
 }

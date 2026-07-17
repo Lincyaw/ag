@@ -1,9 +1,11 @@
 package sdk
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strings"
@@ -38,52 +40,64 @@ type PluginDriver interface {
 	Discover(context.Context, DiscoveryQuery) ([]PluginReference, error)
 }
 
+type registeredPluginDriver struct {
+	scheme string
+	driver PluginDriver
+}
+
 type PluginRegistry struct {
 	mu      sync.RWMutex
 	entries map[string]PluginReference
+	owners  map[string]string
 	drivers map[string]PluginDriver
 }
 
 func NewPluginRegistry() *PluginRegistry {
 	return &PluginRegistry{
 		entries: make(map[string]PluginReference),
+		owners:  make(map[string]string),
 		drivers: make(map[string]PluginDriver),
 	}
 }
 
-func (registry *PluginRegistry) RegisterDriver(driver PluginDriver) error {
-	if driver == nil {
-		return errors.New("plugin driver is nil")
+func (registry *PluginRegistry) RegisterDrivers(drivers ...PluginDriver) error {
+	additions := make(map[string]PluginDriver, len(drivers))
+	for _, driver := range drivers {
+		if driver == nil {
+			return errors.New("plugin driver is nil")
+		}
+		scheme := normalizeScheme(driver.Scheme())
+		if err := ValidateResourceName("plugin driver scheme", scheme); err != nil {
+			return err
+		}
+		if _, exists := additions[scheme]; exists {
+			return fmt.Errorf("plugin driver %q is already registered", scheme)
+		}
+		additions[scheme] = driver
 	}
-	scheme := normalizeScheme(driver.Scheme())
-	if err := validateResourceName("plugin driver scheme", scheme); err != nil {
-		return err
-	}
-
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
-	if _, exists := registry.drivers[scheme]; exists {
-		return fmt.Errorf("plugin driver %q is already registered", scheme)
+	for scheme := range additions {
+		if _, exists := registry.drivers[scheme]; exists {
+			return fmt.Errorf("plugin driver %q is already registered", scheme)
+		}
 	}
-	registry.drivers[scheme] = driver
+	maps.Copy(registry.drivers, additions)
 	return nil
 }
 
 func (registry *PluginRegistry) Register(reference PluginReference) error {
-	if err := validateResourceName("plugin registration", reference.Name); err != nil {
+	return registry.register(reference, "")
+}
+
+func (registry *PluginRegistry) register(
+	reference PluginReference,
+	owner string,
+) error {
+	reference, err := normalizePluginReference(reference)
+	if err != nil {
 		return err
 	}
-	if (reference.Source == nil) == (strings.TrimSpace(reference.URI) == "") {
-		return errors.New(
-			"plugin registration must provide exactly one of Source or URI",
-		)
-	}
-	if reference.URI != "" {
-		if _, err := parsePluginURI(reference.URI); err != nil {
-			return err
-		}
-	}
-	reference.Labels = cloneLabels(reference.Labels)
 
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
@@ -91,6 +105,7 @@ func (registry *PluginRegistry) Register(reference PluginReference) error {
 		return fmt.Errorf("plugin registration %q already exists", reference.Name)
 	}
 	registry.entries[reference.Name] = reference
+	registry.owners[reference.Name] = owner
 	return nil
 }
 
@@ -101,7 +116,18 @@ func (registry *PluginRegistry) Unregister(name string) error {
 		return fmt.Errorf("plugin registration %q not found", name)
 	}
 	delete(registry.entries, name)
+	delete(registry.owners, name)
 	return nil
+}
+
+func (registry *PluginRegistry) unregisterOwned(name, owner string) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if registry.owners[name] != owner {
+		return
+	}
+	delete(registry.entries, name)
+	delete(registry.owners, name)
 }
 
 func (registry *PluginRegistry) Resolve(
@@ -136,34 +162,41 @@ func (registry *PluginRegistry) Discover(
 	ctx context.Context,
 	query DiscoveryQuery,
 ) ([]PluginDescriptor, error) {
+	query.Labels = cloneLabels(query.Labels)
 	registry.mu.RLock()
 	entries := make([]PluginReference, 0, len(registry.entries))
 	for _, entry := range registry.entries {
 		entries = append(entries, entry)
 	}
-	drivers := make([]PluginDriver, 0, len(registry.drivers))
+	drivers := make([]registeredPluginDriver, 0, len(registry.drivers))
 	if query.IncludeDrivers {
-		for _, driver := range registry.drivers {
-			drivers = append(drivers, driver)
+		for scheme, driver := range registry.drivers {
+			drivers = append(drivers, registeredPluginDriver{
+				scheme: scheme,
+				driver: driver,
+			})
 		}
 	}
 	registry.mu.RUnlock()
+	slices.SortFunc(drivers, func(left, right registeredPluginDriver) int {
+		return strings.Compare(left.scheme, right.scheme)
+	})
 
-	if query.IncludeDrivers {
-		for _, driver := range drivers {
-			discovered, err := driver.Discover(ctx, query)
-			if err != nil {
-				return nil, fmt.Errorf(
-					"discover plugins with %s driver: %w",
-					driver.Scheme(),
-					err,
-				)
-			}
-			entries = append(entries, discovered...)
+	for _, registered := range drivers {
+		driverQuery := query
+		driverQuery.Labels = cloneLabels(query.Labels)
+		discovered, err := registered.driver.Discover(ctx, driverQuery)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"discover plugins with %s driver: %w",
+				registered.scheme,
+				err,
+			)
 		}
+		entries = append(entries, discovered...)
 	}
 
-	byName := make(map[string]PluginDescriptor)
+	result := make([]PluginDescriptor, 0, len(entries))
 	for _, entry := range entries {
 		if !matchesQuery(entry, query) {
 			continue
@@ -172,17 +205,15 @@ func (registry *PluginRegistry) Discover(
 		if err != nil {
 			return nil, err
 		}
-		if _, exists := byName[descriptor.Name]; !exists {
-			byName[descriptor.Name] = descriptor
-		}
-	}
-
-	result := make([]PluginDescriptor, 0, len(byName))
-	for _, descriptor := range byName {
 		result = append(result, descriptor)
 	}
 	slices.SortFunc(result, func(left, right PluginDescriptor) int {
-		return strings.Compare(left.Name, right.Name)
+		return cmp.Or(
+			strings.Compare(left.Name, right.Name),
+			strings.Compare(left.Scheme, right.Scheme),
+			strings.Compare(left.URI, right.URI),
+			strings.Compare(left.Description, right.Description),
+		)
 	})
 	return result, nil
 }
@@ -203,6 +234,7 @@ func (registry *PluginRegistry) resolveReference(
 	if driver == nil {
 		return nil, fmt.Errorf("no plugin driver registered for scheme %q", scheme)
 	}
+	reference.Labels = cloneLabels(reference.Labels)
 	source, err := driver.Resolve(ctx, reference)
 	if err != nil {
 		return nil, fmt.Errorf(
@@ -223,6 +255,10 @@ func (registry *PluginRegistry) resolveReference(
 }
 
 func descriptorFor(reference PluginReference) (PluginDescriptor, error) {
+	reference, err := normalizePluginReference(reference)
+	if err != nil {
+		return PluginDescriptor{}, err
+	}
 	scheme := "local"
 	if reference.Source == nil {
 		parsed, err := parsePluginURI(reference.URI)
@@ -235,9 +271,30 @@ func descriptorFor(reference PluginReference) (PluginDescriptor, error) {
 		Name:        reference.Name,
 		URI:         reference.URI,
 		Description: reference.Description,
-		Labels:      cloneLabels(reference.Labels),
+		Labels:      reference.Labels,
 		Scheme:      scheme,
 	}, nil
+}
+
+func normalizePluginReference(
+	reference PluginReference,
+) (PluginReference, error) {
+	if err := ValidateResourceName("plugin reference", reference.Name); err != nil {
+		return PluginReference{}, err
+	}
+	reference.URI = strings.TrimSpace(reference.URI)
+	if (reference.Source == nil) == (reference.URI == "") {
+		return PluginReference{}, errors.New(
+			"plugin reference must provide exactly one of Source or URI",
+		)
+	}
+	if reference.URI != "" {
+		if _, err := parsePluginURI(reference.URI); err != nil {
+			return PluginReference{}, err
+		}
+	}
+	reference.Labels = cloneLabels(reference.Labels)
+	return reference, nil
 }
 
 func parsePluginURI(raw string) (*url.URL, error) {
@@ -270,13 +327,4 @@ func matchesQuery(reference PluginReference, query DiscoveryQuery) bool {
 	return true
 }
 
-func cloneLabels(labels map[string]string) map[string]string {
-	if labels == nil {
-		return nil
-	}
-	result := make(map[string]string, len(labels))
-	for key, value := range labels {
-		result[key] = value
-	}
-	return result
-}
+func cloneLabels(labels map[string]string) map[string]string { return maps.Clone(labels) }

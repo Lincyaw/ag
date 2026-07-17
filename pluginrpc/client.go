@@ -25,12 +25,31 @@ type ClientConfig struct {
 	RegistryURI     string
 }
 
-type Source struct {
-	uri    string
+type source struct {
+	uri    url.URL
 	config ClientConfig
 }
 
-func NewSource(uri string, config ClientConfig) (*Source, error) {
+func normalizeClientConfig(config ClientConfig) (ClientConfig, error) {
+	if config.MaxMessageBytes == 0 {
+		config.MaxMessageBytes = defaultMaxMessageBytes
+	}
+	if config.MaxMessageBytes < 1 {
+		return ClientConfig{}, errors.New("RPC max message bytes must be positive")
+	}
+	config.RegistryURI = strings.TrimSpace(config.RegistryURI)
+	config.DialOptions = append([]grpc.DialOption(nil), config.DialOptions...)
+	if config.TLSConfig != nil {
+		config.TLSConfig = config.TLSConfig.Clone()
+	}
+	return config, nil
+}
+
+func NewSource(uri string, config ClientConfig) (sdk.Source, error) {
+	return newSource(uri, config)
+}
+
+func newSource(uri string, config ClientConfig) (*source, error) {
 	parsed, err := parseSourceURI(uri)
 	if err != nil {
 		return nil, err
@@ -38,95 +57,97 @@ func NewSource(uri string, config ClientConfig) (*Source, error) {
 	if parsed.Scheme != "grpc" && parsed.Scheme != "grpcs" {
 		return nil, fmt.Errorf("unsupported plugin RPC scheme %q", parsed.Scheme)
 	}
-	if config.MaxMessageBytes == 0 {
-		config.MaxMessageBytes = defaultMaxMessageBytes
-	}
-	if config.MaxMessageBytes < 1 {
-		return nil, errors.New("RPC max message bytes must be positive")
-	}
-	config.DialOptions = append([]grpc.DialOption(nil), config.DialOptions...)
-	return &Source{uri: parsed.String(), config: config}, nil
-}
-
-func (source *Source) String() string {
-	if source == nil {
-		return ""
-	}
-	return source.uri
-}
-
-func (source *Source) Open(ctx context.Context) (sdk.Connection, error) {
-	if source == nil {
-		return nil, errors.New("RPC source is nil")
-	}
-	parsed, err := parseSourceURI(source.uri)
+	config, err = normalizeClientConfig(config)
 	if err != nil {
 		return nil, err
 	}
-	connection, err := dial(ctx, parsed, source.config)
+	return &source{uri: *parsed, config: config}, nil
+}
+
+func (source *source) String() string {
+	if source == nil {
+		return ""
+	}
+	return source.uri.String()
+}
+
+func (source *source) Open(ctx context.Context) (sdk.Connection, error) {
+	if source == nil {
+		return nil, errors.New("RPC source is nil")
+	}
+	connection, err := dial(ctx, &source.uri, source.config)
 	if err != nil {
 		return nil, fmt.Errorf("create plugin RPC client: %w", err)
 	}
 	client := pluginv1.NewPluginServiceClient(connection)
 	description, err := client.Describe(ctx, &pluginv1.DescribeRequest{})
 	if err != nil {
-		_ = connection.Close()
-		return nil, fmt.Errorf("describe remote plugin: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("describe remote plugin: %w", err),
+			connection.Close(),
+		)
 	}
 	remote, err := newRemoteConnection(connection, client, description)
 	if err != nil {
-		_ = connection.Close()
-		return nil, err
+		return nil, errors.Join(err, connection.Close())
 	}
 	return remote, nil
 }
 
-type Driver struct {
+type driver struct {
 	scheme string
 	config ClientConfig
 }
 
-func NewDriver(scheme string, config ClientConfig) (*Driver, error) {
+func NewDriver(scheme string, config ClientConfig) (sdk.PluginDriver, error) {
+	return newDriver(scheme, config)
+}
+
+func newDriver(scheme string, config ClientConfig) (*driver, error) {
 	scheme = strings.ToLower(strings.TrimSpace(scheme))
 	if scheme != "grpc" && scheme != "grpcs" {
 		return nil, fmt.Errorf("unsupported plugin RPC driver scheme %q", scheme)
 	}
-	return &Driver{scheme: scheme, config: config}, nil
+	var err error
+	config, err = normalizeClientConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	return &driver{scheme: scheme, config: config}, nil
 }
 
 func RegisterDrivers(registry *sdk.PluginRegistry, config ClientConfig) error {
 	if registry == nil {
 		return errors.New("plugin registry is nil")
 	}
+	drivers := make([]sdk.PluginDriver, 0, 2)
 	for _, scheme := range []string{"grpc", "grpcs"} {
 		driver, err := NewDriver(scheme, config)
 		if err != nil {
 			return err
 		}
-		if err := registry.RegisterDriver(driver); err != nil {
-			return err
-		}
+		drivers = append(drivers, driver)
 	}
-	return nil
+	return registry.RegisterDrivers(drivers...)
 }
 
-func (driver *Driver) Scheme() string { return driver.scheme }
+func (driver *driver) Scheme() string { return driver.scheme }
 
-func (driver *Driver) Resolve(
+func (driver *driver) Resolve(
 	_ context.Context,
 	reference sdk.PluginReference,
 ) (sdk.Source, error) {
-	parsed, err := parseSourceURI(reference.URI)
+	source, err := newSource(reference.URI, driver.config)
 	if err != nil {
 		return nil, err
 	}
-	if parsed.Scheme != driver.scheme {
+	if source.uri.Scheme != driver.scheme {
 		return nil, fmt.Errorf("%s driver cannot resolve %q", driver.scheme, reference.URI)
 	}
-	return NewSource(reference.URI, driver.config)
+	return source, nil
 }
 
-func (driver *Driver) Discover(
+func (driver *driver) Discover(
 	ctx context.Context,
 	query sdk.DiscoveryQuery,
 ) ([]sdk.PluginReference, error) {
@@ -147,8 +168,8 @@ func (driver *Driver) Discover(
 	if err != nil {
 		return nil, err
 	}
-	defer client.Close()
-	registrations, err := client.List(ctx)
+	registrations, listErr := client.List(ctx)
+	err = errors.Join(listErr, client.Close())
 	if err != nil {
 		return nil, err
 	}
@@ -467,11 +488,9 @@ func dial(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if config.MaxMessageBytes == 0 {
-		config.MaxMessageBytes = defaultMaxMessageBytes
-	}
-	if config.MaxMessageBytes < 1 {
-		return nil, errors.New("RPC max message bytes must be positive")
+	config, err := normalizeClientConfig(config)
+	if err != nil {
+		return nil, err
 	}
 	var transportCredentials credentials.TransportCredentials
 	if parsed.Scheme == "grpc" {

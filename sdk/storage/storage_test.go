@@ -2,7 +2,9 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"net/url"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -24,12 +26,30 @@ func (driver *testStorageDriver) Open(
 	return driver.backend, nil
 }
 
+type unhealthyStateBackend struct {
+	StateBackend
+	healthErr        error
+	closeErr         error
+	closed           bool
+	closeHasDeadline bool
+}
+
+func (backend *unhealthyStateBackend) Health(context.Context) error {
+	return backend.healthErr
+}
+
+func (backend *unhealthyStateBackend) Close(ctx context.Context) error {
+	backend.closed = true
+	_, backend.closeHasDeadline = ctx.Deadline()
+	return backend.closeErr
+}
+
 func TestStorageRegistryAcceptsApplicationDriver(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	registry := NewStorageRegistry()
 	driver := &testStorageDriver{
-		backend: NewMemoryStateBackendWithNamespace("tenant-a"),
+		backend: newMemoryStateBackend("tenant-a"),
 	}
 	if err := registry.RegisterDriver(driver); err != nil {
 		t.Fatal(err)
@@ -46,6 +66,32 @@ func TestStorageRegistryAcceptsApplicationDriver(t *testing.T) {
 	}
 	if backend.Namespace() != "tenant-a" {
 		t.Fatalf("namespace = %q, want tenant-a", backend.Namespace())
+	}
+}
+
+func TestStorageRegistryClosesUnhealthyBackend(t *testing.T) {
+	t.Parallel()
+	healthErr := errors.New("unhealthy")
+	closeErr := errors.New("close failed")
+	backend := &unhealthyStateBackend{
+		healthErr: healthErr,
+		closeErr:  closeErr,
+	}
+	registry := NewStorageRegistry()
+	if err := registry.RegisterDriver(&testStorageDriver{backend: backend}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := registry.Open(t.Context(), "teststore://state")
+	if !errors.Is(err, healthErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("Open() error = %v, want health and close errors", err)
+	}
+	if !backend.closed || !backend.closeHasDeadline {
+		t.Fatalf(
+			"unhealthy backend cleanup: closed=%t deadline=%t",
+			backend.closed,
+			backend.closeHasDeadline,
+		)
 	}
 }
 
@@ -86,10 +132,32 @@ func TestDefaultStorageRegistryExposesNamedQueuesAndNamespaces(t *testing.T) {
 	}
 }
 
+func TestMemoryStorageURIRejectsNonLocalTargets(t *testing.T) {
+	t.Parallel()
+	registry := NewDefaultStorageRegistry()
+	for _, uri := range []string{
+		"memory://remote",
+		"memory://local/state",
+		"memory:opaque",
+	} {
+		t.Run(uri, func(t *testing.T) {
+			t.Parallel()
+			if _, err := registry.Open(t.Context(), uri); err == nil {
+				t.Fatalf("Open(%q) unexpectedly succeeded", uri)
+			}
+		})
+	}
+}
+
 func TestFileStorageNamespaceHasItsOwnPartition(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	backend, err := NewFileStateBackendWithNamespace(root, "tenant-a")
+	uri := (&url.URL{
+		Scheme:   "file",
+		Path:     root,
+		RawQuery: url.Values{"namespace": {"tenant-a"}}.Encode(),
+	}).String()
+	backend, err := NewDefaultStorageRegistry().Open(t.Context(), uri)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,12 +166,16 @@ func TestFileStorageNamespaceHasItsOwnPartition(t *testing.T) {
 			t.Errorf("close backend: %v", err)
 		}
 	}()
-	store, ok := backend.Trajectories().(*FileTrajectoryStore)
-	if !ok {
-		t.Fatalf("trajectory store type = %T", backend.Trajectories())
+	if err := backend.Trajectories().Create(
+		t.Context(),
+		Trajectory{ID: "partition-probe"},
+	); err != nil {
+		t.Fatal(err)
 	}
-	want := filepath.Join(root, "namespaces", "tenant-a", "trajectories")
-	if store.Directory() != want {
-		t.Fatalf("trajectory directory = %q, want %q", store.Directory(), want)
+	path := filepath.Join(
+		root, "namespaces", "tenant-a", "trajectories", "partition-probe.json",
+	)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("stat namespaced trajectory: %v", err)
 	}
 }

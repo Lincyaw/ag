@@ -58,9 +58,6 @@ type DeliveryStore interface {
 	PurgeTerminal(context.Context, time.Time) (int, error)
 }
 
-// OutboxStore is a compatibility alias. New code should use DeliveryStore.
-type OutboxStore = DeliveryStore
-
 func CloneEvent(event Event) Event {
 	event.Payload = append(json.RawMessage(nil), event.Payload...)
 	return event

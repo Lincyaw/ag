@@ -1,0 +1,223 @@
+package runtime
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/lincyaw/ag/sdk"
+	sdkstorage "github.com/lincyaw/ag/sdk/storage"
+)
+
+type invalidResponseProvider struct{}
+
+func (invalidResponseProvider) Spec() sdk.ProviderSpec {
+	return sdk.ProviderSpec{Name: "invalid-response", Model: "test"}
+}
+
+func (invalidResponseProvider) Complete(
+	context.Context,
+	sdk.ModelRequest,
+) (sdk.ModelResponse, error) {
+	return sdk.ModelResponse{
+		ToolCalls: []sdk.ToolCall{
+			{ID: "call-1", Name: "first", Arguments: json.RawMessage(`{}`)},
+			{ID: "call-1", Name: "second", Arguments: json.RawMessage(`{}`)},
+		},
+	}, nil
+}
+
+func TestPromptBlockCommitsWithoutCallingProvider(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	trajectories := sdkstorage.NewMemoryTrajectoryStore()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: testStateBackendWithStores(trajectories, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+
+	hook := sdk.TypedHook[sdk.BeforeAgentStartPayload](
+		sdk.HookSpec{
+			Name:  "block-prompt",
+			Event: sdk.EventBeforeAgentStart,
+		},
+		func(context.Context, sdk.BeforeAgentStartPayload) (sdk.Effect, error) {
+			return sdk.BlockWith("blocked by policy", "policy"), nil
+		},
+	)
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "prompt-policy",
+			Version:     "1.0.0",
+			Description: "blocks a prompt before provider selection",
+			APIVersion:  sdk.APIVersion,
+			Registers:   []string{sdk.HookResource("block-prompt")},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return registrar.RegisterHook(hook)
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{ID: "blocked-prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := session.Prompt(ctx, "do not run")
+	if err != nil {
+		t.Fatalf("blocked prompt: %v", err)
+	}
+	if result.Cause.Code != "prompt_blocked" ||
+		result.Cause.Detail != "blocked by policy" {
+		t.Fatalf("blocked result cause = %#v", result.Cause)
+	}
+	if len(result.Messages) != 1 || result.Messages[0].Content != "do not run" {
+		t.Fatalf("blocked result messages = %#v", result.Messages)
+	}
+	if messages := session.Messages(); len(messages) != 1 ||
+		messages[0].Content != "do not run" {
+		t.Fatalf("committed session messages = %#v", messages)
+	}
+
+	trajectory, err := trajectories.Load(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch, err := trajectory.Branch(trajectory.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantKinds := []string{
+		sdk.TrajectoryKindUserMessage,
+		sdk.TrajectoryKindCheckpoint,
+		sdk.TrajectoryKindTerminal,
+	}
+	if len(branch) != len(wantKinds) {
+		t.Fatalf("blocked trajectory branch = %#v", branch)
+	}
+	for index, want := range wantKinds {
+		if branch[index].Kind != want {
+			t.Fatalf(
+				"blocked trajectory entry %d kind = %q, want %q",
+				index,
+				branch[index].Kind,
+				want,
+			)
+		}
+	}
+}
+
+func TestPromptRejectsInvalidProviderResponseAndRestoresSession(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{Storage: newTestStateBackend()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "invalid-response-plugin",
+			Version:     "1.0.0",
+			Description: "returns an invalid provider response",
+			APIVersion:  sdk.APIVersion,
+			Registers:   []string{sdk.ProviderResource("invalid-response")},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return registrar.RegisterProvider(invalidResponseProvider{})
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "invalid-response-session",
+		Provider: "invalid-response",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := session.Prompt(ctx, "trigger invalid response")
+	if err == nil || !strings.Contains(
+		err.Error(),
+		`tool call ID "call-1" is duplicated`,
+	) {
+		t.Fatalf("prompt error = %v", err)
+	}
+	if result.Cause.Code != "provider_error" {
+		t.Fatalf("result cause = %#v", result.Cause)
+	}
+	if messages := session.Messages(); len(messages) != 0 {
+		t.Fatalf("session retained failed prompt messages: %#v", messages)
+	}
+}
+
+func TestValidateModelResponseToolCalls(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		calls    []sdk.ToolCall
+		expected string
+	}{
+		{
+			name: "valid",
+			calls: []sdk.ToolCall{{
+				ID: "call-1", Name: "tool", Arguments: json.RawMessage(`{"value":1}`),
+			}},
+		},
+		{
+			name:     "empty ID",
+			calls:    []sdk.ToolCall{{Name: "tool", Arguments: json.RawMessage(`{}`)}},
+			expected: "tool call 0 has an empty ID",
+		},
+		{
+			name: "duplicate ID",
+			calls: []sdk.ToolCall{
+				{ID: "call-1", Name: "first", Arguments: json.RawMessage(`{}`)},
+				{ID: "call-1", Name: "second", Arguments: json.RawMessage(`{}`)},
+			},
+			expected: `tool call ID "call-1" is duplicated`,
+		},
+		{
+			name: "invalid arguments",
+			calls: []sdk.ToolCall{{
+				ID: "call-1", Name: "tool", Arguments: json.RawMessage(`{`),
+			}},
+			expected: `tool call "call-1" arguments are invalid JSON`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateModelResponse(sdk.ModelResponse{ToolCalls: test.calls})
+			if test.expected == "" {
+				if err != nil {
+					t.Fatalf("validate response: %v", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != test.expected {
+				t.Fatalf("validation error = %v, want %q", err, test.expected)
+			}
+		})
+	}
+}

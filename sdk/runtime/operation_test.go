@@ -6,28 +6,30 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/lincyaw/ag/sdk"
 )
 
 func TestAwaitOperationPollsMonotonicRevisionsToCompletion(t *testing.T) {
 	t.Parallel()
-	runtime := &Runtime{operationPoll: time.Microsecond}
-	initial := Operation{
+	runtime := &Runtime{operation: operationRuntime{poll: time.Microsecond}}
+	initial := sdk.Operation{
 		ID:             "operation-1",
 		IdempotencyKey: "trajectory-entry-1",
-		State:          OperationPending,
+		State:          sdk.OperationPending,
 		Revision:       1,
 	}
-	states := []Operation{
+	states := []sdk.Operation{
 		{
 			ID:             initial.ID,
 			IdempotencyKey: initial.IdempotencyKey,
-			State:          OperationRunning,
+			State:          sdk.OperationRunning,
 			Revision:       2,
 		},
 		{
 			ID:             initial.ID,
 			IdempotencyKey: initial.IdempotencyKey,
-			State:          OperationSucceeded,
+			State:          sdk.OperationSucceeded,
 			Revision:       3,
 			Output:         []byte(`{"content":"done"}`),
 		},
@@ -36,45 +38,45 @@ func TestAwaitOperationPollsMonotonicRevisionsToCompletion(t *testing.T) {
 	result, err := runtime.awaitOperation(
 		context.Background(),
 		initial,
-		func(_ context.Context, id string, revision uint64) (Operation, error) {
+		func(_ context.Context, id string, revision uint64) (sdk.Operation, error) {
 			index := int(polls.Add(1) - 1)
 			if id != initial.ID || revision != uint64(index+1) {
 				t.Fatalf("poll(%q, %d) at index %d", id, revision, index)
 			}
 			return states[index], nil
 		},
-		func(context.Context, string) (Operation, error) {
+		func(context.Context, string) (sdk.Operation, error) {
 			t.Fatal("cancel called for successful operation")
-			return Operation{}, nil
+			return sdk.Operation{}, nil
 		},
 	)
 	if err != nil {
 		t.Fatalf("await operation: %v", err)
 	}
-	if result.State != OperationSucceeded || result.Revision != 3 || polls.Load() != 2 {
+	if result.State != sdk.OperationSucceeded || result.Revision != 3 || polls.Load() != 2 {
 		t.Fatalf("result = %#v, polls = %d", result, polls.Load())
 	}
 }
 
 func TestAwaitOperationCancellationUsesFreshContext(t *testing.T) {
 	t.Parallel()
-	runtime := &Runtime{operationPoll: time.Second}
+	runtime := &Runtime{operation: operationRuntime{poll: time.Second}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var cancelled atomic.Bool
 	_, err := runtime.awaitOperation(
 		ctx,
-		Operation{
+		sdk.Operation{
 			ID:             "operation-cancel",
 			IdempotencyKey: "entry-cancel",
-			State:          OperationRunning,
+			State:          sdk.OperationRunning,
 			Revision:       4,
 		},
-		func(context.Context, string, uint64) (Operation, error) {
+		func(context.Context, string, uint64) (sdk.Operation, error) {
 			t.Fatal("poll called after context cancellation")
-			return Operation{}, nil
+			return sdk.Operation{}, nil
 		},
-		func(cancelCtx context.Context, id string) (Operation, error) {
+		func(cancelCtx context.Context, id string) (sdk.Operation, error) {
 			if err := cancelCtx.Err(); err != nil {
 				t.Fatalf("cancel context inherited cancellation: %v", err)
 			}
@@ -82,10 +84,10 @@ func TestAwaitOperationCancellationUsesFreshContext(t *testing.T) {
 				t.Fatalf("cancel ID = %q", id)
 			}
 			cancelled.Store(true)
-			return Operation{
+			return sdk.Operation{
 				ID:             id,
 				IdempotencyKey: "entry-cancel",
-				State:          OperationCancelled,
+				State:          sdk.OperationCancelled,
 				Revision:       5,
 			}, nil
 		},
@@ -100,23 +102,23 @@ func TestAwaitOperationCancellationUsesFreshContext(t *testing.T) {
 
 func TestAwaitOperationRejectsRemoteStateCorruption(t *testing.T) {
 	t.Parallel()
-	tests := map[string]Operation{
+	tests := map[string]sdk.Operation{
 		"different ID": {
 			ID:             "other",
 			IdempotencyKey: "entry",
-			State:          OperationRunning,
+			State:          sdk.OperationRunning,
 			Revision:       3,
 		},
 		"regressed revision": {
 			ID:             "operation",
 			IdempotencyKey: "entry",
-			State:          OperationPending,
+			State:          sdk.OperationPending,
 			Revision:       1,
 		},
 		"changed key": {
 			ID:             "operation",
 			IdempotencyKey: "different",
-			State:          OperationRunning,
+			State:          sdk.OperationRunning,
 			Revision:       3,
 		},
 	}
@@ -124,20 +126,22 @@ func TestAwaitOperationRejectsRemoteStateCorruption(t *testing.T) {
 		next := next
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			runtime := &Runtime{operationPoll: time.Microsecond}
+			runtime := &Runtime{
+				operation: operationRuntime{poll: time.Microsecond},
+			}
 			_, err := runtime.awaitOperation(
 				context.Background(),
-				Operation{
+				sdk.Operation{
 					ID:             "operation",
 					IdempotencyKey: "entry",
-					State:          OperationRunning,
+					State:          sdk.OperationRunning,
 					Revision:       2,
 				},
-				func(context.Context, string, uint64) (Operation, error) {
+				func(context.Context, string, uint64) (sdk.Operation, error) {
 					return next, nil
 				},
-				func(context.Context, string) (Operation, error) {
-					return Operation{}, nil
+				func(context.Context, string) (sdk.Operation, error) {
+					return sdk.Operation{}, nil
 				},
 			)
 			if err == nil {

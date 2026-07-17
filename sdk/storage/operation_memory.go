@@ -11,41 +11,45 @@ import (
 	"sync"
 	"time"
 
-	. "github.com/lincyaw/ag/sdk"
+	sdk "github.com/lincyaw/ag/sdk"
 )
 
-type MemoryOperationStore struct {
+type memoryOperationStore struct {
 	mu         sync.Mutex
-	operations map[string]OperationRecord
+	operations map[string]sdk.OperationRecord
 	keys       map[string]string
 }
 
-func NewMemoryOperationStore() *MemoryOperationStore {
-	return &MemoryOperationStore{
-		operations: make(map[string]OperationRecord),
+func NewMemoryOperationStore() sdk.OperationStore {
+	return newMemoryOperationStore()
+}
+
+func newMemoryOperationStore() *memoryOperationStore {
+	return &memoryOperationStore{
+		operations: make(map[string]sdk.OperationRecord),
 		keys:       make(map[string]string),
 	}
 }
 
-func (store *MemoryOperationStore) Submit(
+func (store *memoryOperationStore) Submit(
 	ctx context.Context,
-	record OperationRecord,
-) (OperationRecord, bool, error) {
+	record sdk.OperationRecord,
+) (sdk.OperationRecord, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return OperationRecord{}, false, err
+		return sdk.OperationRecord{}, false, err
 	}
 	if record.Operation.ID == "" {
-		record.Operation.ID = NewID()
+		record.Operation.ID = sdk.NewID()
 	}
 	if err := validateNewOperationRecord(record); err != nil {
-		return OperationRecord{}, false, err
+		return sdk.OperationRecord{}, false, err
 	}
 	now := time.Now().UTC()
 	if record.Operation.SubmittedAt.IsZero() {
 		record.Operation.SubmittedAt = now
 	}
 	record.Operation.UpdatedAt = record.Operation.SubmittedAt
-	record.Operation.State = OperationPending
+	record.Operation.State = sdk.OperationPending
 	record.Operation.Revision = 1
 	record.Operation.Output = nil
 	record.Operation.Error = ""
@@ -57,7 +61,7 @@ func (store *MemoryOperationStore) Submit(
 	if id, exists := store.keys[key]; exists {
 		existing := store.operations[id]
 		if !bytes.Equal(existing.Input, record.Input) {
-			return OperationRecord{}, false, fmt.Errorf(
+			return sdk.OperationRecord{}, false, fmt.Errorf(
 				"operation idempotency key %q was reused with different input",
 				record.Operation.IdempotencyKey,
 			)
@@ -65,7 +69,7 @@ func (store *MemoryOperationStore) Submit(
 		return cloneOperationRecord(existing), false, nil
 	}
 	if _, exists := store.operations[record.Operation.ID]; exists {
-		return OperationRecord{}, false, fmt.Errorf(
+		return sdk.OperationRecord{}, false, fmt.Errorf(
 			"operation ID %q already exists",
 			record.Operation.ID,
 		)
@@ -75,50 +79,50 @@ func (store *MemoryOperationStore) Submit(
 	return cloneOperationRecord(record), true, nil
 }
 
-func (store *MemoryOperationStore) Get(
+func (store *memoryOperationStore) Get(
 	ctx context.Context,
 	id string,
-) (OperationRecord, error) {
+) (sdk.OperationRecord, error) {
 	if err := ctx.Err(); err != nil {
-		return OperationRecord{}, err
+		return sdk.OperationRecord{}, err
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	record, exists := store.operations[id]
 	if !exists {
-		return OperationRecord{}, fmt.Errorf("%w: %s", ErrOperationNotFound, id)
+		return sdk.OperationRecord{}, fmt.Errorf("%w: %s", sdk.ErrOperationNotFound, id)
 	}
 	return cloneOperationRecord(record), nil
 }
 
-func (store *MemoryOperationStore) Transition(
+func (store *memoryOperationStore) Transition(
 	ctx context.Context,
 	id string,
 	expectedRevision uint64,
-	state OperationState,
+	state sdk.OperationState,
 	output json.RawMessage,
 	operationError string,
-) (OperationRecord, error) {
+) (sdk.OperationRecord, error) {
 	if err := ctx.Err(); err != nil {
-		return OperationRecord{}, err
+		return sdk.OperationRecord{}, err
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	record, exists := store.operations[id]
 	if !exists {
-		return OperationRecord{}, fmt.Errorf("%w: %s", ErrOperationNotFound, id)
+		return sdk.OperationRecord{}, fmt.Errorf("%w: %s", sdk.ErrOperationNotFound, id)
 	}
 	if record.Operation.Revision != expectedRevision {
-		return OperationRecord{}, fmt.Errorf(
+		return sdk.OperationRecord{}, fmt.Errorf(
 			"%w: operation %s has revision %d, expected %d",
-			ErrOperationConflict,
+			sdk.ErrOperationConflict,
 			id,
 			record.Operation.Revision,
 			expectedRevision,
 		)
 	}
 	if err := validateOperationTransition(record.Operation.State, state); err != nil {
-		return OperationRecord{}, err
+		return sdk.OperationRecord{}, err
 	}
 	next := record.Operation
 	next.State = state
@@ -126,32 +130,32 @@ func (store *MemoryOperationStore) Transition(
 	next.Output = append(json.RawMessage(nil), output...)
 	next.Error = operationError
 	next.UpdatedAt = time.Now().UTC()
-	if state != OperationRunning {
+	if state != sdk.OperationRunning {
 		record.Execution = nil
 	}
-	if err := ValidateOperation(next); err != nil {
-		return OperationRecord{}, err
+	if err := sdk.ValidateOperation(next); err != nil {
+		return sdk.OperationRecord{}, err
 	}
 	record.Operation = next
 	store.operations[id] = cloneOperationRecord(record)
 	return cloneOperationRecord(record), nil
 }
 
-func (store *MemoryOperationStore) Claim(
+func (store *memoryOperationStore) Claim(
 	ctx context.Context,
 	id string,
 	owner string,
 	now time.Time,
 	ttl time.Duration,
-) (OperationRecord, error) {
+) (sdk.OperationRecord, error) {
 	if err := ctx.Err(); err != nil {
-		return OperationRecord{}, err
+		return sdk.OperationRecord{}, err
 	}
 	if strings.TrimSpace(owner) == "" {
-		return OperationRecord{}, errors.New("operation lease owner is empty")
+		return sdk.OperationRecord{}, errors.New("operation lease owner is empty")
 	}
 	if ttl <= 0 {
-		return OperationRecord{}, errors.New("operation lease TTL must be positive")
+		return sdk.OperationRecord{}, errors.New("operation lease TTL must be positive")
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -162,47 +166,47 @@ func (store *MemoryOperationStore) Claim(
 	defer store.mu.Unlock()
 	record, exists := store.operations[id]
 	if !exists {
-		return OperationRecord{}, fmt.Errorf("%w: %s", ErrOperationNotFound, id)
+		return sdk.OperationRecord{}, fmt.Errorf("%w: %s", sdk.ErrOperationNotFound, id)
 	}
 	if record.Operation.Terminal() {
-		return OperationRecord{}, fmt.Errorf(
+		return sdk.OperationRecord{}, fmt.Errorf(
 			"terminal operation %q cannot be claimed",
 			id,
 		)
 	}
 	if record.Execution != nil && record.Execution.ExpiresAt.After(now) {
-		return OperationRecord{}, fmt.Errorf(
+		return sdk.OperationRecord{}, fmt.Errorf(
 			"%w: operation %s is owned by %s until %s",
-			ErrOperationClaimed,
+			sdk.ErrOperationClaimed,
 			id,
 			record.Execution.Owner,
 			record.Execution.ExpiresAt.Format(time.RFC3339Nano),
 		)
 	}
-	record.Operation.State = OperationRunning
+	record.Operation.State = sdk.OperationRunning
 	record.Operation.Revision++
 	record.Operation.UpdatedAt = now
-	record.Execution = &OperationLease{
+	record.Execution = &sdk.OperationLease{
 		Owner:     owner,
-		Token:     NewID(),
+		Token:     sdk.NewID(),
 		ExpiresAt: now.Add(ttl),
 	}
 	store.operations[id] = cloneOperationRecord(record)
 	return cloneOperationRecord(record), nil
 }
 
-func (store *MemoryOperationStore) Renew(
+func (store *memoryOperationStore) Renew(
 	ctx context.Context,
 	id string,
 	token string,
 	now time.Time,
 	ttl time.Duration,
-) (OperationRecord, error) {
+) (sdk.OperationRecord, error) {
 	if err := ctx.Err(); err != nil {
-		return OperationRecord{}, err
+		return sdk.OperationRecord{}, err
 	}
 	if ttl <= 0 {
-		return OperationRecord{}, errors.New("operation lease TTL must be positive")
+		return sdk.OperationRecord{}, errors.New("operation lease TTL must be positive")
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -213,15 +217,15 @@ func (store *MemoryOperationStore) Renew(
 	defer store.mu.Unlock()
 	record, exists := store.operations[id]
 	if !exists {
-		return OperationRecord{}, fmt.Errorf("%w: %s", ErrOperationNotFound, id)
+		return sdk.OperationRecord{}, fmt.Errorf("%w: %s", sdk.ErrOperationNotFound, id)
 	}
-	if record.Operation.State != OperationRunning ||
+	if record.Operation.State != sdk.OperationRunning ||
 		record.Execution == nil ||
 		record.Execution.Token != token ||
 		!record.Execution.ExpiresAt.After(now) {
-		return OperationRecord{}, fmt.Errorf(
+		return sdk.OperationRecord{}, fmt.Errorf(
 			"%w: operation %s token is stale or expired",
-			ErrOperationFence,
+			sdk.ErrOperationFence,
 			id,
 		)
 	}
@@ -232,19 +236,19 @@ func (store *MemoryOperationStore) Renew(
 	return cloneOperationRecord(record), nil
 }
 
-func (store *MemoryOperationStore) Complete(
+func (store *memoryOperationStore) Complete(
 	ctx context.Context,
 	id string,
 	token string,
-	state OperationState,
+	state sdk.OperationState,
 	output json.RawMessage,
 	operationError string,
-) (OperationRecord, error) {
+) (sdk.OperationRecord, error) {
 	if err := ctx.Err(); err != nil {
-		return OperationRecord{}, err
+		return sdk.OperationRecord{}, err
 	}
-	if state != OperationSucceeded && state != OperationFailed {
-		return OperationRecord{}, fmt.Errorf(
+	if state != sdk.OperationSucceeded && state != sdk.OperationFailed {
+		return sdk.OperationRecord{}, fmt.Errorf(
 			"claimed operation cannot complete as %q",
 			state,
 		)
@@ -253,15 +257,15 @@ func (store *MemoryOperationStore) Complete(
 	defer store.mu.Unlock()
 	record, exists := store.operations[id]
 	if !exists {
-		return OperationRecord{}, fmt.Errorf("%w: %s", ErrOperationNotFound, id)
+		return sdk.OperationRecord{}, fmt.Errorf("%w: %s", sdk.ErrOperationNotFound, id)
 	}
-	if record.Operation.State != OperationRunning ||
+	if record.Operation.State != sdk.OperationRunning ||
 		record.Execution == nil ||
 		record.Execution.Token != token ||
 		!record.Execution.ExpiresAt.After(time.Now().UTC()) {
-		return OperationRecord{}, fmt.Errorf(
+		return sdk.OperationRecord{}, fmt.Errorf(
 			"%w: operation %s token is stale or expired",
-			ErrOperationFence,
+			sdk.ErrOperationFence,
 			id,
 		)
 	}
@@ -271,8 +275,8 @@ func (store *MemoryOperationStore) Complete(
 	next.Output = append(json.RawMessage(nil), output...)
 	next.Error = operationError
 	next.UpdatedAt = time.Now().UTC()
-	if err := ValidateOperation(next); err != nil {
-		return OperationRecord{}, err
+	if err := sdk.ValidateOperation(next); err != nil {
+		return sdk.OperationRecord{}, err
 	}
 	record.Operation = next
 	record.Execution = nil
@@ -280,26 +284,26 @@ func (store *MemoryOperationStore) Complete(
 	return cloneOperationRecord(record), nil
 }
 
-func (store *MemoryOperationStore) Release(
+func (store *memoryOperationStore) Release(
 	ctx context.Context,
 	id string,
 	token string,
-) (OperationRecord, error) {
+) (sdk.OperationRecord, error) {
 	if err := ctx.Err(); err != nil {
-		return OperationRecord{}, err
+		return sdk.OperationRecord{}, err
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	record, exists := store.operations[id]
 	if !exists {
-		return OperationRecord{}, fmt.Errorf("%w: %s", ErrOperationNotFound, id)
+		return sdk.OperationRecord{}, fmt.Errorf("%w: %s", sdk.ErrOperationNotFound, id)
 	}
-	if record.Operation.State != OperationRunning ||
+	if record.Operation.State != sdk.OperationRunning ||
 		record.Execution == nil ||
 		record.Execution.Token != token {
-		return OperationRecord{}, fmt.Errorf(
+		return sdk.OperationRecord{}, fmt.Errorf(
 			"%w: operation %s token is stale",
-			ErrOperationFence,
+			sdk.ErrOperationFence,
 			id,
 		)
 	}
@@ -310,19 +314,19 @@ func (store *MemoryOperationStore) Release(
 	return cloneOperationRecord(record), nil
 }
 
-func (store *MemoryOperationStore) List(
+func (store *memoryOperationStore) List(
 	ctx context.Context,
-) ([]OperationRecord, error) {
+) ([]sdk.OperationRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	result := make([]OperationRecord, 0, len(store.operations))
+	result := make([]sdk.OperationRecord, 0, len(store.operations))
 	for _, record := range store.operations {
 		result = append(result, cloneOperationRecord(record))
 	}
-	slices.SortFunc(result, func(left, right OperationRecord) int {
+	slices.SortFunc(result, func(left, right sdk.OperationRecord) int {
 		if order := left.Operation.SubmittedAt.Compare(right.Operation.SubmittedAt); order != 0 {
 			return order
 		}
@@ -331,26 +335,26 @@ func (store *MemoryOperationStore) List(
 	return result, nil
 }
 
-func (store *MemoryOperationStore) ListPage(
+func (store *memoryOperationStore) ListPage(
 	ctx context.Context,
-	request PageRequest,
-) (OperationPage, error) {
+	request sdk.PageRequest,
+) (sdk.OperationPage, error) {
 	items, err := store.List(ctx)
 	if err != nil {
-		return OperationPage{}, err
+		return sdk.OperationPage{}, err
 	}
-	page, next, err := PageWindow(
+	page, next, err := pageWindow(
 		items,
 		request,
-		func(item OperationRecord) string { return item.Operation.ID },
+		func(item sdk.OperationRecord) string { return item.Operation.ID },
 	)
 	if err != nil {
-		return OperationPage{}, err
+		return sdk.OperationPage{}, err
 	}
-	return OperationPage{Items: page, Next: next}, nil
+	return sdk.OperationPage{Items: page, Next: next}, nil
 }
 
-func (store *MemoryOperationStore) PurgeTerminal(
+func (store *memoryOperationStore) PurgeTerminal(
 	ctx context.Context,
 	before time.Time,
 ) (int, error) {
@@ -374,7 +378,7 @@ func (store *MemoryOperationStore) PurgeTerminal(
 	return removed, nil
 }
 
-func validateNewOperationRecord(record OperationRecord) error {
+func validateNewOperationRecord(record sdk.OperationRecord) error {
 	if record.Operation.ID == "" {
 		return errors.New("operation ID is empty")
 	}
@@ -382,12 +386,11 @@ func validateNewOperationRecord(record OperationRecord) error {
 		return errors.New("operation idempotency key is empty")
 	}
 	switch record.Kind {
-	case OperationKindProvider, OperationKindTool,
-		OperationKindCapability, OperationKindRun:
+	case sdk.OperationKindProvider, sdk.OperationKindTool, sdk.OperationKindCapability:
 	default:
 		return fmt.Errorf("invalid operation kind %q", record.Kind)
 	}
-	if err := ValidateResourceName(string(record.Kind), record.Resource); err != nil {
+	if err := sdk.ValidateResourceName(string(record.Kind), record.Resource); err != nil {
 		return err
 	}
 	if !json.Valid(record.Input) {
@@ -396,31 +399,31 @@ func validateNewOperationRecord(record OperationRecord) error {
 	return nil
 }
 
-func validateOperationTransition(current, next OperationState) error {
+func validateOperationTransition(current, next sdk.OperationState) error {
 	switch current {
-	case OperationPending:
+	case sdk.OperationPending:
 		switch next {
-		case OperationRunning, OperationFailed, OperationCancelled:
+		case sdk.OperationRunning, sdk.OperationFailed, sdk.OperationCancelled:
 			return nil
 		}
-	case OperationRunning:
+	case sdk.OperationRunning:
 		switch next {
-		case OperationRunning, OperationSucceeded, OperationFailed, OperationCancelled:
+		case sdk.OperationRunning, sdk.OperationSucceeded, sdk.OperationFailed, sdk.OperationCancelled:
 			return nil
 		}
-	case OperationSucceeded, OperationFailed, OperationCancelled:
+	case sdk.OperationSucceeded, sdk.OperationFailed, sdk.OperationCancelled:
 		return fmt.Errorf("terminal operation in state %q cannot transition", current)
 	}
 	return fmt.Errorf("invalid operation transition %q -> %q", current, next)
 }
 
-func operationIdempotencyIndex(record OperationRecord) string {
+func operationIdempotencyIndex(record sdk.OperationRecord) string {
 	return string(record.Kind) + "\x00" + record.Resource + "\x00" +
 		record.ResourceRevision + "\x00" +
 		record.Operation.IdempotencyKey
 }
 
-func cloneOperationRecord(record OperationRecord) OperationRecord {
+func cloneOperationRecord(record sdk.OperationRecord) sdk.OperationRecord {
 	record.Input = append(json.RawMessage(nil), record.Input...)
 	record.Operation.Output = append(json.RawMessage(nil), record.Operation.Output...)
 	if record.Execution != nil {

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/lincyaw/ag/sdk"
 )
 
 var ErrResumeEnvironmentMismatch = errors.New(
@@ -16,37 +18,37 @@ func newTrajectoryEnvironment(
 	runtime *Runtime,
 	snapshot *registrySnapshot,
 	config SessionConfig,
-) (TrajectoryEnvironment, error) {
+) (sdk.TrajectoryEnvironment, error) {
 	catalog := catalogFromSnapshot(snapshot)
-	environment := TrajectoryEnvironment{
-		SDKAPIVersion:     APIVersion,
+	environment := sdk.TrajectoryEnvironment{
+		SDKAPIVersion:     sdk.APIVersion,
 		RuntimeVersion:    runtime.version,
 		CreatedGeneration: catalog.Generation,
 		RequestedProvider: config.Provider,
-		SystemDigest:      digestString(config.System),
-		Providers:         append([]ProviderSpec(nil), catalog.Providers...),
-		Tools:             append([]ToolSpec(nil), catalog.Tools...),
-		Hooks:             append([]HookSpec(nil), catalog.Hooks...),
-		Subscribers:       append([]SubscriberSpec(nil), catalog.Subscribers...),
-		Capabilities:      append([]CapabilitySpec(nil), catalog.Capabilities...),
-		Events:            append([]EventContract(nil), catalog.Events...),
+		SystemDigest:      digestBytes([]byte(config.System)),
+		Providers:         append([]sdk.ProviderSpec(nil), catalog.Providers...),
+		Tools:             append([]sdk.ToolSpec(nil), catalog.Tools...),
+		Hooks:             append([]sdk.HookSpec(nil), catalog.Hooks...),
+		Subscribers:       append([]sdk.SubscriberSpec(nil), catalog.Subscribers...),
+		Capabilities:      append([]sdk.CapabilitySpec(nil), catalog.Capabilities...),
+		Events:            append([]sdk.EventContract(nil), catalog.Events...),
 	}
 	for _, plugin := range catalog.Plugins {
-		environment.Plugins = append(environment.Plugins, TrajectoryPlugin{
+		environment.Plugins = append(environment.Plugins, sdk.TrajectoryPlugin{
 			Name:      plugin.Name,
 			Version:   plugin.Version,
 			Registers: append([]string(nil), plugin.Registers...),
 		})
 	}
 	raw, err := json.Marshal(struct {
-		SDKAPIVersion int                `json:"sdk_api_version"`
-		Plugins       []TrajectoryPlugin `json:"plugins"`
-		Providers     []ProviderSpec     `json:"providers"`
-		Tools         []ToolSpec         `json:"tools"`
-		Hooks         []HookSpec         `json:"hooks"`
-		Subscribers   []SubscriberSpec   `json:"subscribers"`
-		Capabilities  []CapabilitySpec   `json:"capabilities"`
-		Events        []EventContract    `json:"events"`
+		SDKAPIVersion int                    `json:"sdk_api_version"`
+		Plugins       []sdk.TrajectoryPlugin `json:"plugins"`
+		Providers     []sdk.ProviderSpec     `json:"providers"`
+		Tools         []sdk.ToolSpec         `json:"tools"`
+		Hooks         []sdk.HookSpec         `json:"hooks"`
+		Subscribers   []sdk.SubscriberSpec   `json:"subscribers"`
+		Capabilities  []sdk.CapabilitySpec   `json:"capabilities"`
+		Events        []sdk.EventContract    `json:"events"`
 	}{
 		SDKAPIVersion: environment.SDKAPIVersion,
 		Plugins:       environment.Plugins,
@@ -58,7 +60,7 @@ func newTrajectoryEnvironment(
 		Events:        environment.Events,
 	})
 	if err != nil {
-		return TrajectoryEnvironment{}, fmt.Errorf(
+		return sdk.TrajectoryEnvironment{}, fmt.Errorf(
 			"encode trajectory environment: %w",
 			err,
 		)
@@ -68,8 +70,8 @@ func newTrajectoryEnvironment(
 }
 
 func validateResumeEnvironment(
-	recorded TrajectoryEnvironment,
-	current TrajectoryEnvironment,
+	recorded sdk.TrajectoryEnvironment,
+	current sdk.TrajectoryEnvironment,
 ) error {
 	// Schema-zero trajectories predate environment snapshots. They remain
 	// resumable, but cannot receive exact-composition guarantees retroactively.
@@ -93,10 +95,6 @@ func validateResumeEnvironment(
 		)
 	}
 	return nil
-}
-
-func digestString(value string) string {
-	return digestBytes([]byte(value))
 }
 
 func digestBytes(value []byte) string {

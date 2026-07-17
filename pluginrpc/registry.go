@@ -3,7 +3,6 @@ package pluginrpc
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	pluginv1 "github.com/lincyaw/ag/pluginrpc/v1"
@@ -13,30 +12,21 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-type RegistryServer struct {
+type registryServer struct {
 	pluginv1.UnimplementedRegistryServiceServer
 	registry *sdk.LeaseRegistry
 }
 
-func NewRegistryServer(registry *sdk.LeaseRegistry) (*RegistryServer, error) {
+func NewRegistryServer(
+	registry *sdk.LeaseRegistry,
+) (pluginv1.RegistryServiceServer, error) {
 	if registry == nil {
 		return nil, errors.New("lease registry is nil")
 	}
-	return &RegistryServer{registry: registry}, nil
+	return &registryServer{registry: registry}, nil
 }
 
-func RegisterRegistryService(
-	registrar grpc.ServiceRegistrar,
-	server *RegistryServer,
-) error {
-	if registrar == nil || server == nil {
-		return errors.New("gRPC registrar and registry server are required")
-	}
-	pluginv1.RegisterRegistryServiceServer(registrar, server)
-	return nil
-}
-
-func (server *RegistryServer) Register(
+func (server *registryServer) Register(
 	ctx context.Context,
 	request *pluginv1.RegisterRequest,
 ) (*pluginv1.RegisterResponse, error) {
@@ -57,7 +47,7 @@ func (server *RegistryServer) Register(
 	return &pluginv1.RegisterResponse{Lease: toProtoLease(lease)}, nil
 }
 
-func (server *RegistryServer) Renew(
+func (server *registryServer) Renew(
 	ctx context.Context,
 	request *pluginv1.RenewRequest,
 ) (*pluginv1.RenewResponse, error) {
@@ -72,7 +62,7 @@ func (server *RegistryServer) Renew(
 	return &pluginv1.RenewResponse{Lease: toProtoLease(lease)}, nil
 }
 
-func (server *RegistryServer) Unregister(
+func (server *registryServer) Unregister(
 	ctx context.Context,
 	request *pluginv1.UnregisterRequest,
 ) (*pluginv1.UnregisterResponse, error) {
@@ -82,7 +72,7 @@ func (server *RegistryServer) Unregister(
 	return &pluginv1.UnregisterResponse{}, nil
 }
 
-func (server *RegistryServer) ListRegistrations(
+func (server *registryServer) ListRegistrations(
 	ctx context.Context,
 	_ *pluginv1.ListRegistrationsRequest,
 ) (*pluginv1.ListRegistrationsResponse, error) {
@@ -179,35 +169,6 @@ func (client *RegistryClient) List(
 		})
 	}
 	return result, nil
-}
-
-func (client *RegistryClient) Maintain(
-	ctx context.Context,
-	registration sdk.PluginRegistration,
-	ttl time.Duration,
-) error {
-	if ttl <= 0 {
-		return errors.New("plugin lease TTL must be positive")
-	}
-	lease, err := client.Register(ctx, registration, ttl)
-	if err != nil {
-		return err
-	}
-	ticker := time.NewTicker(max(ttl/3, time.Millisecond))
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-			defer cancel()
-			return errors.Join(ctx.Err(), client.Unregister(cleanupCtx, lease.ID))
-		case <-ticker.C:
-			lease, err = client.Renew(ctx, lease.ID, ttl)
-			if err != nil {
-				return fmt.Errorf("renew plugin lease: %w", err)
-			}
-		}
-	}
 }
 
 func (client *RegistryClient) Close() error {

@@ -184,6 +184,16 @@ func TestRequestedOutputHonorsArgumentBoundaries(t *testing.T) {
 			expected: outputText,
 		},
 		{
+			name:     "unrelated command flag does not consume output",
+			args:     []string{"version", "--prompt", "-o", "json"},
+			expected: outputJSON,
+		},
+		{
+			name:     "inherited flag consumes output-looking value",
+			args:     []string{"version", "--config", "-o", "json"},
+			expected: outputText,
+		},
+		{
 			name:     "arguments after terminator",
 			args:     []string{"version", "--", "-o", "json"},
 			expected: outputText,

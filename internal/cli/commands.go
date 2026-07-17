@@ -155,8 +155,8 @@ func (application *app) pluginCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer connection.Close(context.Background())
-			return application.writeManifest(connection.Manifest())
+			writeErr := application.writeManifest(connection.Manifest())
+			return errors.Join(writeErr, connection.Close(context.Background()))
 		},
 	}
 	command.AddCommand(list, discover, inspect)
@@ -195,8 +195,25 @@ func resolvePlugin(
 	if discoverErr != nil {
 		return nil, discoverErr
 	}
-	if len(descriptors) != 1 || descriptors[0].URI == "" {
+	if len(descriptors) == 0 {
 		return nil, err
+	}
+	if len(descriptors) > 1 {
+		matches := make([]string, 0, len(descriptors))
+		for _, descriptor := range descriptors {
+			matches = append(matches, descriptor.URI)
+		}
+		return nil, fmt.Errorf(
+			"plugin %q is ambiguous; matches: %s",
+			nameOrURI,
+			strings.Join(matches, ", "),
+		)
+	}
+	if descriptors[0].URI == "" {
+		return nil, fmt.Errorf(
+			"discovered plugin %q has no resolvable URI",
+			nameOrURI,
+		)
 	}
 	if registerErr := registry.Register(sdk.PluginReference{
 		Name: descriptors[0].Name, URI: descriptors[0].URI,
@@ -264,6 +281,7 @@ func (application *app) trajectoryCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer backend.Close(context.Background())
 			store := backend.Trajectories()
 			logger, err := logging.New(logging.Config{
 				Level: loaded.Config.Logging.Level, Format: loaded.Config.Logging.Format,
@@ -274,12 +292,12 @@ func (application *app) trajectoryCommand() *cobra.Command {
 			}
 			runtime, err := agentruntime.NewRuntime(
 				agentruntime.RuntimeConfig{
-					Logger:  logger,
-					Storage: backend,
+					Logger:           logger,
+					Storage:          backend,
+					StorageOwnership: agentruntime.StorageBorrowed,
 				},
 			)
 			if err != nil {
-				_ = backend.Close(context.Background())
 				return err
 			}
 			defer runtime.Close(context.Background())

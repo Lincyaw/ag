@@ -6,13 +6,29 @@ import (
 	"fmt"
 	"runtime/debug"
 	"slices"
+	"sync"
 	"time"
+
+	"github.com/lincyaw/ag/sdk"
 )
+
+type deliveryRuntime struct {
+	store       sdk.DeliveryStore
+	workers     int
+	lease       time.Duration
+	poll        time.Duration
+	timeout     time.Duration
+	maxAttempts int
+	context     context.Context
+	cancel      context.CancelFunc
+	once        sync.Once
+	wait        sync.WaitGroup
+}
 
 func (runtime *Runtime) enqueueSubscribers(
 	ctx context.Context,
 	snapshot *registrySnapshot,
-	event Event,
+	event sdk.Event,
 ) error {
 	if len(snapshot.subscribers) == 0 {
 		return nil
@@ -28,10 +44,10 @@ func (runtime *Runtime) enqueueSubscribers(
 	}
 	slices.Sort(names)
 	now := time.Now().UTC()
-	deliveries := make([]Delivery, 0, len(names))
+	deliveries := make([]sdk.Delivery, 0, len(names))
 	for _, name := range names {
 		subscriber := snapshot.subscribers[name]
-		revision := PluginResourceRevision(
+		revision := sdk.ResourceRevision(
 			subscriber.owner.manifest,
 			"subscriber",
 			name,
@@ -41,20 +57,20 @@ func (runtime *Runtime) enqueueSubscribers(
 		if event.SessionID != "" {
 			partition += "/" + event.SessionID
 		}
-		deliveries = append(deliveries, Delivery{
+		deliveries = append(deliveries, sdk.Delivery{
 			ID:               event.ID + "." + name + "." + revision[:12],
 			Plugin:           subscriber.owner.manifest.Name,
 			PluginVersion:    subscriber.owner.manifest.Version,
 			Subscription:     name,
 			ResourceRevision: revision,
 			Partition:        partition,
-			Event:            cloneEvent(event),
+			Event:            sdk.CloneEvent(event),
 			CreatedAt:        now,
 		})
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	if err := runtime.outbox.Enqueue(ctx, deliveries...); err != nil {
+	if err := runtime.delivery.store.Enqueue(ctx, deliveries...); err != nil {
 		return fmt.Errorf(
 			"persist subscriber deliveries for event %s: %w",
 			event.ID,
@@ -64,10 +80,12 @@ func (runtime *Runtime) enqueueSubscribers(
 	return nil
 }
 
-func (runtime *Runtime) startDeliveryWorkers() {
-	runtime.deliveryOnce.Do(func() {
-		for worker := range runtime.deliveryWorkers {
-			runtime.deliveryWait.Add(1)
+// startDeliveryWorkersLocked is called while runtime.mu prevents Close from
+// waiting on delivery workers.
+func (runtime *Runtime) startDeliveryWorkersLocked() {
+	runtime.delivery.once.Do(func() {
+		for worker := range runtime.delivery.workers {
+			runtime.delivery.wait.Add(1)
 			go runtime.deliveryLoop(worker)
 		}
 	})
@@ -91,7 +109,7 @@ func (runtime *Runtime) DrainDeliveries(ctx context.Context) error {
 	}
 
 	for {
-		deliveries, err := runtime.outbox.List(ctx)
+		deliveries, err := runtime.delivery.store.List(ctx)
 		if err != nil {
 			return fmt.Errorf("list subscriber deliveries while draining: %w", err)
 		}
@@ -101,8 +119,8 @@ func (runtime *Runtime) DrainDeliveries(ctx context.Context) error {
 			if !exists || plugin != delivery.Plugin {
 				continue
 			}
-			if delivery.State != DeliveryDelivered &&
-				delivery.State != DeliveryDeadLetter {
+			if delivery.State != sdk.DeliveryDelivered &&
+				delivery.State != sdk.DeliveryDeadLetter {
 				pending = true
 				break
 			}
@@ -110,42 +128,42 @@ func (runtime *Runtime) DrainDeliveries(ctx context.Context) error {
 		if !pending {
 			return nil
 		}
-		if !waitContext(ctx, runtime.deliveryPoll) {
+		if !waitContext(ctx, runtime.delivery.poll) {
 			return ctx.Err()
 		}
 	}
 }
 
 func (runtime *Runtime) deliveryLoop(worker int) {
-	defer runtime.deliveryWait.Done()
+	defer runtime.delivery.wait.Done()
 	for {
-		if err := runtime.deliveryContext.Err(); err != nil {
+		if err := runtime.delivery.context.Err(); err != nil {
 			return
 		}
-		delivery, err := runtime.outbox.Lease(
-			runtime.deliveryContext,
+		delivery, err := runtime.delivery.store.Lease(
+			runtime.delivery.context,
 			time.Now().UTC(),
-			runtime.deliveryLease,
+			runtime.delivery.lease,
 		)
-		if errors.Is(err, ErrNoDelivery) {
-			if !waitContext(runtime.deliveryContext, runtime.deliveryPoll) {
+		if errors.Is(err, sdk.ErrNoDelivery) {
+			if !waitContext(runtime.delivery.context, runtime.delivery.poll) {
 				return
 			}
 			continue
 		}
 		if err != nil {
-			if runtime.deliveryContext.Err() != nil {
+			if runtime.delivery.context.Err() != nil {
 				return
 			}
 			runtime.logger.WarnContext(
-				runtime.deliveryContext,
+				runtime.delivery.context,
 				"lease subscriber delivery",
 				"worker",
 				worker,
 				"error",
 				err,
 			)
-			if !waitContext(runtime.deliveryContext, runtime.deliveryPoll) {
+			if !waitContext(runtime.delivery.context, runtime.delivery.poll) {
 				return
 			}
 			continue
@@ -154,7 +172,7 @@ func (runtime *Runtime) deliveryLoop(worker int) {
 	}
 }
 
-func (runtime *Runtime) deliver(delivery Delivery) {
+func (runtime *Runtime) deliver(delivery sdk.Delivery) {
 	lease, err := runtime.acquireSnapshot()
 	if err != nil {
 		return
@@ -165,7 +183,7 @@ func (runtime *Runtime) deliver(delivery Delivery) {
 		runtime.retryDelivery(delivery, errors.New("subscriber is not mounted"))
 		return
 	}
-	currentRevision := PluginResourceRevision(
+	currentRevision := sdk.ResourceRevision(
 		owned.owner.manifest,
 		"subscriber",
 		delivery.Subscription,
@@ -190,26 +208,26 @@ func (runtime *Runtime) deliver(delivery Delivery) {
 		)
 		return
 	}
-	timeout := runtime.deliveryTimeout
+	timeout := runtime.delivery.timeout
 	if owned.spec.Timeout > 0 && owned.spec.Timeout < timeout {
 		timeout = owned.spec.Timeout
 	}
-	ctx, cancel := context.WithTimeout(runtime.deliveryContext, timeout)
-	err = receiveSubscriber(ctx, owned.subscriber, cloneDelivery(delivery))
+	ctx, cancel := context.WithTimeout(runtime.delivery.context, timeout)
+	err = receiveSubscriber(ctx, owned.value, sdk.CloneDelivery(delivery))
 	cancel()
 	lease.release()
 	if err != nil {
 		runtime.retryDelivery(delivery, err)
 		return
 	}
-	if err := runtime.outbox.Ack(
-		runtime.deliveryContext,
+	if err := runtime.delivery.store.Ack(
+		runtime.delivery.context,
 		delivery.ID,
 		delivery.LeaseToken,
 		time.Now().UTC(),
 	); err != nil && !errors.Is(err, context.Canceled) {
 		runtime.logger.WarnContext(
-			runtime.deliveryContext,
+			runtime.delivery.context,
 			"ack subscriber delivery",
 			"delivery_id",
 			delivery.ID,
@@ -220,11 +238,11 @@ func (runtime *Runtime) deliver(delivery Delivery) {
 }
 
 func (runtime *Runtime) deadLetterDelivery(
-	delivery Delivery,
+	delivery sdk.Delivery,
 	cause error,
 ) {
-	err := runtime.outbox.DeadLetter(
-		runtime.deliveryContext,
+	err := runtime.delivery.store.DeadLetter(
+		runtime.delivery.context,
 		delivery.ID,
 		delivery.LeaseToken,
 		time.Now().UTC(),
@@ -232,7 +250,7 @@ func (runtime *Runtime) deadLetterDelivery(
 	)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		runtime.logger.WarnContext(
-			runtime.deliveryContext,
+			runtime.delivery.context,
 			"dead-letter subscriber delivery",
 			"delivery_id",
 			delivery.ID,
@@ -244,8 +262,8 @@ func (runtime *Runtime) deadLetterDelivery(
 
 func receiveSubscriber(
 	ctx context.Context,
-	subscriber Subscriber,
-	delivery Delivery,
+	subscriber sdk.Subscriber,
+	delivery sdk.Delivery,
 ) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -255,23 +273,23 @@ func receiveSubscriber(
 	return subscriber.Receive(ctx, delivery)
 }
 
-func (runtime *Runtime) retryDelivery(delivery Delivery, cause error) {
-	if runtime.deliveryContext.Err() != nil {
+func (runtime *Runtime) retryDelivery(delivery sdk.Delivery, cause error) {
+	if runtime.delivery.context.Err() != nil {
 		return
 	}
 	now := time.Now().UTC()
 	var err error
-	if delivery.Attempt >= runtime.deliveryMaxAttempts {
-		err = runtime.outbox.DeadLetter(
-			runtime.deliveryContext,
+	if delivery.Attempt >= runtime.delivery.maxAttempts {
+		err = runtime.delivery.store.DeadLetter(
+			runtime.delivery.context,
 			delivery.ID,
 			delivery.LeaseToken,
 			now,
 			cause.Error(),
 		)
 	} else {
-		err = runtime.outbox.Retry(
-			runtime.deliveryContext,
+		err = runtime.delivery.store.Retry(
+			runtime.delivery.context,
 			delivery.ID,
 			delivery.LeaseToken,
 			now.Add(runtime.deliveryBackoff(delivery.Attempt)),
@@ -280,7 +298,7 @@ func (runtime *Runtime) retryDelivery(delivery Delivery, cause error) {
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
 		runtime.logger.WarnContext(
-			runtime.deliveryContext,
+			runtime.delivery.context,
 			"reschedule subscriber delivery",
 			"delivery_id",
 			delivery.ID,
@@ -294,7 +312,7 @@ func (runtime *Runtime) retryDelivery(delivery Delivery, cause error) {
 
 func (runtime *Runtime) deliveryBackoff(attempt int) time.Duration {
 	shift := min(max(attempt-1, 0), 10)
-	delay := runtime.deliveryPoll * time.Duration(1<<shift)
+	delay := runtime.delivery.poll * time.Duration(1<<shift)
 	return min(delay, 30*time.Second)
 }
 

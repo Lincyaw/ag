@@ -7,6 +7,7 @@ import (
 
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
+	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -39,7 +40,13 @@ func TestPluginProjectsOrderedEventsIntoSpansAndMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	backend := sdkstorage.NewMemoryStateBackend()
+	deliveries, err := backend.Deliveries(sdk.HostOutboxQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{
+		Storage:         backend,
 		DeliveryWorkers: 4,
 		DeliveryPoll:    time.Millisecond,
 	})
@@ -99,11 +106,11 @@ func TestPluginProjectsOrderedEventsIntoSpansAndMetrics(t *testing.T) {
 	emit(sdk.EventAgentEnd, sdk.AgentEndPayload{Cause: sdk.Cause{Code: "model_end"}})
 
 	eventually(t, time.Second, func() bool {
-		deliveries, listErr := runtime.Outbox().List(ctx)
-		if listErr != nil || len(deliveries) < 10 {
+		records, listErr := deliveries.List(ctx)
+		if listErr != nil || len(records) < 10 {
 			return false
 		}
-		for _, delivery := range deliveries {
+		for _, delivery := range records {
 			if delivery.State != sdk.DeliveryDelivered {
 				return false
 			}
@@ -172,6 +179,54 @@ func TestPluginProjectsOrderedEventsIntoSpansAndMetrics(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("missing metrics: %v", want)
+	}
+}
+
+func TestDuplicateStartEventsEndReplacedSpans(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	spanRecorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(spanRecorder),
+	)
+	t.Cleanup(func() {
+		if err := tracerProvider.Shutdown(ctx); err != nil {
+			t.Errorf("shutdown tracer provider: %v", err)
+		}
+	})
+	plugin, err := New(Config{Tracer: tracerProvider.Tracer("duplicate-test")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := sdk.Event{ID: "event", SessionID: "session"}
+	for range 2 {
+		plugin.startRun(ctx, event)
+		plugin.startTurn(ctx, event, sdk.TurnStartPayload{Turn: 0})
+		plugin.startProvider(ctx, event, sdk.BeforeProviderPayload{
+			Turn: 0, Provider: "provider",
+		})
+		plugin.startTool(ctx, event, sdk.BeforeToolPayload{
+			Turn: 0,
+			Call: sdk.ToolCall{ID: "call", Name: "tool"},
+		})
+	}
+	if err := plugin.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	counts := make(map[string]int)
+	for _, span := range spanRecorder.Ended() {
+		counts[span.Name()]++
+	}
+	for _, name := range []string{
+		"agent.run",
+		"agent.turn",
+		"gen_ai.chat provider",
+		"gen_ai.tool tool",
+	} {
+		if counts[name] != 2 {
+			t.Fatalf("ended %q spans = %d, want 2; all=%v", name, counts[name], counts)
+		}
 	}
 }
 

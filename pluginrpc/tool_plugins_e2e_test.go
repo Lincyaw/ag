@@ -15,6 +15,7 @@ import (
 	"github.com/lincyaw/ag/plugins/bash"
 	fileplugin "github.com/lincyaw/ag/plugins/file"
 	"github.com/lincyaw/ag/sdk"
+	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 )
 
 func TestFileAndBashPluginsRunThroughRemoteOperationProtocol(t *testing.T) {
@@ -107,7 +108,9 @@ func fileToolRevision(t *testing.T, content string) string {
 func startToolPlugin(t *testing.T, plugin sdk.Plugin) pluginv1.PluginServiceClient {
 	t.Helper()
 	adapter, err := NewServer(context.Background(), ServerConfig{
-		Plugin: plugin,
+		Plugin:     plugin,
+		Operations: sdkstorage.NewMemoryOperationStore(),
+		Inbox:      sdkstorage.NewMemoryDeliveryStore(),
 	})
 	if err != nil {
 		t.Fatal(err)

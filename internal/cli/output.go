@@ -16,7 +16,6 @@ import (
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 )
 
 const (
@@ -83,6 +82,10 @@ func requestedOutput(
 	command *cobra.Command,
 ) string {
 	selected := fallback
+	target := command
+	if command != nil {
+		target, _, _ = command.Root().Find(args)
+	}
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
 		switch {
@@ -99,7 +102,7 @@ func requestedOutput(
 			selected = strings.TrimPrefix(argument, "-o=")
 		case strings.HasPrefix(argument, "-o") && len(argument) > len("-o"):
 			selected = strings.TrimPrefix(argument, "-o")
-		case flagConsumesNext(command, argument):
+		case flagConsumesNext(target, argument):
 			index++
 		}
 	}
@@ -119,27 +122,13 @@ func flagConsumesNext(command *cobra.Command, argument string) bool {
 	default:
 		return false
 	}
-	var consumes bool
-	var visit func(*cobra.Command)
-	visit = func(candidate *cobra.Command) {
-		candidate.LocalNonPersistentFlags().VisitAll(func(flag *pflag.Flag) {
-			if (name != "" && flag.Name == name) ||
-				(shorthand != "" && flag.Shorthand == shorthand) {
-				consumes = consumes || flag.NoOptDefVal == ""
-			}
-		})
-		candidate.PersistentFlags().VisitAll(func(flag *pflag.Flag) {
-			if (name != "" && flag.Name == name) ||
-				(shorthand != "" && flag.Shorthand == shorthand) {
-				consumes = consumes || flag.NoOptDefVal == ""
-			}
-		})
-		for _, child := range candidate.Commands() {
-			visit(child)
-		}
+	if name != "" {
+		flag := command.Flag(name)
+		return flag != nil && flag.NoOptDefVal == ""
 	}
-	visit(command.Root())
-	return consumes
+	command.InheritedFlags()
+	flag := command.Flags().ShorthandLookup(shorthand)
+	return flag != nil && flag.NoOptDefVal == ""
 }
 
 func writeCLIError(

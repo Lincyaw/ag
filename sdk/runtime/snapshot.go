@@ -2,52 +2,47 @@ package runtime
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/lincyaw/ag/sdk"
 )
 
-type ownedProvider struct {
-	owner    *mountState
-	provider Provider
+type ownedResource[Resource, Spec any] struct {
+	registeredResource[Resource, Spec]
+	owner *mountState
 }
 
-type ownedTool struct {
-	owner *mountState
-	tool  Tool
+func ownResource[Resource, Spec any](
+	owner *mountState,
+	resource registeredResource[Resource, Spec],
+) ownedResource[Resource, Spec] {
+	return ownedResource[Resource, Spec]{
+		registeredResource: resource,
+		owner:              owner,
+	}
 }
 
 type ownedHook struct {
-	owner *mountState
-	hook  Hook
-	spec  HookSpec
-	seq   uint64
-}
-
-type ownedSubscriber struct {
-	owner      *mountState
-	subscriber Subscriber
-	spec       SubscriberSpec
-}
-
-type ownedCapability struct {
-	owner      *mountState
-	capability Capability
+	ownedResource[sdk.Hook, sdk.HookSpec]
+	seq uint64
 }
 
 type ownedEvent struct {
 	owner    *mountState
-	contract EventContract
+	contract sdk.EventContract
 }
 
 type registrySnapshot struct {
 	generation   uint64
 	plugins      map[string]*mountState
-	providers    map[string]ownedProvider
-	tools        map[string]ownedTool
+	providers    map[string]ownedResource[sdk.Provider, sdk.ProviderSpec]
+	tools        map[string]ownedResource[sdk.Tool, sdk.ToolSpec]
 	hooks        map[string][]ownedHook
-	subscribers  map[string]ownedSubscriber
-	capabilities map[string]ownedCapability
+	subscribers  map[string]ownedResource[sdk.Subscriber, sdk.SubscriberSpec]
+	capabilities map[string]ownedResource[sdk.Capability, sdk.CapabilitySpec]
 	events       map[string]ownedEvent
 }
 
@@ -55,14 +50,15 @@ func initialSnapshot() *registrySnapshot {
 	snapshot := &registrySnapshot{
 		generation:   1,
 		plugins:      make(map[string]*mountState),
-		providers:    make(map[string]ownedProvider),
-		tools:        make(map[string]ownedTool),
+		providers:    make(map[string]ownedResource[sdk.Provider, sdk.ProviderSpec]),
+		tools:        make(map[string]ownedResource[sdk.Tool, sdk.ToolSpec]),
 		hooks:        make(map[string][]ownedHook),
-		subscribers:  make(map[string]ownedSubscriber),
-		capabilities: make(map[string]ownedCapability),
+		subscribers:  make(map[string]ownedResource[sdk.Subscriber, sdk.SubscriberSpec]),
+		capabilities: make(map[string]ownedResource[sdk.Capability, sdk.CapabilitySpec]),
 		events:       make(map[string]ownedEvent),
 	}
-	for _, contract := range BuiltinEventContracts() {
+	for _, contract := range builtinEventContracts {
+		contract.MutableFields = slices.Clone(contract.MutableFields)
 		snapshot.events[contract.Name] = ownedEvent{contract: contract}
 	}
 	return snapshot
@@ -71,22 +67,13 @@ func initialSnapshot() *registrySnapshot {
 func (snapshot *registrySnapshot) clone() *registrySnapshot {
 	result := &registrySnapshot{
 		generation:   snapshot.generation,
-		plugins:      make(map[string]*mountState, len(snapshot.plugins)),
-		providers:    make(map[string]ownedProvider, len(snapshot.providers)),
-		tools:        make(map[string]ownedTool, len(snapshot.tools)),
+		plugins:      maps.Clone(snapshot.plugins),
+		providers:    maps.Clone(snapshot.providers),
+		tools:        maps.Clone(snapshot.tools),
 		hooks:        make(map[string][]ownedHook, len(snapshot.hooks)),
-		subscribers:  make(map[string]ownedSubscriber, len(snapshot.subscribers)),
-		capabilities: make(map[string]ownedCapability, len(snapshot.capabilities)),
+		subscribers:  make(map[string]ownedResource[sdk.Subscriber, sdk.SubscriberSpec], len(snapshot.subscribers)),
+		capabilities: maps.Clone(snapshot.capabilities),
 		events:       make(map[string]ownedEvent, len(snapshot.events)),
-	}
-	for name, plugin := range snapshot.plugins {
-		result.plugins[name] = plugin
-	}
-	for name, provider := range snapshot.providers {
-		result.providers[name] = provider
-	}
-	for name, tool := range snapshot.tools {
-		result.tools[name] = tool
 	}
 	for event, hooks := range snapshot.hooks {
 		result.hooks[event] = append([]ownedHook(nil), hooks...)
@@ -94,9 +81,6 @@ func (snapshot *registrySnapshot) clone() *registrySnapshot {
 	for name, subscriber := range snapshot.subscribers {
 		subscriber.spec.Events = append([]string(nil), subscriber.spec.Events...)
 		result.subscribers[name] = subscriber
-	}
-	for name, capability := range snapshot.capabilities {
-		result.capabilities[name] = capability
 	}
 	for name, event := range snapshot.events {
 		event.contract.MutableFields = append(
@@ -111,45 +95,65 @@ func (snapshot *registrySnapshot) clone() *registrySnapshot {
 func (snapshot *registrySnapshot) resources() map[string]struct{} {
 	resources := make(map[string]struct{})
 	for name := range snapshot.plugins {
-		resources[PluginResource(name)] = struct{}{}
+		resources[sdk.PluginResource(name)] = struct{}{}
 	}
 	for name := range snapshot.providers {
-		resources[ProviderResource(name)] = struct{}{}
+		resources[sdk.ProviderResource(name)] = struct{}{}
 	}
 	for name := range snapshot.tools {
-		resources[ToolResource(name)] = struct{}{}
+		resources[sdk.ToolResource(name)] = struct{}{}
 	}
 	for hooks := range snapshot.hooks {
 		for _, hook := range snapshot.hooks[hooks] {
-			resources[HookResource(hook.spec.Name)] = struct{}{}
+			resources[sdk.HookResource(hook.spec.Name)] = struct{}{}
 		}
 	}
 	for name := range snapshot.subscribers {
-		resources[SubscriberResource(name)] = struct{}{}
+		resources[sdk.SubscriberResource(name)] = struct{}{}
 	}
 	for name := range snapshot.capabilities {
-		resources[CapabilityResource(name)] = struct{}{}
+		resources[sdk.CapabilityResource(name)] = struct{}{}
 	}
 	for name, event := range snapshot.events {
 		if event.owner != nil {
-			resources[EventResource(name)] = struct{}{}
+			resources[sdk.EventResource(name)] = struct{}{}
 		}
 	}
 	return resources
 }
 
-func (snapshot *registrySnapshot) validateDependencies() error {
+func (snapshot *registrySnapshot) validateComposition() error {
 	resources := snapshot.resources()
 	for _, plugin := range snapshot.plugins {
-		for _, required := range plugin.manifest.Requires {
-			resource := normalizeRequirement(required)
-			if _, exists := resources[resource]; !exists {
-				return fmt.Errorf(
-					"plugin %q requires unavailable resource %q",
-					plugin.manifest.Name,
-					resource,
-				)
-			}
+		if err := validatePluginResources(plugin.manifest, resources); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validatePluginResources(
+	manifest sdk.Manifest,
+	resources map[string]struct{},
+) error {
+	for _, conflict := range manifest.Conflicts {
+		resource := normalizeRequirement(conflict)
+		if _, exists := resources[resource]; exists {
+			return fmt.Errorf(
+				"plugin %q conflicts with resource %q",
+				manifest.Name,
+				resource,
+			)
+		}
+	}
+	for _, required := range manifest.Requires {
+		resource := normalizeRequirement(required)
+		if _, exists := resources[resource]; !exists {
+			return fmt.Errorf(
+				"plugin %q requires unavailable resource %q",
+				manifest.Name,
+				resource,
+			)
 		}
 	}
 	return nil
@@ -167,7 +171,7 @@ func (snapshot *registrySnapshot) add(
 	}
 
 	resources := snapshot.resources()
-	resources[PluginResource(name)] = struct{}{}
+	resources[sdk.PluginResource(name)] = struct{}{}
 	for _, resource := range staged.resources() {
 		if _, exists := resources[resource]; exists {
 			return fmt.Errorf(
@@ -178,25 +182,13 @@ func (snapshot *registrySnapshot) add(
 		}
 		resources[resource] = struct{}{}
 	}
-	for _, conflict := range state.manifest.Conflicts {
-		resource := normalizeRequirement(conflict)
-		if _, exists := resources[resource]; exists {
-			return fmt.Errorf(
-				"plugin %q conflicts with resource %q",
-				name,
-				resource,
-			)
+	for _, plugin := range snapshot.plugins {
+		if err := validatePluginResources(plugin.manifest, resources); err != nil {
+			return err
 		}
 	}
-	for _, required := range state.manifest.Requires {
-		resource := normalizeRequirement(required)
-		if _, exists := resources[resource]; !exists {
-			return fmt.Errorf(
-				"plugin %q requires unavailable resource %q",
-				name,
-				resource,
-			)
-		}
+	if err := validatePluginResources(state.manifest, resources); err != nil {
+		return err
 	}
 
 	for event, hooks := range staged.hooks {
@@ -210,17 +202,13 @@ func (snapshot *registrySnapshot) add(
 			}
 		}
 		for _, hook := range hooks {
-			if hook.Spec().Event != event {
-				return fmt.Errorf(
-					"plugin %q hook %q event changed during install",
-					name,
-					hook.Spec().Name,
-				)
+			if hook.spec.Event != event {
+				panic("staging registrar indexed a hook under the wrong event")
 			}
 		}
 	}
 	for _, subscriber := range staged.subscribers {
-		spec := subscriber.Spec()
+		spec := subscriber.spec
 		for _, event := range spec.Events {
 			if _, exists := snapshot.events[event]; !exists {
 				if _, stagedEvent := staged.events[event]; !stagedEvent {
@@ -237,28 +225,16 @@ func (snapshot *registrySnapshot) add(
 
 	snapshot.plugins[name] = state
 	for providerName, provider := range staged.providers {
-		snapshot.providers[providerName] = ownedProvider{
-			owner:    state,
-			provider: provider,
-		}
+		snapshot.providers[providerName] = ownResource(state, provider)
 	}
 	for toolName, tool := range staged.tools {
-		snapshot.tools[toolName] = ownedTool{owner: state, tool: tool}
+		snapshot.tools[toolName] = ownResource(state, tool)
 	}
 	for capabilityName, capability := range staged.capabilities {
-		snapshot.capabilities[capabilityName] = ownedCapability{
-			owner:      state,
-			capability: capability,
-		}
+		snapshot.capabilities[capabilityName] = ownResource(state, capability)
 	}
 	for subscriberName, subscriber := range staged.subscribers {
-		spec := subscriber.Spec()
-		spec.Events = append([]string(nil), spec.Events...)
-		snapshot.subscribers[subscriberName] = ownedSubscriber{
-			owner:      state,
-			subscriber: subscriber,
-			spec:       spec,
-		}
+		snapshot.subscribers[subscriberName] = ownResource(state, subscriber)
 	}
 	for eventName, contract := range staged.events {
 		snapshot.events[eventName] = ownedEvent{
@@ -269,18 +245,16 @@ func (snapshot *registrySnapshot) add(
 	for eventName, hooks := range staged.hooks {
 		contract := snapshot.events[eventName].contract
 		for _, hook := range hooks {
-			spec := normalizeHookSpec(
-				hook.Spec(),
+			hook.spec = normalizeHookSpec(
+				hook.spec,
 				contract,
 				defaultHookTimeout,
 			)
 			snapshot.hooks[eventName] = append(
 				snapshot.hooks[eventName],
 				ownedHook{
-					owner: state,
-					hook:  hook,
-					spec:  spec,
-					seq:   *nextSequence,
+					ownedResource: ownResource(state, hook),
+					seq:           *nextSequence,
 				},
 			)
 			*nextSequence++
@@ -353,18 +327,20 @@ func compareOwnedHooks(left, right ownedHook) int {
 }
 
 func normalizeHookSpec(
-	spec HookSpec,
-	contract EventContract,
+	spec sdk.HookSpec,
+	contract sdk.EventContract,
 	defaultTimeout time.Duration,
-) HookSpec {
+) sdk.HookSpec {
 	if spec.Priority == 0 {
-		spec.Priority = PriorityNormal
+		spec.Priority = sdk.PriorityNormal
 	}
 	if spec.FailurePolicy == "" {
-		if contract.Active() {
-			spec.FailurePolicy = FailurePolicyFailClosed
+		if len(contract.MutableFields) > 0 ||
+			contract.AllowBlock ||
+			contract.AllowAction {
+			spec.FailurePolicy = sdk.FailurePolicyFailClosed
 		} else {
-			spec.FailurePolicy = FailurePolicyContinue
+			spec.FailurePolicy = sdk.FailurePolicyContinue
 		}
 	}
 	if spec.Timeout == 0 {
@@ -378,5 +354,5 @@ func normalizeRequirement(reference string) string {
 	if strings.Contains(value, ":") {
 		return value
 	}
-	return PluginResource(value)
+	return sdk.PluginResource(value)
 }

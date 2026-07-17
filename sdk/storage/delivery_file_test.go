@@ -106,7 +106,7 @@ func TestFileDeliveryStoreSerializesConcurrentInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stores := []*FileDeliveryStore{left, right}
+	stores := []DeliveryStore{left, right}
 	const count = 32
 	var wait sync.WaitGroup
 	errorsChannel := make(chan error, count)

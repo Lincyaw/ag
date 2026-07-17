@@ -2,18 +2,16 @@ package pluginrpc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"runtime/debug"
+	"maps"
 	"slices"
 	"sync"
 	"time"
 
 	pluginv1 "github.com/lincyaw/ag/pluginrpc/v1"
 	"github.com/lincyaw/ag/sdk"
-	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -35,6 +33,7 @@ type Server struct {
 	pluginv1.UnimplementedPluginServiceServer
 	manifest          sdk.Manifest
 	registrar         *serverRegistrar
+	pluginCloser      interface{ Close(context.Context) error }
 	operations        sdk.OperationStore
 	inbox             sdk.DeliveryStore
 	logger            *slog.Logger
@@ -48,6 +47,10 @@ type Server struct {
 	context           context.Context
 	cancel            context.CancelFunc
 	wait              sync.WaitGroup
+	lifecycleMu       sync.Mutex
+	closed            bool
+	closeDone         chan struct{}
+	closeErr          error
 	cancelMu          sync.Mutex
 	operationCancels  map[string]context.CancelFunc
 }
@@ -56,22 +59,11 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 	if config.Plugin == nil {
 		return nil, errors.New("plugin is nil")
 	}
-	manifest := config.Plugin.Manifest()
-	if err := manifest.Validate(); err != nil {
-		return nil, fmt.Errorf("validate plugin manifest: %w", err)
-	}
-	registrar := newServerRegistrar()
-	if err := config.Plugin.Install(ctx, registrar); err != nil {
-		return nil, fmt.Errorf("install plugin into RPC server: %w", err)
-	}
-	if err := registrar.validateManifest(manifest); err != nil {
-		return nil, err
-	}
 	if config.Operations == nil {
-		config.Operations = sdkstorage.NewMemoryOperationStore()
+		return nil, errors.New("operation store is nil")
 	}
 	if config.Inbox == nil {
-		config.Inbox = sdkstorage.NewMemoryDeliveryStore()
+		return nil, errors.New("inbox delivery store is nil")
 	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
@@ -104,6 +96,20 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 			"subscriber timeout must be shorter than the inbox lease",
 		)
 	}
+	manifest := config.Plugin.Manifest()
+	manifest.Requires = slices.Clone(manifest.Requires)
+	manifest.Conflicts = slices.Clone(manifest.Conflicts)
+	manifest.Registers = slices.Clone(manifest.Registers)
+	if err := manifest.Validate(); err != nil {
+		return nil, fmt.Errorf("validate plugin manifest: %w", err)
+	}
+	registrar := newServerRegistrar()
+	if err := config.Plugin.Install(ctx, registrar); err != nil {
+		return nil, fmt.Errorf("install plugin into RPC server: %w", err)
+	}
+	if err := registrar.validateManifest(manifest); err != nil {
+		return nil, err
+	}
 	serverContext, cancel := context.WithCancel(context.Background())
 	server := &Server{
 		manifest:          manifest,
@@ -117,14 +123,18 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 		subscriberTimeout: config.SubscriberTimeout,
 		inboxMaxAttempts:  config.InboxMaxAttempts,
 		operationLease:    config.OperationLease,
-		operationWorkerID: fmt.Sprintf(
-			"plugin-%s-%d",
-			manifest.Name,
-			time.Now().UnixNano(),
-		),
-		context:          serverContext,
-		cancel:           cancel,
-		operationCancels: make(map[string]context.CancelFunc),
+		operationWorkerID: fmt.Sprintf("plugin-%s-%d", manifest.Name, time.Now().UnixNano()),
+		context:           serverContext,
+		cancel:            cancel,
+		closeDone:         make(chan struct{}),
+		operationCancels:  make(map[string]context.CancelFunc),
+	}
+	server.pluginCloser, _ = config.Plugin.(interface {
+		Close(context.Context) error
+	})
+	if err := server.recoverOperations(ctx); err != nil {
+		cancel()
+		return nil, err
 	}
 	if len(registrar.subscribers) > 0 {
 		for worker := range server.inboxWorkers {
@@ -132,25 +142,39 @@ func NewServer(ctx context.Context, config ServerConfig) (*Server, error) {
 			go server.inboxLoop(worker)
 		}
 	}
-	if err := server.recoverOperations(ctx); err != nil {
-		cancel()
-		return nil, err
-	}
 	return server, nil
 }
 
 func (server *Server) Close(ctx context.Context) error {
-	server.cancel()
-	done := make(chan struct{})
-	go func() {
-		server.wait.Wait()
-		close(done)
-	}()
+	server.lifecycleMu.Lock()
+	if !server.closed {
+		server.closed = true
+		server.cancel()
+		go func() {
+			server.wait.Wait()
+			if server.pluginCloser != nil {
+				closeCtx, cancel := context.WithTimeout(
+					context.Background(),
+					10*time.Second,
+				)
+				server.closeErr = server.pluginCloser.Close(closeCtx)
+				cancel()
+			}
+			close(server.closeDone)
+		}()
+	}
+	done := server.closeDone
+	server.lifecycleMu.Unlock()
+	select {
+	case <-done:
+		return server.closeErr
+	default:
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-done:
-		return nil
+		return server.closeErr
 	}
 }
 
@@ -160,23 +184,23 @@ func (server *Server) Describe(
 ) (*pluginv1.DescribeResponse, error) {
 	response := &pluginv1.DescribeResponse{Manifest: toProtoManifest(server.manifest)}
 	for _, name := range sortedKeys(server.registrar.providers) {
-		response.Providers = append(response.Providers, toProtoProviderSpec(server.registrar.providers[name].Spec()))
+		response.Providers = append(response.Providers, toProtoProviderSpec(server.registrar.providers[name].spec))
 	}
 	for _, name := range sortedKeys(server.registrar.tools) {
-		spec, err := toProtoToolSpec(server.registrar.tools[name].Spec())
+		spec, err := toProtoToolSpec(server.registrar.tools[name].spec)
 		if err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 		response.Tools = append(response.Tools, spec)
 	}
 	for _, name := range sortedKeys(server.registrar.hooks) {
-		response.Hooks = append(response.Hooks, toProtoHookSpec(server.registrar.hooks[name].Spec()))
+		response.Hooks = append(response.Hooks, toProtoHookSpec(server.registrar.hooks[name].spec))
 	}
 	for _, name := range sortedKeys(server.registrar.subscribers) {
-		response.Subscribers = append(response.Subscribers, toProtoSubscriberSpec(server.registrar.subscribers[name].Spec()))
+		response.Subscribers = append(response.Subscribers, toProtoSubscriberSpec(server.registrar.subscribers[name].spec))
 	}
 	for _, name := range sortedKeys(server.registrar.capabilities) {
-		spec, err := toProtoCapabilitySpec(server.registrar.capabilities[name].Spec())
+		spec, err := toProtoCapabilitySpec(server.registrar.capabilities[name].spec)
 		if err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
@@ -193,7 +217,6 @@ func (server *Server) SubmitOperation(
 	request *pluginv1.SubmitOperationRequest,
 ) (*pluginv1.SubmitOperationResponse, error) {
 	kind := fromProtoOperationKind(request.GetKind())
-	resource := request.GetResource()
 	operationRequest := request.GetRequest()
 	if operationRequest == nil || operationRequest.GetIdempotencyKey() == "" {
 		return nil, status.Error(codes.InvalidArgument, "operation request and idempotency key are required")
@@ -206,41 +229,11 @@ func (server *Server) SubmitOperation(
 		IdempotencyKey: operationRequest.GetIdempotencyKey(),
 		Input:          input,
 	}
-	var operation sdk.Operation
-	switch kind {
-	case sdk.OperationKindProvider:
-		provider := server.registrar.providers[resource]
-		if provider == nil {
-			return nil, status.Errorf(codes.NotFound, "provider %q not found", resource)
-		}
-		if asynchronous, ok := provider.(sdk.AsyncProvider); ok {
-			operation, err = asynchronous.SubmitCompletion(ctx, sdkRequest)
-		} else {
-			operation, err = server.submitStored(ctx, kind, resource, sdkRequest)
-		}
-	case sdk.OperationKindTool:
-		tool := server.registrar.tools[resource]
-		if tool == nil {
-			return nil, status.Errorf(codes.NotFound, "tool %q not found", resource)
-		}
-		if asynchronous, ok := tool.(sdk.AsyncTool); ok {
-			operation, err = asynchronous.SubmitCall(ctx, sdkRequest)
-		} else {
-			operation, err = server.submitStored(ctx, kind, resource, sdkRequest)
-		}
-	case sdk.OperationKindCapability:
-		capability := server.registrar.capabilities[resource]
-		if capability == nil {
-			return nil, status.Errorf(codes.NotFound, "capability %q not found", resource)
-		}
-		if asynchronous, ok := capability.(sdk.AsyncCapability); ok {
-			operation, err = asynchronous.SubmitInvoke(ctx, sdkRequest)
-		} else {
-			operation, err = server.submitStored(ctx, kind, resource, sdkRequest)
-		}
-	default:
-		return nil, status.Error(codes.InvalidArgument, "unsupported operation kind")
+	resource, err := server.operationResource(kind, request.GetResource())
+	if err != nil {
+		return nil, err
 	}
+	operation, err := resource.submit(ctx, sdkRequest)
 	if err != nil {
 		return nil, rpcError(err)
 	}
@@ -256,43 +249,15 @@ func (server *Server) PollOperation(
 	request *pluginv1.PollOperationRequest,
 ) (*pluginv1.PollOperationResponse, error) {
 	kind := fromProtoOperationKind(request.GetKind())
-	resource := request.GetResource()
-	var operation sdk.Operation
-	var err error
-	switch kind {
-	case sdk.OperationKindProvider:
-		provider := server.registrar.providers[resource]
-		if provider == nil {
-			return nil, status.Errorf(codes.NotFound, "provider %q not found", resource)
-		}
-		if asynchronous, ok := provider.(sdk.AsyncProvider); ok {
-			operation, err = asynchronous.PollCompletion(ctx, request.GetId(), request.GetAfterRevision())
-		} else {
-			operation, err = server.getStored(ctx, kind, resource, request.GetId())
-		}
-	case sdk.OperationKindTool:
-		tool := server.registrar.tools[resource]
-		if tool == nil {
-			return nil, status.Errorf(codes.NotFound, "tool %q not found", resource)
-		}
-		if asynchronous, ok := tool.(sdk.AsyncTool); ok {
-			operation, err = asynchronous.PollCall(ctx, request.GetId(), request.GetAfterRevision())
-		} else {
-			operation, err = server.getStored(ctx, kind, resource, request.GetId())
-		}
-	case sdk.OperationKindCapability:
-		capability := server.registrar.capabilities[resource]
-		if capability == nil {
-			return nil, status.Errorf(codes.NotFound, "capability %q not found", resource)
-		}
-		if asynchronous, ok := capability.(sdk.AsyncCapability); ok {
-			operation, err = asynchronous.PollInvoke(ctx, request.GetId(), request.GetAfterRevision())
-		} else {
-			operation, err = server.getStored(ctx, kind, resource, request.GetId())
-		}
-	default:
-		return nil, status.Error(codes.InvalidArgument, "unsupported operation kind")
+	resource, err := server.operationResource(kind, request.GetResource())
+	if err != nil {
+		return nil, err
 	}
+	operation, err := resource.poll(
+		ctx,
+		request.GetId(),
+		request.GetAfterRevision(),
+	)
 	if err != nil {
 		return nil, rpcError(err)
 	}
@@ -308,43 +273,11 @@ func (server *Server) CancelOperation(
 	request *pluginv1.CancelOperationRequest,
 ) (*pluginv1.CancelOperationResponse, error) {
 	kind := fromProtoOperationKind(request.GetKind())
-	resource := request.GetResource()
-	var operation sdk.Operation
-	var err error
-	switch kind {
-	case sdk.OperationKindProvider:
-		provider := server.registrar.providers[resource]
-		if provider == nil {
-			return nil, status.Errorf(codes.NotFound, "provider %q not found", resource)
-		}
-		if asynchronous, ok := provider.(sdk.AsyncProvider); ok {
-			operation, err = asynchronous.CancelCompletion(ctx, request.GetId())
-		} else {
-			operation, err = server.cancelStored(ctx, kind, resource, request.GetId())
-		}
-	case sdk.OperationKindTool:
-		tool := server.registrar.tools[resource]
-		if tool == nil {
-			return nil, status.Errorf(codes.NotFound, "tool %q not found", resource)
-		}
-		if asynchronous, ok := tool.(sdk.AsyncTool); ok {
-			operation, err = asynchronous.CancelCall(ctx, request.GetId())
-		} else {
-			operation, err = server.cancelStored(ctx, kind, resource, request.GetId())
-		}
-	case sdk.OperationKindCapability:
-		capability := server.registrar.capabilities[resource]
-		if capability == nil {
-			return nil, status.Errorf(codes.NotFound, "capability %q not found", resource)
-		}
-		if asynchronous, ok := capability.(sdk.AsyncCapability); ok {
-			operation, err = asynchronous.CancelInvoke(ctx, request.GetId())
-		} else {
-			operation, err = server.cancelStored(ctx, kind, resource, request.GetId())
-		}
-	default:
-		return nil, status.Error(codes.InvalidArgument, "unsupported operation kind")
+	resource, err := server.operationResource(kind, request.GetResource())
+	if err != nil {
+		return nil, err
 	}
+	operation, err := resource.cancel(ctx, request.GetId())
 	if err != nil {
 		return nil, rpcError(err)
 	}
@@ -355,19 +288,92 @@ func (server *Server) CancelOperation(
 	return &pluginv1.CancelOperationResponse{Operation: converted}, nil
 }
 
+type operationResource struct {
+	submit func(context.Context, sdk.OperationRequest) (sdk.Operation, error)
+	poll   func(context.Context, string, uint64) (sdk.Operation, error)
+	cancel func(context.Context, string) (sdk.Operation, error)
+}
+
+func (server *Server) operationResource(
+	kind sdk.OperationKind,
+	name string,
+) (operationResource, error) {
+	switch kind {
+	case sdk.OperationKindProvider:
+		provider, exists := server.registrar.providers[name]
+		if !exists {
+			return operationResource{}, status.Errorf(codes.NotFound, "%s %q not found", kind, name)
+		}
+		if asynchronous, ok := provider.value.(sdk.AsyncProvider); ok {
+			return operationResource{
+				submit: asynchronous.SubmitCompletion,
+				poll:   asynchronous.PollCompletion,
+				cancel: asynchronous.CancelCompletion,
+			}, nil
+		}
+	case sdk.OperationKindTool:
+		tool, exists := server.registrar.tools[name]
+		if !exists {
+			return operationResource{}, status.Errorf(codes.NotFound, "%s %q not found", kind, name)
+		}
+		if asynchronous, ok := tool.value.(sdk.AsyncTool); ok {
+			return operationResource{
+				submit: asynchronous.SubmitCall,
+				poll:   asynchronous.PollCall,
+				cancel: asynchronous.CancelCall,
+			}, nil
+		}
+	case sdk.OperationKindCapability:
+		capability, exists := server.registrar.capabilities[name]
+		if !exists {
+			return operationResource{}, status.Errorf(codes.NotFound, "%s %q not found", kind, name)
+		}
+		if asynchronous, ok := capability.value.(sdk.AsyncCapability); ok {
+			return operationResource{
+				submit: asynchronous.SubmitInvoke,
+				poll:   asynchronous.PollInvoke,
+				cancel: asynchronous.CancelInvoke,
+			}, nil
+		}
+	default:
+		return operationResource{}, status.Error(
+			codes.InvalidArgument,
+			"unsupported operation kind",
+		)
+	}
+	return server.storedOperationResource(kind, name), nil
+}
+
+func (server *Server) storedOperationResource(
+	kind sdk.OperationKind,
+	name string,
+) operationResource {
+	return operationResource{
+		submit: func(ctx context.Context, request sdk.OperationRequest) (sdk.Operation, error) {
+			return server.submitStored(ctx, kind, name, request)
+		},
+		poll: func(ctx context.Context, id string, _ uint64) (sdk.Operation, error) {
+			return server.getStored(ctx, kind, name, id)
+		},
+		cancel: func(ctx context.Context, id string) (sdk.Operation, error) {
+			return server.cancelStored(ctx, kind, name, id)
+		},
+	}
+}
+
 func (server *Server) HandleHook(
 	ctx context.Context,
 	request *pluginv1.HandleHookRequest,
 ) (*pluginv1.HandleHookResponse, error) {
-	hook := server.registrar.hooks[request.GetHook()]
-	if hook == nil {
+	hook, exists := server.registrar.hooks[request.GetHook()]
+	if !exists {
 		return nil, status.Errorf(codes.NotFound, "hook %q not found", request.GetHook())
 	}
 	event, err := fromProtoEvent(request.GetEvent())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	effect, err := hook.Handle(ctx, event)
+	effect, err := hook.value.Handle(ctx, event)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -389,15 +395,15 @@ func (server *Server) Deliver(
 	if delivery.Plugin != server.manifest.Name {
 		return nil, status.Errorf(codes.InvalidArgument, "delivery targets plugin %q", delivery.Plugin)
 	}
-	subscriber := server.registrar.subscribers[delivery.Subscription]
-	if subscriber == nil {
+	subscriber, exists := server.registrar.subscribers[delivery.Subscription]
+	if !exists {
 		return nil, status.Errorf(codes.NotFound, "subscriber %q not found", delivery.Subscription)
 	}
-	expectedRevision := sdk.PluginResourceRevision(
+	expectedRevision := sdk.ResourceRevision(
 		server.manifest,
 		"subscriber",
 		delivery.Subscription,
-		subscriber.Spec(),
+		subscriber.spec,
 	)
 	if delivery.PluginVersion != "" &&
 		delivery.PluginVersion != server.manifest.Version {
@@ -423,480 +429,6 @@ func (server *Server) Deliver(
 	return &pluginv1.DeliverResponse{Accepted: true}, nil
 }
 
-func (server *Server) submitStored(
-	ctx context.Context,
-	kind sdk.OperationKind,
-	resource string,
-	request sdk.OperationRequest,
-) (sdk.Operation, error) {
-	record, created, err := server.operations.Submit(ctx, sdk.OperationRecord{
-		Operation:        sdk.Operation{IdempotencyKey: request.IdempotencyKey},
-		Kind:             kind,
-		Resource:         resource,
-		ResourceRevision: server.resourceRevision(kind, resource),
-		Input:            request.Input,
-	})
-	if err != nil {
-		return sdk.Operation{}, err
-	}
-	if created {
-		server.startOperation(ctx, record.Operation.ID)
-	}
-	return record.Operation, nil
-}
-
-func (server *Server) getStored(
-	ctx context.Context,
-	kind sdk.OperationKind,
-	resource string,
-	id string,
-) (sdk.Operation, error) {
-	record, err := server.operations.Get(ctx, id)
-	if err != nil {
-		return sdk.Operation{}, err
-	}
-	if record.Kind != kind || record.Resource != resource {
-		return sdk.Operation{}, fmt.Errorf("operation %q does not belong to %s %q", id, kind, resource)
-	}
-	if err := server.validateResourceRevision(record); err != nil {
-		return sdk.Operation{}, err
-	}
-	return record.Operation, nil
-}
-
-func (server *Server) cancelStored(
-	ctx context.Context,
-	kind sdk.OperationKind,
-	resource string,
-	id string,
-) (sdk.Operation, error) {
-	for {
-		record, err := server.operations.Get(ctx, id)
-		if err != nil {
-			return sdk.Operation{}, err
-		}
-		if record.Kind != kind || record.Resource != resource {
-			return sdk.Operation{}, fmt.Errorf("operation %q does not belong to %s %q", id, kind, resource)
-		}
-		if err := server.validateResourceRevision(record); err != nil {
-			return sdk.Operation{}, err
-		}
-		if record.Operation.Terminal() {
-			return record.Operation, nil
-		}
-		cancelled, err := server.operations.Transition(
-			ctx,
-			id,
-			record.Operation.Revision,
-			sdk.OperationCancelled,
-			nil,
-			"",
-		)
-		if errors.Is(err, sdk.ErrOperationConflict) {
-			continue
-		}
-		if err != nil {
-			return sdk.Operation{}, err
-		}
-		server.cancelMu.Lock()
-		cancel := server.operationCancels[id]
-		server.cancelMu.Unlock()
-		if cancel != nil {
-			cancel()
-		}
-		return cancelled.Operation, nil
-	}
-}
-
-func (server *Server) recoverOperations(ctx context.Context) error {
-	records, err := server.operations.List(ctx)
-	if err != nil {
-		return fmt.Errorf("list operations for recovery: %w", err)
-	}
-	for _, record := range records {
-		if !record.Operation.Terminal() &&
-			server.validateResourceRevision(record) == nil {
-			server.startOperation(ctx, record.Operation.ID)
-		}
-	}
-	return nil
-}
-
-func (server *Server) startOperation(parent context.Context, id string) {
-	server.wait.Add(1)
-	go func() {
-		defer server.wait.Done()
-		server.executeStored(parent, id)
-	}()
-}
-
-func (server *Server) executeStored(parent context.Context, id string) {
-	operationContext, cancel := context.WithCancel(context.WithoutCancel(parent))
-	stopServerCancel := context.AfterFunc(server.context, cancel)
-	defer func() {
-		stopServerCancel()
-		cancel()
-	}()
-	record, err := server.operations.Claim(
-		operationContext,
-		id,
-		server.operationWorkerID,
-		time.Now().UTC(),
-		server.operationLease,
-	)
-	if err != nil {
-		if !errors.Is(err, sdk.ErrOperationClaimed) {
-			server.logger.Debug(
-				"claim stored operation",
-				"operation_id",
-				id,
-				"error",
-				err,
-			)
-		}
-		return
-	}
-	if err := server.validateResourceRevision(record); err != nil {
-		server.logger.Warn(
-			"claimed operation has stale resource revision",
-			"operation_id",
-			id,
-			"error",
-			err,
-		)
-		return
-	}
-	token := record.Execution.Token
-	server.cancelMu.Lock()
-	server.operationCancels[id] = cancel
-	server.cancelMu.Unlock()
-	executionContext, cancelExecution := context.WithCancel(operationContext)
-	heartbeatContext, stopHeartbeat := context.WithCancel(operationContext)
-	heartbeatDone := make(chan struct{})
-	leaseLost := make(chan error, 1)
-	go server.renewOperationLease(
-		heartbeatContext,
-		id,
-		token,
-		cancelExecution,
-		heartbeatDone,
-		leaseLost,
-	)
-	output, executeErr := server.executeLocal(executionContext, record)
-	stopHeartbeat()
-	<-heartbeatDone
-	cancelExecution()
-	server.cancelMu.Lock()
-	delete(server.operationCancels, id)
-	server.cancelMu.Unlock()
-	select {
-	case lostErr := <-leaseLost:
-		server.logger.Warn(
-			"stored operation lease lost",
-			"operation_id",
-			id,
-			"error",
-			lostErr,
-		)
-		return
-	default:
-	}
-	if operationContext.Err() != nil {
-		_, releaseErr := server.operations.Release(
-			context.Background(),
-			id,
-			token,
-		)
-		if releaseErr != nil &&
-			!errors.Is(releaseErr, sdk.ErrOperationFence) {
-			server.logger.Error(
-				"release stored operation",
-				"operation_id",
-				id,
-				"error",
-				releaseErr,
-			)
-		}
-		return
-	}
-	state := sdk.OperationSucceeded
-	errorText := ""
-	if executeErr != nil {
-		state = sdk.OperationFailed
-		output = nil
-		errorText = executeErr.Error()
-	}
-	_, err = server.operations.Complete(
-		context.Background(),
-		id,
-		token,
-		state,
-		output,
-		errorText,
-	)
-	if err != nil && !errors.Is(err, sdk.ErrOperationFence) {
-		server.logger.Error("complete stored operation", "operation_id", id, "error", err)
-	}
-}
-
-func (server *Server) renewOperationLease(
-	ctx context.Context,
-	id string,
-	token string,
-	cancelExecution context.CancelFunc,
-	done chan<- struct{},
-	lost chan<- error,
-) {
-	defer close(done)
-	interval := server.operationLease / 3
-	if interval < time.Millisecond {
-		interval = time.Millisecond
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case now := <-ticker.C:
-			_, err := server.operations.Renew(
-				ctx,
-				id,
-				token,
-				now.UTC(),
-				server.operationLease,
-			)
-			if err != nil {
-				select {
-				case lost <- err:
-				default:
-				}
-				cancelExecution()
-				return
-			}
-		}
-	}
-}
-
-func (server *Server) resourceRevision(
-	kind sdk.OperationKind,
-	resource string,
-) string {
-	switch kind {
-	case sdk.OperationKindProvider:
-		if provider := server.registrar.providers[resource]; provider != nil {
-			return sdk.ResourceRevision(
-				server.manifest,
-				kind,
-				resource,
-				provider.Spec(),
-			)
-		}
-	case sdk.OperationKindTool:
-		if tool := server.registrar.tools[resource]; tool != nil {
-			return sdk.ResourceRevision(
-				server.manifest,
-				kind,
-				resource,
-				tool.Spec(),
-			)
-		}
-	case sdk.OperationKindCapability:
-		if capability := server.registrar.capabilities[resource]; capability != nil {
-			return sdk.ResourceRevision(
-				server.manifest,
-				kind,
-				resource,
-				capability.Spec(),
-			)
-		}
-	}
-	return sdk.ResourceRevision(server.manifest, kind, resource, nil)
-}
-
-func (server *Server) validateResourceRevision(
-	record sdk.OperationRecord,
-) error {
-	if record.ResourceRevision == "" {
-		return nil
-	}
-	current := server.resourceRevision(record.Kind, record.Resource)
-	if record.ResourceRevision != current {
-		return fmt.Errorf(
-			"operation %q resource revision %s does not match current revision %s",
-			record.Operation.ID,
-			record.ResourceRevision,
-			current,
-		)
-	}
-	return nil
-}
-
-func (server *Server) executeLocal(
-	ctx context.Context,
-	record sdk.OperationRecord,
-) (output json.RawMessage, err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("plugin operation panic: %v\n%s", recovered, debug.Stack())
-		}
-	}()
-	switch record.Kind {
-	case sdk.OperationKindProvider:
-		provider, ok := server.registrar.providers[record.Resource].(sdk.SyncProvider)
-		if !ok {
-			return nil, fmt.Errorf("provider %q is not synchronous", record.Resource)
-		}
-		var request sdk.ModelRequest
-		if err := json.Unmarshal(record.Input, &request); err != nil {
-			return nil, err
-		}
-		response, err := provider.Complete(ctx, request)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(response)
-	case sdk.OperationKindTool:
-		tool, ok := server.registrar.tools[record.Resource].(sdk.SyncTool)
-		if !ok {
-			return nil, fmt.Errorf("tool %q is not synchronous", record.Resource)
-		}
-		result, err := tool.Call(ctx, record.Input)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(result)
-	case sdk.OperationKindCapability:
-		capability, ok := server.registrar.capabilities[record.Resource].(sdk.SyncCapability)
-		if !ok {
-			return nil, fmt.Errorf("capability %q is not synchronous", record.Resource)
-		}
-		return capability.Invoke(ctx, record.Input)
-	default:
-		return nil, fmt.Errorf("unsupported stored operation kind %q", record.Kind)
-	}
-}
-
-func (server *Server) inboxLoop(worker int) {
-	defer server.wait.Done()
-	for {
-		if server.context.Err() != nil {
-			return
-		}
-		delivery, err := server.inbox.Lease(server.context, time.Now().UTC(), server.inboxLease)
-		if errors.Is(err, sdk.ErrNoDelivery) {
-			if !wait(server.context, server.inboxPoll) {
-				return
-			}
-			continue
-		}
-		if err != nil {
-			server.logger.Warn("lease plugin inbox", "worker", worker, "error", err)
-			if !wait(server.context, server.inboxPoll) {
-				return
-			}
-			continue
-		}
-		server.receiveDelivery(delivery)
-	}
-}
-
-func (server *Server) receiveDelivery(delivery sdk.Delivery) {
-	subscriber := server.registrar.subscribers[delivery.Subscription]
-	if subscriber == nil {
-		server.retryDelivery(delivery, errors.New("subscriber disappeared"))
-		return
-	}
-	expectedRevision := sdk.PluginResourceRevision(
-		server.manifest,
-		"subscriber",
-		delivery.Subscription,
-		subscriber.Spec(),
-	)
-	if (delivery.PluginVersion != "" &&
-		delivery.PluginVersion != server.manifest.Version) ||
-		(delivery.ResourceRevision != "" &&
-			delivery.ResourceRevision != expectedRevision) {
-		err := server.inbox.DeadLetter(
-			server.context,
-			delivery.ID,
-			delivery.LeaseToken,
-			time.Now().UTC(),
-			fmt.Sprintf(
-				"delivery target %s@%s revision %s does not match current %s@%s revision %s",
-				delivery.Plugin,
-				delivery.PluginVersion,
-				delivery.ResourceRevision,
-				server.manifest.Name,
-				server.manifest.Version,
-				expectedRevision,
-			),
-		)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			server.logger.Warn(
-				"dead-letter stale plugin delivery",
-				"delivery_id",
-				delivery.ID,
-				"error",
-				err,
-			)
-		}
-		return
-	}
-	timeout := server.subscriberTimeout
-	if configured := subscriber.Spec().Timeout; configured > 0 && configured < timeout {
-		timeout = configured
-	}
-	ctx, cancel := context.WithTimeout(server.context, timeout)
-	err := safeReceive(ctx, subscriber, delivery)
-	cancel()
-	if err != nil {
-		server.retryDelivery(delivery, err)
-		return
-	}
-	if err := server.inbox.Ack(server.context, delivery.ID, delivery.LeaseToken, time.Now().UTC()); err != nil && !errors.Is(err, context.Canceled) {
-		server.logger.Warn("ack plugin inbox", "delivery_id", delivery.ID, "error", err)
-	}
-}
-
-func (server *Server) retryDelivery(delivery sdk.Delivery, cause error) {
-	if server.context.Err() != nil {
-		return
-	}
-	now := time.Now().UTC()
-	var err error
-	if delivery.Attempt >= server.inboxMaxAttempts {
-		err = server.inbox.DeadLetter(server.context, delivery.ID, delivery.LeaseToken, now, cause.Error())
-	} else {
-		shift := min(max(delivery.Attempt-1, 0), 10)
-		delay := min(server.inboxPoll*time.Duration(1<<shift), 30*time.Second)
-		err = server.inbox.Retry(server.context, delivery.ID, delivery.LeaseToken, now.Add(delay), cause.Error())
-	}
-	if err != nil && !errors.Is(err, context.Canceled) {
-		server.logger.Warn("reschedule plugin inbox", "delivery_id", delivery.ID, "error", err)
-	}
-}
-
-func safeReceive(ctx context.Context, subscriber sdk.Subscriber, delivery sdk.Delivery) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("subscriber panic: %v\n%s", recovered, debug.Stack())
-		}
-	}()
-	return subscriber.Receive(ctx, delivery)
-}
-
-func wait(ctx context.Context, duration time.Duration) bool {
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}
-
 func rpcError(err error) error {
 	switch {
 	case errors.Is(err, context.Canceled):
@@ -916,11 +448,4 @@ func rpcError(err error) error {
 	}
 }
 
-func sortedKeys[V any](values map[string]V) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
-}
+func sortedKeys[V any](values map[string]V) []string { return slices.Sorted(maps.Keys(values)) }

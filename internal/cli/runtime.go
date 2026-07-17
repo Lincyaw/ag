@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -66,7 +67,10 @@ func startRuntime(
 		Storage:        storage,
 	})
 	if err != nil {
-		return cleanupTelemetry(err)
+		closeCtx, cancel := closeContext()
+		closeErr := storage.Close(closeCtx)
+		cancel()
+		return cleanupTelemetry(errors.Join(err, closeErr))
 	}
 	running := &runningRuntime{runtime: runtime, telemetry: observability}
 	registry, names, err := buildRegistry(
@@ -80,7 +84,12 @@ func startRuntime(
 		return nil, err
 	}
 	for _, name := range names {
-		if _, err := runtime.MountRegistered(ctx, registry, name); err != nil {
+		source, resolveErr := registry.Resolve(ctx, name)
+		if resolveErr != nil {
+			running.close(stderr)
+			return nil, fmt.Errorf("resolve plugin %q: %w", name, resolveErr)
+		}
+		if _, err := runtime.Mount(ctx, source); err != nil {
 			running.close(stderr)
 			return nil, fmt.Errorf("mount plugin %q: %w", name, err)
 		}
@@ -93,35 +102,33 @@ func openStateBackend(
 	config appconfig.Config,
 ) (sdk.StateBackend, error) {
 	namespace := strings.TrimSpace(config.State.Namespace)
-	if strings.TrimSpace(config.State.BackendURI) != "" {
-		rawURI := config.State.BackendURI
-		if namespace != "" {
-			parsed, err := url.Parse(rawURI)
-			if err != nil {
-				return nil, fmt.Errorf("parse state backend URI: %w", err)
-			}
-			query := parsed.Query()
-			if existing := strings.TrimSpace(query.Get("namespace")); existing != "" &&
-				existing != namespace {
-				return nil, fmt.Errorf(
-					"state namespace %q conflicts with backend URI namespace %q",
-					namespace,
-					existing,
-				)
-			}
-			query.Set("namespace", namespace)
-			parsed.RawQuery = query.Encode()
-			rawURI = parsed.String()
+	rawURI := strings.TrimSpace(config.State.BackendURI)
+	if rawURI == "" {
+		directory, err := filepath.Abs(config.State.Directory)
+		if err != nil {
+			return nil, fmt.Errorf("resolve state directory: %w", err)
 		}
-		return sdkstorage.NewDefaultStorageRegistry().Open(ctx, rawURI)
+		rawURI = (&url.URL{Scheme: "file", Path: directory}).String()
 	}
 	if namespace != "" {
-		return sdkstorage.NewFileStateBackendWithNamespace(
-			config.State.Directory,
-			namespace,
-		)
+		parsed, err := url.Parse(rawURI)
+		if err != nil {
+			return nil, fmt.Errorf("parse state backend URI: %w", err)
+		}
+		query := parsed.Query()
+		if existing := strings.TrimSpace(query.Get("namespace")); existing != "" &&
+			existing != namespace {
+			return nil, fmt.Errorf(
+				"state namespace %q conflicts with backend URI namespace %q",
+				namespace,
+				existing,
+			)
+		}
+		query.Set("namespace", namespace)
+		parsed.RawQuery = query.Encode()
+		rawURI = parsed.String()
 	}
-	return sdkstorage.NewFileStateBackend(config.State.Directory)
+	return sdkstorage.NewDefaultStorageRegistry().Open(ctx, rawURI)
 }
 
 func (running *runningRuntime) close(stderr io.Writer) {

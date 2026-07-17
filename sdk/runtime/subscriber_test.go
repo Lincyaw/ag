@@ -7,22 +7,24 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/lincyaw/ag/sdk"
 )
 
 type subscriberTestPlugin struct {
-	manifest   Manifest
-	subscriber Subscriber
+	manifest   sdk.Manifest
+	subscriber sdk.Subscriber
 	closed     chan struct{}
 	closeOnce  sync.Once
 }
 
-func (plugin *subscriberTestPlugin) Manifest() Manifest {
+func (plugin *subscriberTestPlugin) Manifest() sdk.Manifest {
 	return plugin.manifest
 }
 
 func (plugin *subscriberTestPlugin) Install(
 	_ context.Context,
-	registrar Registrar,
+	registrar sdk.Registrar,
 ) error {
 	return registrar.RegisterSubscriber(plugin.subscriber)
 }
@@ -35,6 +37,7 @@ func (plugin *subscriberTestPlugin) Close(context.Context) error {
 func newSubscriberTestRuntime(t *testing.T) *Runtime {
 	t.Helper()
 	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:             newTestStateBackend(),
 		DeliveryWorkers:     4,
 		DeliveryLease:       time.Second,
 		DeliveryPoll:        time.Millisecond,
@@ -60,20 +63,20 @@ func TestSubscriberDoesNotBlockEmitAndUnmountWaitsForDelivery(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	plugin := &subscriberTestPlugin{
-		manifest: Manifest{
+		manifest: sdk.Manifest{
 			Name:        "blocking-observer",
 			Version:     "1.0.0",
 			Description: "blocks to exercise the asynchronous delivery boundary",
-			APIVersion:  APIVersion,
-			Registers:   []string{SubscriberResource("observe-agent-start")},
+			APIVersion:  sdk.APIVersion,
+			Registers:   []string{sdk.SubscriberResource("observe-agent-start")},
 		},
-		subscriber: SubscriberFunc{
-			SubscriberSpec: SubscriberSpec{
+		subscriber: sdk.SubscriberFunc{
+			SubscriberSpec: sdk.SubscriberSpec{
 				Name:    "observe-agent-start",
-				Events:  []string{EventAgentStart},
+				Events:  []string{sdk.EventAgentStart},
 				Timeout: 400 * time.Millisecond,
 			},
-			ReceiveFunc: func(ctx context.Context, _ Delivery) error {
+			ReceiveFunc: func(ctx context.Context, _ sdk.Delivery) error {
 				close(entered)
 				select {
 				case <-release:
@@ -85,7 +88,7 @@ func TestSubscriberDoesNotBlockEmitAndUnmountWaitsForDelivery(t *testing.T) {
 		},
 		closed: make(chan struct{}),
 	}
-	mount, err := runtime.Mount(context.Background(), Local(plugin))
+	mount, err := runtime.Mount(context.Background(), sdk.Local(plugin))
 	if err != nil {
 		t.Fatalf("mount: %v", err)
 	}
@@ -94,9 +97,9 @@ func TestSubscriberDoesNotBlockEmitAndUnmountWaitsForDelivery(t *testing.T) {
 	go func() {
 		_, emitErr := runtime.Emit(
 			context.Background(),
-			EventAgentStart,
+			sdk.EventAgentStart,
 			"session-async",
-			AgentStartPayload{},
+			sdk.AgentStartPayload{},
 		)
 		emitted <- emitErr
 	}()
@@ -130,9 +133,9 @@ func TestSubscriberDoesNotBlockEmitAndUnmountWaitsForDelivery(t *testing.T) {
 	}
 
 	eventually(t, time.Second, func() bool {
-		deliveries, listErr := runtime.Outbox().List(context.Background())
+		deliveries, listErr := runtime.delivery.store.List(context.Background())
 		return listErr == nil && len(deliveries) == 1 &&
-			deliveries[0].State == DeliveryDelivered
+			deliveries[0].State == sdk.DeliveryDelivered
 	})
 }
 
@@ -141,19 +144,19 @@ func TestSubscriberRetriesAndDeadLettersWithoutBlockingProducer(t *testing.T) {
 	runtime := newSubscriberTestRuntime(t)
 	var attempts atomic.Int64
 	plugin := &subscriberTestPlugin{
-		manifest: Manifest{
+		manifest: sdk.Manifest{
 			Name:        "retrying-observer",
 			Version:     "1.0.0",
 			Description: "fails deliveries to exercise retry and dead-letter behavior",
-			APIVersion:  APIVersion,
-			Registers:   []string{SubscriberResource("retry-events")},
+			APIVersion:  sdk.APIVersion,
+			Registers:   []string{sdk.SubscriberResource("retry-events")},
 		},
-		subscriber: SubscriberFunc{
-			SubscriberSpec: SubscriberSpec{
+		subscriber: sdk.SubscriberFunc{
+			SubscriberSpec: sdk.SubscriberSpec{
 				Name:   "retry-events",
-				Events: []string{EventAgentEnd},
+				Events: []string{sdk.EventAgentEnd},
 			},
-			ReceiveFunc: func(context.Context, Delivery) error {
+			ReceiveFunc: func(context.Context, sdk.Delivery) error {
 				if attempts.Add(1) < 3 {
 					return errors.New("temporary failure")
 				}
@@ -162,21 +165,21 @@ func TestSubscriberRetriesAndDeadLettersWithoutBlockingProducer(t *testing.T) {
 		},
 		closed: make(chan struct{}),
 	}
-	if _, err := runtime.Mount(context.Background(), Local(plugin)); err != nil {
+	if _, err := runtime.Mount(context.Background(), sdk.Local(plugin)); err != nil {
 		t.Fatalf("mount: %v", err)
 	}
 	if _, err := runtime.Emit(
 		context.Background(),
-		EventAgentEnd,
+		sdk.EventAgentEnd,
 		"session-retry",
-		AgentEndPayload{},
+		sdk.AgentEndPayload{},
 	); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 	eventually(t, time.Second, func() bool {
-		deliveries, listErr := runtime.Outbox().List(context.Background())
+		deliveries, listErr := runtime.delivery.store.List(context.Background())
 		return listErr == nil && len(deliveries) == 1 &&
-			deliveries[0].State == DeliveryDelivered &&
+			deliveries[0].State == sdk.DeliveryDelivered &&
 			deliveries[0].Attempt == 3
 	})
 }
@@ -187,19 +190,19 @@ func TestDrainDeliveriesWaitsForCurrentSubscribersAndHonorsContext(t *testing.T)
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	plugin := &subscriberTestPlugin{
-		manifest: Manifest{
+		manifest: sdk.Manifest{
 			Name:        "drain-observer",
 			Version:     "1.0.0",
 			Description: "holds a delivery across an explicit drain boundary",
-			APIVersion:  APIVersion,
-			Registers:   []string{SubscriberResource("drain-events")},
+			APIVersion:  sdk.APIVersion,
+			Registers:   []string{sdk.SubscriberResource("drain-events")},
 		},
-		subscriber: SubscriberFunc{
-			SubscriberSpec: SubscriberSpec{
+		subscriber: sdk.SubscriberFunc{
+			SubscriberSpec: sdk.SubscriberSpec{
 				Name:   "drain-events",
-				Events: []string{EventAgentEnd},
+				Events: []string{sdk.EventAgentEnd},
 			},
-			ReceiveFunc: func(ctx context.Context, _ Delivery) error {
+			ReceiveFunc: func(ctx context.Context, _ sdk.Delivery) error {
 				close(entered)
 				select {
 				case <-release:
@@ -211,14 +214,14 @@ func TestDrainDeliveriesWaitsForCurrentSubscribersAndHonorsContext(t *testing.T)
 		},
 		closed: make(chan struct{}),
 	}
-	if _, err := runtime.Mount(context.Background(), Local(plugin)); err != nil {
+	if _, err := runtime.Mount(context.Background(), sdk.Local(plugin)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runtime.Emit(
 		context.Background(),
-		EventAgentEnd,
+		sdk.EventAgentEnd,
 		"drain-session",
-		AgentEndPayload{},
+		sdk.AgentEndPayload{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -240,11 +243,11 @@ func TestDrainDeliveriesWaitsForCurrentSubscribersAndHonorsContext(t *testing.T)
 	if err := runtime.DrainDeliveries(drainCtx); err != nil {
 		t.Fatalf("drain deliveries: %v", err)
 	}
-	deliveries, err := runtime.Outbox().List(context.Background())
+	deliveries, err := runtime.delivery.store.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(deliveries) != 1 || deliveries[0].State != DeliveryDelivered {
+	if len(deliveries) != 1 || deliveries[0].State != sdk.DeliveryDelivered {
 		t.Fatalf("drained deliveries = %#v", deliveries)
 	}
 }

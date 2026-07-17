@@ -2,14 +2,21 @@ package telemetry
 
 import (
 	"context"
+	"encoding/pem"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 	collectorlog "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"google.golang.org/protobuf/proto"
 )
@@ -67,6 +74,71 @@ func TestValidateHTTPProtocol(t *testing.T) {
 				t.Fatalf("error = %v, wantError %v", err, test.wantError)
 			}
 		})
+	}
+}
+
+func TestSetupFailureDoesNotPublishPartialProviders(t *testing.T) {
+	original := otel.GetTracerProvider()
+	sentinel := noop.NewTracerProvider()
+	otel.SetTracerProvider(sentinel)
+	t.Cleanup(func() { otel.SetTracerProvider(original) })
+
+	server := httptest.NewTLSServer(http.NotFoundHandler())
+	defer server.Close()
+	certificatePath := filepath.Join(t.TempDir(), "ca.pem")
+	certificate := pem.EncodeToMemory(&pem.Block{
+		Type: "CERTIFICATE", Bytes: server.Certificate().Raw,
+	})
+	if err := os.WriteFile(certificatePath, certificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("OTEL_TRACES_EXPORTER", "otlp")
+	t.Setenv("OTEL_METRICS_EXPORTER", "otlp")
+	t.Setenv("OTEL_LOGS_EXPORTER", "none")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://127.0.0.1:1")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://127.0.0.1:1")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE", certificatePath)
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/protobuf")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "http/protobuf")
+
+	runtime, err := Setup(context.Background(), Config{ServiceName: "telemetry-test"})
+	if err == nil {
+		if runtime != nil {
+			_ = runtime.Shutdown(context.Background())
+		}
+		t.Fatal("Setup() error = nil, want invalid metric endpoint error")
+	}
+	if runtime != nil {
+		t.Fatalf("Setup() runtime = %#v, want nil", runtime)
+	}
+	if got := otel.GetTracerProvider(); got != sentinel {
+		t.Fatalf("global tracer provider changed after failed setup: %#v", got)
+	}
+}
+
+func TestRuntimeShutdownRunsClosersOnceInReverseOrder(t *testing.T) {
+	shutdownError := errors.New("shutdown failed")
+	var calls []string
+	runtime := &Runtime{shutdowns: []func(context.Context) error{
+		func(context.Context) error {
+			calls = append(calls, "first")
+			return shutdownError
+		},
+		func(context.Context) error {
+			calls = append(calls, "second")
+			return nil
+		},
+	}}
+
+	for range 2 {
+		if err := runtime.Shutdown(context.Background()); !errors.Is(err, shutdownError) {
+			t.Fatalf("Shutdown() error = %v, want %v", err, shutdownError)
+		}
+	}
+	if got := strings.Join(calls, ","); got != "second,first" {
+		t.Fatalf("shutdown calls = %q, want %q", got, "second,first")
 	}
 }
 

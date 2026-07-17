@@ -3,7 +3,9 @@ package file
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -91,7 +93,7 @@ type rootedFS struct {
 	maxReadBytes  int64
 	maxWriteBytes int64
 	maxEntries    int
-	pathLocks     sync.Map
+	writeMu       sync.Mutex
 }
 
 func newRootedFS(config Config) (*rootedFS, error) {
@@ -135,53 +137,51 @@ func newRootedFS(config Config) (*rootedFS, error) {
 }
 
 func (filesystem *rootedFS) existing(relative string) (string, error) {
-	candidate, err := filesystem.candidate(relative)
+	name, err := relativePath(relative)
 	if err != nil {
 		return "", err
 	}
-	resolved, err := filepath.EvalSymlinks(candidate)
+	root, err := filesystem.openRoot()
 	if err != nil {
 		return "", err
 	}
-	if err := filesystem.confined(resolved); err != nil {
+	defer root.Close()
+	if _, err := root.Stat(name); err != nil {
 		return "", err
 	}
-	return resolved, nil
+	return name, nil
 }
 
 func (filesystem *rootedFS) writable(relative string) (string, error) {
-	candidate, err := filesystem.candidate(relative)
+	name, err := relativePath(relative)
 	if err != nil {
 		return "", err
 	}
-	base := filepath.Base(candidate)
+	base := filepath.Base(name)
 	if base == "." || base == string(filepath.Separator) {
 		return "", errors.New("file path has no basename")
 	}
-	parent, err := filepath.EvalSymlinks(filepath.Dir(candidate))
+	root, err := filesystem.openRoot()
 	if err != nil {
-		return "", fmt.Errorf("resolve destination parent: %w", err)
-	}
-	if err := filesystem.confined(parent); err != nil {
 		return "", err
 	}
-	info, err := os.Stat(parent)
+	defer root.Close()
+	info, err := root.Stat(filepath.Dir(name))
 	if err != nil {
 		return "", err
 	}
 	if !info.IsDir() {
 		return "", errors.New("destination parent is not a directory")
 	}
-	target := filepath.Join(parent, base)
-	if info, err := os.Lstat(target); err == nil && info.Mode()&os.ModeSymlink != 0 {
+	if info, err := root.Lstat(name); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return "", errors.New("refusing to replace a symbolic link")
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
-	return target, nil
+	return name, nil
 }
 
-func (filesystem *rootedFS) candidate(relative string) (string, error) {
+func relativePath(relative string) (string, error) {
 	value := strings.TrimSpace(relative)
 	if value == "" {
 		return "", errors.New("path is empty")
@@ -193,281 +193,38 @@ func (filesystem *rootedFS) candidate(relative string) (string, error) {
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", errors.New("path escapes the file root")
 	}
-	candidate := filepath.Join(filesystem.root, clean)
-	if err := filesystem.confined(candidate); err != nil {
-		return "", err
-	}
-	return candidate, nil
+	return clean, nil
 }
 
-func (filesystem *rootedFS) confined(path string) error {
-	relative, err := filepath.Rel(filesystem.root, path)
-	if err != nil {
-		return err
-	}
-	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return errors.New("path escapes the file root")
-	}
-	return nil
-}
-
-type readTool struct{ filesystem *rootedFS }
-
-func (readTool) Spec() sdk.ToolSpec {
-	return sdk.ToolSpec{
-		Name:        "read_file",
-		Description: "Read a numbered range from one UTF-8 text file. The result includes a SHA-256 revision for conflict-safe edits.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type": "string", "description": "Relative path to the file.",
-				},
-				"offset": map[string]any{
-					"type": "integer", "minimum": 1,
-					"description": "First 1-based line to return; defaults to 1.",
-				},
-				"limit": map[string]any{
-					"type": "integer", "minimum": 1,
-					"description": fmt.Sprintf(
-						"Maximum lines to return; defaults to %d.",
-						defaultReadLineLimit,
-					),
-				},
-			},
-			"required":             []string{"path"},
-			"additionalProperties": false,
-		},
-	}
-}
-
-func (tool readTool) Call(ctx context.Context, raw json.RawMessage) (sdk.ToolResult, error) {
-	var arguments struct {
-		Path   string `json:"path"`
-		Offset *int   `json:"offset"`
-		Limit  *int   `json:"limit"`
-	}
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return toolFailure(err), nil
-	}
-	if err := ctx.Err(); err != nil {
-		return sdk.ToolResult{}, err
-	}
-	offset := 1
-	if arguments.Offset != nil {
-		offset = *arguments.Offset
-	}
-	limit := defaultReadLineLimit
-	if arguments.Limit != nil {
-		limit = *arguments.Limit
-	} else if limit > tool.filesystem.maxEntries {
-		limit = tool.filesystem.maxEntries
-	}
-	if offset < 1 {
-		return toolFailure(errors.New("offset must be at least 1")), nil
-	}
-	if limit < 1 || limit > tool.filesystem.maxEntries {
-		return toolFailure(fmt.Errorf(
-			"limit must be between 1 and %d", tool.filesystem.maxEntries,
-		)), nil
-	}
-	path, err := tool.filesystem.existing(arguments.Path)
-	if err != nil {
-		return toolFailure(err), nil
-	}
-	data, _, err := tool.filesystem.readText(path)
-	if err != nil {
-		return toolFailure(err), nil
-	}
-	if err := ctx.Err(); err != nil {
-		return sdk.ToolResult{}, err
-	}
-	lines := splitTextLines(string(data))
-	if len(lines) > 0 && offset > len(lines) {
-		return toolFailure(fmt.Errorf(
-			"offset %d is past end of file (%d lines)", offset, len(lines),
-		)), nil
-	}
-	if len(lines) == 0 && offset != 1 {
-		return toolFailure(errors.New("offset is past end of empty file")), nil
-	}
-	end := len(lines)
-	if candidate := offset - 1 + limit; candidate < end {
-		end = candidate
-	}
-	startIndex := offset - 1
-	if len(lines) == 0 {
-		startIndex = 0
-		end = 0
-	}
-	return sdk.ToolResult{Content: formatFileRange(
-		arguments.Path,
-		data,
-		lines,
-		startIndex,
-		end,
-	)}, nil
-}
-
-type listTool struct{ filesystem *rootedFS }
-
-func (listTool) Spec() sdk.ToolSpec {
-	return sdk.ToolSpec{
-		Name:        "list_files",
-		Description: "List direct children of a directory relative to the configured root.",
-		Parameters:  pathSchema("Relative directory path; use . for the root."),
-	}
-}
-
-func (tool listTool) Call(ctx context.Context, raw json.RawMessage) (sdk.ToolResult, error) {
-	var arguments struct {
-		Path string `json:"path"`
-	}
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return toolFailure(err), nil
-	}
-	if strings.TrimSpace(arguments.Path) == "" {
-		arguments.Path = "."
-	}
-	path, err := tool.filesystem.existing(arguments.Path)
-	if err != nil {
-		return toolFailure(err), nil
-	}
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return toolFailure(err), nil
-	}
-	if len(entries) > tool.filesystem.maxEntries {
-		return toolFailure(fmt.Errorf(
-			"directory exceeds %d entry limit", tool.filesystem.maxEntries,
-		)), nil
-	}
-	var output strings.Builder
-	for _, entry := range entries {
-		if err := ctx.Err(); err != nil {
-			return sdk.ToolResult{}, err
-		}
-		kind := "file"
-		name := entry.Name()
-		if entry.IsDir() {
-			kind = "dir"
-			name += "/"
-		} else if entry.Type()&os.ModeSymlink != 0 {
-			kind = "symlink"
-		}
-		fmt.Fprintf(&output, "%s\t%s\n", kind, name)
-	}
-	return sdk.ToolResult{Content: strings.TrimSuffix(output.String(), "\n")}, nil
-}
-
-type writeTool struct{ filesystem *rootedFS }
-
-func (writeTool) Spec() sdk.ToolSpec {
-	return sdk.ToolSpec{
-		Name:        "write_file",
-		Description: "Atomically create or replace a UTF-8 file. Replacing an existing file requires the SHA-256 revision returned by read_file.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path":    map[string]any{"type": "string"},
-				"content": map[string]any{"type": "string"},
-				"expected_sha256": map[string]any{
-					"type":        "string",
-					"description": "Required when replacing an existing file; omit when creating a new file.",
-				},
-			},
-			"required":             []string{"path", "content"},
-			"additionalProperties": false,
-		},
-	}
-}
-
-func (tool writeTool) Call(ctx context.Context, raw json.RawMessage) (sdk.ToolResult, error) {
-	var arguments struct {
-		Path           string  `json:"path"`
-		Content        *string `json:"content"`
-		ExpectedSHA256 string  `json:"expected_sha256"`
-	}
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return toolFailure(err), nil
-	}
-	if arguments.Content == nil {
-		return toolFailure(errors.New("content is required")), nil
-	}
-	if int64(len(*arguments.Content)) > tool.filesystem.maxWriteBytes {
-		return toolFailure(fmt.Errorf(
-			"content exceeds %d byte write limit", tool.filesystem.maxWriteBytes,
-		)), nil
-	}
-	if !utf8.ValidString(*arguments.Content) {
-		return toolFailure(errors.New("content is not valid UTF-8 text")), nil
-	}
-	target, err := tool.filesystem.writable(arguments.Path)
-	if err != nil {
-		return toolFailure(err), nil
-	}
-	expectedRevision := strings.TrimSpace(arguments.ExpectedSHA256)
-	if expectedRevision != "" && !isSHA256Revision(expectedRevision) {
-		return toolFailure(errors.New(
-			"expected_sha256 must be a 64-character hexadecimal SHA-256 revision",
-		)), nil
-	}
-	if err := ctx.Err(); err != nil {
-		return sdk.ToolResult{}, err
-	}
-	unlock := tool.filesystem.lockPath(target)
-	defer unlock()
-
-	mode := os.FileMode(0o600)
-	existing, info, readErr := tool.filesystem.readText(target)
-	switch {
-	case readErr == nil:
-		mode = info.Mode().Perm()
-		actualRevision := fileRevision(existing)
-		if expectedRevision == "" {
-			return toolFailure(errors.New(
-				"expected_sha256 is required when replacing an existing file; call read_file first",
-			)), nil
-		}
-		if !strings.EqualFold(expectedRevision, actualRevision) {
-			return toolFailure(errors.New(
-				"stale file revision; call read_file again before overwriting",
-			)), nil
-		}
-	case errors.Is(readErr, os.ErrNotExist):
-		if expectedRevision != "" {
-			return toolFailure(errors.New(
-				"file no longer exists; omit expected_sha256 to create it",
-			)), nil
-		}
-	default:
-		return toolFailure(readErr), nil
-	}
-	if err := tool.filesystem.atomicWrite(ctx, target, []byte(*arguments.Content), mode); err != nil {
-		return sdk.ToolResult{}, err
-	}
-	revision := fileRevision([]byte(*arguments.Content))
-	return sdk.ToolResult{Content: fmt.Sprintf(
-		"wrote: %q\nbytes: %d\nsha256: %s",
-		cleanDisplayPath(arguments.Path),
-		len(*arguments.Content),
-		revision,
-	)}, nil
+func (filesystem *rootedFS) openRoot() (*os.Root, error) {
+	return os.OpenRoot(filesystem.root)
 }
 
 func (filesystem *rootedFS) readText(path string) ([]byte, os.FileInfo, error) {
-	info, err := os.Stat(path)
+	root, err := filesystem.openRoot()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer root.Close()
+	return filesystem.readTextAt(root, path)
+}
+
+func (filesystem *rootedFS) readTextAt(
+	root *os.Root,
+	path string,
+) ([]byte, os.FileInfo, error) {
+	file, err := root.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
 	if err != nil {
 		return nil, nil, err
 	}
 	if !info.Mode().IsRegular() {
 		return nil, nil, errors.New("path is not a regular file")
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, filesystem.maxReadBytes+1))
 	if err != nil {
 		return nil, nil, err
@@ -481,28 +238,25 @@ func (filesystem *rootedFS) readText(path string) ([]byte, os.FileInfo, error) {
 	return data, info, nil
 }
 
-func (filesystem *rootedFS) lockPath(path string) func() {
-	value, _ := filesystem.pathLocks.LoadOrStore(path, &sync.Mutex{})
-	mutex := value.(*sync.Mutex)
-	mutex.Lock()
-	return mutex.Unlock
-}
-
 func (filesystem *rootedFS) atomicWrite(
 	ctx context.Context,
 	target string,
 	data []byte,
 	mode os.FileMode,
 ) error {
-	temporary, err := os.CreateTemp(filepath.Dir(target), ".agentm-file-*.tmp")
+	root, err := filesystem.openRoot()
 	if err != nil {
 		return err
 	}
-	temporaryPath := temporary.Name()
+	defer root.Close()
+	temporary, temporaryPath, err := createTemporary(root, filepath.Dir(target))
+	if err != nil {
+		return err
+	}
 	removeTemporary := true
 	defer func() {
 		if removeTemporary {
-			_ = os.Remove(temporaryPath)
+			_ = root.Remove(temporaryPath)
 		}
 	}()
 	if err := temporary.Chmod(mode); err != nil {
@@ -523,11 +277,11 @@ func (filesystem *rootedFS) atomicWrite(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := os.Rename(temporaryPath, target); err != nil {
+	if err := root.Rename(temporaryPath, target); err != nil {
 		return err
 	}
 	removeTemporary = false
-	directory, err := os.Open(filepath.Dir(target))
+	directory, err := root.Open(filepath.Dir(target))
 	if err != nil {
 		return err
 	}
@@ -535,7 +289,7 @@ func (filesystem *rootedFS) atomicWrite(
 	if err := directory.Sync(); err != nil {
 		return err
 	}
-	written, err := os.ReadFile(target)
+	written, err := root.ReadFile(target)
 	if err != nil {
 		return fmt.Errorf("verify write: %w", err)
 	}
@@ -545,26 +299,20 @@ func (filesystem *rootedFS) atomicWrite(
 	return nil
 }
 
-func formatFileRange(
-	path string,
-	data []byte,
-	lines []string,
-	start int,
-	end int,
-) string {
-	var output strings.Builder
-	fmt.Fprintf(&output, "file: %q\n", cleanDisplayPath(path))
-	fmt.Fprintf(&output, "bytes: %d\n", len(data))
-	if len(lines) == 0 {
-		output.WriteString("lines: 0-0 of 0\n")
-	} else {
-		fmt.Fprintf(&output, "lines: %d-%d of %d\n", start+1, end, len(lines))
+func createTemporary(root *os.Root, directory string) (*os.File, string, error) {
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return nil, "", fmt.Errorf("generate temporary file name: %w", err)
 	}
-	fmt.Fprintf(&output, "sha256: %s\n---", fileRevision(data))
-	for index := start; index < end; index++ {
-		fmt.Fprintf(&output, "\n%d\t%s", index+1, lines[index])
+	name := filepath.Join(
+		directory,
+		".agentm-file-"+hex.EncodeToString(random[:])+".tmp",
+	)
+	file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return nil, "", err
 	}
-	return output.String()
+	return file, name, nil
 }
 
 func splitTextLines(content string) []string {

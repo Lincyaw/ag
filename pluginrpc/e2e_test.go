@@ -172,6 +172,8 @@ func TestRemotePluginRealTCPRunsSessionHookToolAndSubscriber(t *testing.T) {
 	plugin := newE2EPlugin()
 	serverAdapter, err := NewServer(ctx, ServerConfig{
 		Plugin:       plugin,
+		Operations:   sdkstorage.NewMemoryOperationStore(),
+		Inbox:        sdkstorage.NewMemoryDeliveryStore(),
 		InboxPoll:    time.Millisecond,
 		InboxWorkers: 2,
 	})
@@ -215,6 +217,7 @@ func TestRemotePluginRealTCPRunsSessionHookToolAndSubscriber(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{
+		Storage:             sdkstorage.NewMemoryStateBackend(),
 		OperationPoll:       time.Millisecond,
 		DeliveryPoll:        time.Millisecond,
 		DeliveryWorkers:     4,
@@ -230,7 +233,11 @@ func TestRemotePluginRealTCPRunsSessionHookToolAndSubscriber(t *testing.T) {
 			t.Errorf("close runtime: %v", err)
 		}
 	})
-	mount, err := runtime.MountRegistered(ctx, registry, "remote-e2e")
+	source, err := registry.Resolve(ctx, "remote-e2e")
+	if err != nil {
+		t.Fatalf("resolve remote plugin: %v", err)
+	}
+	mount, err := runtime.Mount(ctx, source)
 	if err != nil {
 		t.Fatalf("mount remote plugin: %v", err)
 	}
@@ -332,7 +339,11 @@ func TestRemoteCancelWinsAgainstBlockingSyncToolCompletion(t *testing.T) {
 		},
 	}
 	operationStore := sdkstorage.NewMemoryOperationStore()
-	adapter, err := NewServer(ctx, ServerConfig{Plugin: plugin, Operations: operationStore})
+	adapter, err := NewServer(ctx, ServerConfig{
+		Plugin:     plugin,
+		Operations: operationStore,
+		Inbox:      sdkstorage.NewMemoryDeliveryStore(),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,28 +8,31 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/lincyaw/ag/sdk"
+	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 )
 
 type syncOperationProvider struct{ calls atomic.Int64 }
 
-func (*syncOperationProvider) Spec() ProviderSpec {
-	return ProviderSpec{Name: "sync-model", Model: "sync-v1"}
+func (*syncOperationProvider) Spec() sdk.ProviderSpec {
+	return sdk.ProviderSpec{Name: "sync-model", Model: "sync-v1"}
 }
 
 func (provider *syncOperationProvider) Complete(
 	context.Context,
-	ModelRequest,
-) (ModelResponse, error) {
+	sdk.ModelRequest,
+) (sdk.ModelResponse, error) {
 	call := provider.calls.Add(1)
 	if call == 1 {
-		return ModelResponse{
+		return sdk.ModelResponse{
 			Model: "sync-v1", FinishReason: "tool_calls",
-			ToolCalls: []ToolCall{{
+			ToolCalls: []sdk.ToolCall{{
 				ID: "blocking-call", Name: "sync-block", Arguments: []byte(`{"wait":true}`),
 			}},
 		}, nil
 	}
-	return ModelResponse{Content: "done", Model: "sync-v1", FinishReason: "stop"}, nil
+	return sdk.ModelResponse{Content: "done", Model: "sync-v1", FinishReason: "stop"}, nil
 }
 
 type blockingSyncOperationTool struct {
@@ -42,14 +45,14 @@ type blockingSyncOperationTool struct {
 	observed  any
 }
 
-func (tool *blockingSyncOperationTool) Spec() ToolSpec {
-	return ToolSpec{Name: tool.name, Description: "blocks for async adapter tests", Parameters: map[string]any{"type": "object"}}
+func (tool *blockingSyncOperationTool) Spec() sdk.ToolSpec {
+	return sdk.ToolSpec{Name: tool.name, Description: "blocks for async adapter tests", Parameters: map[string]any{"type": "object"}}
 }
 
 func (tool *blockingSyncOperationTool) Call(
 	ctx context.Context,
 	_ json.RawMessage,
-) (ToolResult, error) {
+) (sdk.ToolResult, error) {
 	tool.calls.Add(1)
 	tool.observed = ctx.Value(operationContextKey{})
 	tool.once.Do(func() { close(tool.entered) })
@@ -58,9 +61,9 @@ func (tool *blockingSyncOperationTool) Call(
 		if tool.cancelled != nil {
 			close(tool.cancelled)
 		}
-		return ToolResult{}, ctx.Err()
+		return sdk.ToolResult{}, ctx.Err()
 	case <-tool.release:
-		return ToolResult{Content: "released"}, nil
+		return sdk.ToolResult{Content: "released"}, nil
 	}
 }
 
@@ -72,7 +75,10 @@ func TestSyncResourcesAreAdaptedToOperationsAndCancellation(t *testing.T) {
 		name: "sync-block", entered: make(chan struct{}),
 		cancelled: make(chan struct{}), release: make(chan struct{}),
 	}
-	runtime, err := NewRuntime(RuntimeConfig{OperationPoll: time.Millisecond})
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:       newTestStateBackend(),
+		OperationPoll: time.Millisecond,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,17 +89,20 @@ func TestSyncResourcesAreAdaptedToOperationsAndCancellation(t *testing.T) {
 			t.Errorf("close runtime: %v", err)
 		}
 	})
-	plugin := PluginFunc{
-		PluginManifest: Manifest{
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
 			Name: "sync-operation-test", Version: "1.0.0",
-			Description: "sync resources adapted to operations", APIVersion: APIVersion,
-			Registers: []string{ProviderResource("sync-model"), ToolResource("sync-block")},
+			Description: "sync resources adapted to operations", APIVersion: sdk.APIVersion,
+			Registers: []string{
+				sdk.ProviderResource("sync-model"),
+				sdk.ToolResource("sync-block"),
+			},
 		},
-		InstallFunc: func(_ context.Context, registrar Registrar) error {
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
 			return errors.Join(registrar.RegisterProvider(provider), registrar.RegisterTool(tool))
 		},
 	}
-	if _, err := runtime.Mount(ctx, Local(plugin)); err != nil {
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
 		t.Fatal(err)
 	}
 	session, err := runtime.NewSession(ctx, SessionConfig{ID: "sync-operation-session", Provider: "sync-model"})
@@ -115,13 +124,13 @@ func TestSyncResourcesAreAdaptedToOperationsAndCancellation(t *testing.T) {
 	if tool.observed != "trace-baggage" {
 		t.Fatalf("operation context value = %#v", tool.observed)
 	}
-	records, err := runtime.Operations().List(ctx)
+	records, err := runtime.operation.store.List(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 2 || records[0].Kind != OperationKindProvider ||
-		records[0].Operation.State != OperationSucceeded ||
-		records[1].Kind != OperationKindTool || records[1].Operation.State != OperationRunning {
+	if len(records) != 2 || records[0].Kind != sdk.OperationKindProvider ||
+		records[0].Operation.State != sdk.OperationSucceeded ||
+		records[1].Kind != sdk.OperationKindTool || records[1].Operation.State != sdk.OperationRunning {
 		t.Fatalf("operations before cancellation = %#v", records)
 	}
 	cancelPrompt()
@@ -138,11 +147,11 @@ func TestSyncResourcesAreAdaptedToOperationsAndCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("tool context was not cancelled")
 	}
-	records, err = runtime.Operations().List(ctx)
+	records, err = runtime.operation.store.List(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if records[1].Operation.State != OperationCancelled {
+	if records[1].Operation.State != sdk.OperationCancelled {
 		t.Fatalf("tool operation after cancellation = %#v", records[1])
 	}
 }
@@ -152,19 +161,25 @@ type operationContextKey struct{}
 func TestLocalOperationRecoversRunningRecordAfterRuntimeRestart(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
-	store, err := NewFileOperationStore(directory)
+	store, err := sdkstorage.NewFileOperationStore(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstRuntime, err := NewRuntime(RuntimeConfig{Operations: store})
+	firstRuntime, err := NewRuntime(RuntimeConfig{
+		Storage: testStateBackendWithStores(nil, store),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	firstTool := &blockingSyncOperationTool{
 		name: "recover", entered: make(chan struct{}), release: make(chan struct{}),
 	}
-	firstAdapter := localAsyncTool{runtime: firstRuntime, synchronous: firstTool}
-	request := OperationRequest{IdempotencyKey: "same-entry", Input: []byte(`{"work":"once"}`)}
+	firstAdapter := localAsyncTool{
+		runtime:     firstRuntime,
+		synchronous: firstTool,
+		spec:        firstTool.Spec(),
+	}
+	request := sdk.OperationRequest{IdempotencyKey: "same-entry", Input: []byte(`{"work":"once"}`)}
 	initial, err := firstAdapter.SubmitCall(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +194,7 @@ func TestLocalOperationRecoversRunningRecordAfterRuntimeRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	cancelClose()
-	reopened, err := NewFileOperationStore(directory)
+	reopened, err := sdkstorage.NewFileOperationStore(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,11 +202,13 @@ func TestLocalOperationRecoversRunningRecordAfterRuntimeRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if running.Operation.State != OperationRunning {
+	if running.Operation.State != sdk.OperationRunning {
 		t.Fatalf("operation after shutdown = %#v", running.Operation)
 	}
 
-	secondRuntime, err := NewRuntime(RuntimeConfig{Operations: reopened})
+	secondRuntime, err := NewRuntime(RuntimeConfig{
+		Storage: testStateBackendWithStores(nil, reopened),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,20 +223,64 @@ func TestLocalOperationRecoversRunningRecordAfterRuntimeRestart(t *testing.T) {
 		name: "recover", entered: make(chan struct{}), release: make(chan struct{}),
 	}
 	close(secondTool.release)
-	secondAdapter := localAsyncTool{runtime: secondRuntime, synchronous: secondTool}
+	secondAdapter := localAsyncTool{
+		runtime:     secondRuntime,
+		synchronous: secondTool,
+		spec:        secondTool.Spec(),
+	}
 	recovered, err := secondAdapter.SubmitCall(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recovered.ID != initial.ID || recovered.State != OperationRunning {
+	if recovered.ID != initial.ID || recovered.State != sdk.OperationRunning {
 		t.Fatalf("resubmitted operation = %#v, initial = %#v", recovered, initial)
 	}
 	eventuallyOperation(t, time.Second, func() bool {
 		operation, pollErr := secondAdapter.PollCall(context.Background(), initial.ID, 0)
-		return pollErr == nil && operation.State == OperationSucceeded
+		return pollErr == nil && operation.State == sdk.OperationSucceeded
 	})
 	if firstTool.calls.Load() != 1 || secondTool.calls.Load() != 1 {
 		t.Fatalf("at-least-once attempts first=%d second=%d", firstTool.calls.Load(), secondTool.calls.Load())
+	}
+}
+
+func TestLocalOperationRejectsSubmissionAfterRuntimeClose(t *testing.T) {
+	t.Parallel()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:          newTestStateBackend(),
+		StorageOwnership: StorageBorrowed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := runtime.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := localAsyncTool{
+		runtime: runtime,
+		synchronous: &blockingSyncOperationTool{
+			name:    "closed",
+			entered: make(chan struct{}),
+			release: make(chan struct{}),
+		},
+		spec: sdk.ToolSpec{Name: "closed"},
+	}
+	_, err = adapter.SubmitCall(context.Background(), sdk.OperationRequest{
+		IdempotencyKey: "closed-runtime",
+		Input:          []byte(`{}`),
+	})
+	if err == nil || err.Error() != "runtime is closed" {
+		t.Fatalf("submit error = %v, want runtime is closed", err)
+	}
+	records, err := runtime.operation.store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("persisted operations after close = %#v", records)
 	}
 }
 

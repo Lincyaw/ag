@@ -13,6 +13,7 @@ import (
 
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
+	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 )
 
 func TestFileToolsConfinePathsAndEnforceBounds(t *testing.T) {
@@ -183,7 +184,9 @@ func TestConcurrentWritesAreAtomicAndPluginManifestMatchesMode(t *testing.T) {
 		{name: "writable", enableWrite: true, toolCount: 5},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{})
+			runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{
+				Storage: sdkstorage.NewMemoryStateBackend(),
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -203,5 +206,53 @@ func TestConcurrentWritesAreAtomicAndPluginManifestMatchesMode(t *testing.T) {
 				t.Fatalf("tool count = %d, want %d", got, test.toolCount)
 			}
 		})
+	}
+}
+
+func TestFilesystemOperationsRemainConfinedAfterParentSwap(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	root := t.TempDir()
+	outside := t.TempDir()
+	parent := filepath.Join(root, "parent")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "secret.txt"), []byte("inside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	filesystem, err := newRootedFS(Config{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readPath, err := filesystem.existing("parent/secret.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePath, err := filesystem.writable("parent/new.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(parent, filepath.Join(root, "original-parent")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, parent); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if _, _, err := filesystem.readText(readPath); err == nil {
+		t.Fatal("read followed a swapped parent outside the root")
+	}
+	filesystem.writeMu.Lock()
+	err = filesystem.atomicWrite(ctx, writePath, []byte("escaped"), 0o600)
+	filesystem.writeMu.Unlock()
+	if err == nil {
+		t.Fatal("write followed a swapped parent outside the root")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "new.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("outside write result = %v, want file not found", err)
 	}
 }

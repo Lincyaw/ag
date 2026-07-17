@@ -11,23 +11,27 @@ import (
 	"sync"
 	"time"
 
-	. "github.com/lincyaw/ag/sdk"
+	sdk "github.com/lincyaw/ag/sdk"
 )
 
-type MemoryTrajectoryStore struct {
+type memoryTrajectoryStore struct {
 	mu           sync.RWMutex
-	trajectories map[string]Trajectory
+	trajectories map[string]sdk.Trajectory
 }
 
-func NewMemoryTrajectoryStore() *MemoryTrajectoryStore {
-	return &MemoryTrajectoryStore{
-		trajectories: make(map[string]Trajectory),
+func NewMemoryTrajectoryStore() sdk.TrajectoryStore {
+	return newMemoryTrajectoryStore()
+}
+
+func newMemoryTrajectoryStore() *memoryTrajectoryStore {
+	return &memoryTrajectoryStore{
+		trajectories: make(map[string]sdk.Trajectory),
 	}
 }
 
-func (store *MemoryTrajectoryStore) Create(
+func (store *memoryTrajectoryStore) Create(
 	ctx context.Context,
-	trajectory Trajectory,
+	trajectory sdk.Trajectory,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -43,22 +47,22 @@ func (store *MemoryTrajectoryStore) Create(
 	if trajectory.UpdatedAt.IsZero() {
 		trajectory.UpdatedAt = trajectory.CreatedAt
 	}
-	trajectory.Entries = []TrajectoryEntry{}
+	trajectory.Entries = []sdk.TrajectoryEntry{}
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if _, exists := store.trajectories[trajectory.ID]; exists {
-		return fmt.Errorf("%w: %s", ErrTrajectoryExists, trajectory.ID)
+		return fmt.Errorf("%w: %s", sdk.ErrTrajectoryExists, trajectory.ID)
 	}
 	store.trajectories[trajectory.ID] = cloneTrajectory(trajectory)
 	return nil
 }
 
-func (store *MemoryTrajectoryStore) Append(
+func (store *memoryTrajectoryStore) Append(
 	ctx context.Context,
 	id string,
 	expectedHead string,
-	entries ...TrajectoryEntry,
+	entries ...sdk.TrajectoryEntry,
 ) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -67,12 +71,12 @@ func (store *MemoryTrajectoryStore) Append(
 	defer store.mu.Unlock()
 	trajectory, exists := store.trajectories[id]
 	if !exists {
-		return "", fmt.Errorf("%w: %s", ErrTrajectoryNotFound, id)
+		return "", fmt.Errorf("%w: %s", sdk.ErrTrajectoryNotFound, id)
 	}
 	if trajectory.Head != expectedHead {
 		return "", fmt.Errorf(
 			"%w: trajectory %s has head %q, expected %q",
-			ErrTrajectoryConflict,
+			sdk.ErrTrajectoryConflict,
 			id,
 			trajectory.Head,
 			expectedHead,
@@ -86,35 +90,35 @@ func (store *MemoryTrajectoryStore) Append(
 	return next.Head, nil
 }
 
-func (store *MemoryTrajectoryStore) Load(
+func (store *memoryTrajectoryStore) Load(
 	ctx context.Context,
 	id string,
-) (Trajectory, error) {
+) (sdk.Trajectory, error) {
 	if err := ctx.Err(); err != nil {
-		return Trajectory{}, err
+		return sdk.Trajectory{}, err
 	}
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 	trajectory, exists := store.trajectories[id]
 	if !exists {
-		return Trajectory{}, fmt.Errorf("%w: %s", ErrTrajectoryNotFound, id)
+		return sdk.Trajectory{}, fmt.Errorf("%w: %s", sdk.ErrTrajectoryNotFound, id)
 	}
 	return cloneTrajectory(trajectory), nil
 }
 
-func (store *MemoryTrajectoryStore) List(
+func (store *memoryTrajectoryStore) List(
 	ctx context.Context,
-) ([]TrajectorySummary, error) {
+) ([]sdk.TrajectorySummary, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	store.mu.RLock()
 	defer store.mu.RUnlock()
-	result := make([]TrajectorySummary, 0, len(store.trajectories))
+	result := make([]sdk.TrajectorySummary, 0, len(store.trajectories))
 	for _, trajectory := range store.trajectories {
 		result = append(result, summarizeTrajectory(trajectory))
 	}
-	slices.SortFunc(result, func(left, right TrajectorySummary) int {
+	slices.SortFunc(result, func(left, right sdk.TrajectorySummary) int {
 		if order := left.CreatedAt.Compare(right.CreatedAt); order != 0 {
 			return order
 		}
@@ -123,54 +127,54 @@ func (store *MemoryTrajectoryStore) List(
 	return result, nil
 }
 
-func (store *MemoryTrajectoryStore) ListPage(
+func (store *memoryTrajectoryStore) ListPage(
 	ctx context.Context,
-	request PageRequest,
-) (TrajectoryPage, error) {
+	request sdk.PageRequest,
+) (sdk.TrajectoryPage, error) {
 	items, err := store.List(ctx)
 	if err != nil {
-		return TrajectoryPage{}, err
+		return sdk.TrajectoryPage{}, err
 	}
-	page, next, err := PageWindow(
+	page, next, err := pageWindow(
 		items,
 		request,
-		func(item TrajectorySummary) string { return item.ID },
+		func(item sdk.TrajectorySummary) string { return item.ID },
 	)
 	if err != nil {
-		return TrajectoryPage{}, err
+		return sdk.TrajectoryPage{}, err
 	}
-	return TrajectoryPage{Items: page, Next: next}, nil
+	return sdk.TrajectoryPage{Items: page, Next: next}, nil
 }
 
-func (store *MemoryTrajectoryStore) Delete(
+func (store *memoryTrajectoryStore) Delete(
 	ctx context.Context,
 	id string,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := ValidateResourceName("trajectory", id); err != nil {
+	if err := sdk.ValidateResourceName("trajectory", id); err != nil {
 		return err
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if _, exists := store.trajectories[id]; !exists {
-		return fmt.Errorf("%w: %s", ErrTrajectoryNotFound, id)
+		return fmt.Errorf("%w: %s", sdk.ErrTrajectoryNotFound, id)
 	}
 	delete(store.trajectories, id)
 	return nil
 }
 
-func validateNewTrajectory(trajectory Trajectory) error {
-	if trajectory.SchemaVersion > TrajectorySchemaVersion {
+func validateNewTrajectory(trajectory sdk.Trajectory) error {
+	if trajectory.SchemaVersion > sdk.TrajectorySchemaVersion {
 		return fmt.Errorf(
 			"%w: got %d, maximum supported is %d",
-			ErrTrajectoryVersion,
+			sdk.ErrTrajectoryVersion,
 			trajectory.SchemaVersion,
-			TrajectorySchemaVersion,
+			sdk.TrajectorySchemaVersion,
 		)
 	}
-	if err := ValidateResourceName("trajectory", trajectory.ID); err != nil {
+	if err := sdk.ValidateResourceName("trajectory", trajectory.ID); err != nil {
 		return err
 	}
 	if trajectory.Head != "" || len(trajectory.Entries) != 0 {
@@ -185,11 +189,11 @@ func validateNewTrajectory(trajectory Trajectory) error {
 }
 
 func appendTrajectoryEntries(
-	trajectory Trajectory,
-	entries []TrajectoryEntry,
-) (Trajectory, error) {
+	trajectory sdk.Trajectory,
+	entries []sdk.TrajectoryEntry,
+) (sdk.Trajectory, error) {
 	if len(entries) == 0 {
-		return Trajectory{}, errors.New("trajectory append contains no entries")
+		return sdk.Trajectory{}, errors.New("trajectory append contains no entries")
 	}
 	known := make(map[string]struct{}, len(trajectory.Entries)+len(entries))
 	for _, entry := range trajectory.Entries {
@@ -197,36 +201,36 @@ func appendTrajectoryEntries(
 	}
 	for index := range entries {
 		entry := &entries[index]
-		if err := ValidateResourceName("trajectory entry", entry.ID); err != nil {
-			return Trajectory{}, err
+		if err := sdk.ValidateResourceName("trajectory entry", entry.ID); err != nil {
+			return sdk.Trajectory{}, err
 		}
 		if _, duplicate := known[entry.ID]; duplicate {
-			return Trajectory{}, fmt.Errorf(
+			return sdk.Trajectory{}, fmt.Errorf(
 				"trajectory entry %q already exists",
 				entry.ID,
 			)
 		}
 		if strings.TrimSpace(entry.Kind) == "" {
-			return Trajectory{}, fmt.Errorf(
+			return sdk.Trajectory{}, fmt.Errorf(
 				"trajectory entry %q kind is empty",
 				entry.ID,
 			)
 		}
 		if !json.Valid(entry.Payload) {
-			return Trajectory{}, fmt.Errorf(
+			return sdk.Trajectory{}, fmt.Errorf(
 				"trajectory entry %q payload is invalid JSON",
 				entry.ID,
 			)
 		}
 		if entry.ParentID == "" {
-			if len(known) != 0 && entry.Kind != TrajectoryKindRestore {
-				return Trajectory{}, fmt.Errorf(
+			if len(known) != 0 && entry.Kind != sdk.TrajectoryKindRestore {
+				return sdk.Trajectory{}, fmt.Errorf(
 					"trajectory entry %q has no parent in a non-empty trajectory",
 					entry.ID,
 				)
 			}
 		} else if _, exists := known[entry.ParentID]; !exists {
-			return Trajectory{}, fmt.Errorf(
+			return sdk.Trajectory{}, fmt.Errorf(
 				"trajectory entry %q has unknown parent %q",
 				entry.ID,
 				entry.ParentID,
@@ -236,15 +240,15 @@ func appendTrajectoryEntries(
 			entry.Timestamp = time.Now().UTC()
 		}
 		if entry.PayloadVersion == 0 {
-			entry.PayloadVersion = TrajectoryPayloadVersion
+			entry.PayloadVersion = sdk.TrajectoryPayloadVersion
 		}
-		if entry.PayloadVersion > TrajectoryPayloadVersion {
-			return Trajectory{}, fmt.Errorf(
+		if entry.PayloadVersion > sdk.TrajectoryPayloadVersion {
+			return sdk.Trajectory{}, fmt.Errorf(
 				"%w: entry %q payload version %d, maximum supported is %d",
-				ErrTrajectoryVersion,
+				sdk.ErrTrajectoryVersion,
 				entry.ID,
 				entry.PayloadVersion,
-				TrajectoryPayloadVersion,
+				sdk.TrajectoryPayloadVersion,
 			)
 		}
 		entry.Payload = append(json.RawMessage(nil), entry.Payload...)
@@ -260,8 +264,8 @@ func appendTrajectoryEntries(
 	return next, nil
 }
 
-func summarizeTrajectory(trajectory Trajectory) TrajectorySummary {
-	return TrajectorySummary{
+func summarizeTrajectory(trajectory sdk.Trajectory) sdk.TrajectorySummary {
+	return sdk.TrajectorySummary{
 		SchemaVersion: trajectory.SchemaVersion,
 		ID:            trajectory.ID,
 		ParentID:      trajectory.ParentID,
@@ -273,77 +277,77 @@ func summarizeTrajectory(trajectory Trajectory) TrajectorySummary {
 	}
 }
 
-func cloneTrajectory(source Trajectory) Trajectory {
+func cloneTrajectory(source sdk.Trajectory) sdk.Trajectory {
 	result := source
 	result.Environment = cloneTrajectoryEnvironment(source.Environment)
-	result.Entries = make([]TrajectoryEntry, len(source.Entries))
+	result.Entries = make([]sdk.TrajectoryEntry, len(source.Entries))
 	for index, entry := range source.Entries {
 		result.Entries[index] = cloneTrajectoryEntry(entry)
 	}
 	return result
 }
 
-func normalizeTrajectory(trajectory *Trajectory) {
+func normalizeTrajectory(trajectory *sdk.Trajectory) {
 	if trajectory.SchemaVersion == 0 {
-		trajectory.SchemaVersion = TrajectorySchemaVersion
+		trajectory.SchemaVersion = sdk.TrajectorySchemaVersion
 	}
 	for index := range trajectory.Entries {
 		if trajectory.Entries[index].PayloadVersion == 0 {
-			trajectory.Entries[index].PayloadVersion = TrajectoryPayloadVersion
+			trajectory.Entries[index].PayloadVersion = sdk.TrajectoryPayloadVersion
 		}
 	}
 }
 
-func validateLoadedTrajectory(trajectory *Trajectory) error {
-	if trajectory.SchemaVersion > TrajectorySchemaVersion {
+func validateLoadedTrajectory(trajectory *sdk.Trajectory) error {
+	if trajectory.SchemaVersion > sdk.TrajectorySchemaVersion {
 		return fmt.Errorf(
 			"%w: got %d, maximum supported is %d",
-			ErrTrajectoryVersion,
+			sdk.ErrTrajectoryVersion,
 			trajectory.SchemaVersion,
-			TrajectorySchemaVersion,
+			sdk.TrajectorySchemaVersion,
 		)
 	}
 	normalizeTrajectory(trajectory)
 	for _, entry := range trajectory.Entries {
-		if entry.PayloadVersion > TrajectoryPayloadVersion {
+		if entry.PayloadVersion > sdk.TrajectoryPayloadVersion {
 			return fmt.Errorf(
 				"%w: entry %q payload version %d, maximum supported is %d",
-				ErrTrajectoryVersion,
+				sdk.ErrTrajectoryVersion,
 				entry.ID,
 				entry.PayloadVersion,
-				TrajectoryPayloadVersion,
+				sdk.TrajectoryPayloadVersion,
 			)
 		}
 	}
 	return nil
 }
 
-func cloneTrajectoryEnvironment(source TrajectoryEnvironment) TrajectoryEnvironment {
+func cloneTrajectoryEnvironment(source sdk.TrajectoryEnvironment) sdk.TrajectoryEnvironment {
 	result := source
-	result.Plugins = make([]TrajectoryPlugin, len(source.Plugins))
+	result.Plugins = make([]sdk.TrajectoryPlugin, len(source.Plugins))
 	for index, plugin := range source.Plugins {
 		result.Plugins[index] = plugin
 		result.Plugins[index].Registers = append([]string(nil), plugin.Registers...)
 	}
-	result.Providers = append([]ProviderSpec(nil), source.Providers...)
-	result.Tools = make([]ToolSpec, len(source.Tools))
+	result.Providers = append([]sdk.ProviderSpec(nil), source.Providers...)
+	result.Tools = make([]sdk.ToolSpec, len(source.Tools))
 	for index, spec := range source.Tools {
 		result.Tools[index] = spec
 		result.Tools[index].Parameters = maps.Clone(spec.Parameters)
 	}
-	result.Hooks = append([]HookSpec(nil), source.Hooks...)
-	result.Subscribers = make([]SubscriberSpec, len(source.Subscribers))
+	result.Hooks = append([]sdk.HookSpec(nil), source.Hooks...)
+	result.Subscribers = make([]sdk.SubscriberSpec, len(source.Subscribers))
 	for index, spec := range source.Subscribers {
 		result.Subscribers[index] = spec
 		result.Subscribers[index].Events = append([]string(nil), spec.Events...)
 	}
-	result.Capabilities = make([]CapabilitySpec, len(source.Capabilities))
+	result.Capabilities = make([]sdk.CapabilitySpec, len(source.Capabilities))
 	for index, spec := range source.Capabilities {
 		result.Capabilities[index] = spec
 		result.Capabilities[index].InputSchema = maps.Clone(spec.InputSchema)
 		result.Capabilities[index].OutputSchema = maps.Clone(spec.OutputSchema)
 	}
-	result.Events = make([]EventContract, len(source.Events))
+	result.Events = make([]sdk.EventContract, len(source.Events))
 	for index, contract := range source.Events {
 		result.Events[index] = contract
 		result.Events[index].MutableFields = append(
@@ -354,7 +358,7 @@ func cloneTrajectoryEnvironment(source TrajectoryEnvironment) TrajectoryEnvironm
 	return result
 }
 
-func cloneTrajectoryEntry(source TrajectoryEntry) TrajectoryEntry {
+func cloneTrajectoryEntry(source sdk.TrajectoryEntry) sdk.TrajectoryEntry {
 	result := source
 	result.Payload = append(json.RawMessage(nil), source.Payload...)
 	result.Attributes = maps.Clone(source.Attributes)

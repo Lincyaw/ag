@@ -18,6 +18,7 @@ import (
 	pluginv1 "github.com/lincyaw/ag/pluginrpc/v1"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
+	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -54,7 +55,7 @@ func TestPythonPluginProcessImplementsCrossLanguageContract(t *testing.T) {
 		t.Fatalf("generate Python protocol stubs: %v\n%s", err, output)
 	}
 
-	registryURI, registryClient, leaseRegistry := startRegistry(t)
+	registryURI, registryClient, registry := startRegistry(t)
 	eventsFile := filepath.Join(t.TempDir(), "deliveries.jsonl")
 	process := startPluginProcessEnv(
 		t,
@@ -84,11 +85,11 @@ func TestPythonPluginProcessImplementsCrossLanguageContract(t *testing.T) {
 		t.Fatalf("Python lease was not renewed: registrations=%#v err=%v", registrations, err)
 	}
 
-	registry := leaseRegistry.Registry()
 	if err := pluginrpc.RegisterDrivers(registry, pluginrpc.ClientConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{
+		Storage:             sdkstorage.NewMemoryStateBackend(),
 		OperationPoll:       time.Millisecond,
 		DeliveryPoll:        time.Millisecond,
 		DeliveryWorkers:     2,
@@ -104,11 +105,11 @@ func TestPythonPluginProcessImplementsCrossLanguageContract(t *testing.T) {
 			t.Errorf("close runtime: %v", err)
 		}
 	})
-	mount, err := runtime.MountRegistered(
-		context.Background(),
-		registry,
-		"python-e2e",
-	)
+	source, err := registry.Resolve(context.Background(), "python-e2e")
+	if err != nil {
+		t.Fatalf("resolve Python plugin through lease registration: %v", err)
+	}
+	mount, err := runtime.Mount(context.Background(), source)
 	if err != nil {
 		t.Fatalf("mount Python plugin through lease registration: %v", err)
 	}

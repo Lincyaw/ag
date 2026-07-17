@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
@@ -32,10 +33,12 @@ type Config struct {
 }
 
 type Runtime struct {
-	Tracer     trace.Tracer
-	Meter      metric.Meter
-	LogHandler slog.Handler
-	shutdowns  []func(context.Context) error
+	Tracer      trace.Tracer
+	Meter       metric.Meter
+	LogHandler  slog.Handler
+	shutdowns   []func(context.Context) error
+	shutdown    sync.Once
+	shutdownErr error
 }
 
 func Setup(ctx context.Context, config Config) (*Runtime, error) {
@@ -107,9 +110,9 @@ func Setup(ctx context.Context, config Config) (*Runtime, error) {
 
 	runtime := &Runtime{}
 	cleanupOnError := func(cause error) (*Runtime, error) {
-		_ = runtime.Shutdown(context.Background())
-		return nil, cause
+		return nil, errors.Join(cause, runtime.Shutdown(context.Background()))
 	}
+	var installGlobals []func()
 
 	if traceEnabled {
 		exporter, exportErr := otlptracehttp.New(ctx)
@@ -120,8 +123,10 @@ func Setup(ctx context.Context, config Config) (*Runtime, error) {
 			sdktrace.WithBatcher(exporter),
 			sdktrace.WithResource(res),
 		)
-		otel.SetTracerProvider(provider)
 		runtime.shutdowns = append(runtime.shutdowns, provider.Shutdown)
+		installGlobals = append(installGlobals, func() {
+			otel.SetTracerProvider(provider)
+		})
 	}
 
 	if metricEnabled {
@@ -134,8 +139,10 @@ func Setup(ctx context.Context, config Config) (*Runtime, error) {
 			sdkmetric.WithReader(reader),
 			sdkmetric.WithResource(res),
 		)
-		otel.SetMeterProvider(provider)
 		runtime.shutdowns = append(runtime.shutdowns, provider.Shutdown)
+		installGlobals = append(installGlobals, func() {
+			otel.SetMeterProvider(provider)
+		})
 	}
 	if logEnabled {
 		exporter, exportErr := otlploghttp.New(ctx)
@@ -153,6 +160,9 @@ func Setup(ctx context.Context, config Config) (*Runtime, error) {
 		runtime.shutdowns = append(runtime.shutdowns, provider.Shutdown)
 	}
 
+	for _, install := range installGlobals {
+		install()
+	}
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},
@@ -179,13 +189,16 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	if r == nil {
 		return nil
 	}
-	var errs []error
-	for index := len(r.shutdowns) - 1; index >= 0; index-- {
-		if err := r.shutdowns[index](ctx); err != nil {
-			errs = append(errs, err)
+	r.shutdown.Do(func() {
+		var errs []error
+		for index := len(r.shutdowns) - 1; index >= 0; index-- {
+			if err := r.shutdowns[index](ctx); err != nil {
+				errs = append(errs, err)
+			}
 		}
-	}
-	return errors.Join(errs...)
+		r.shutdownErr = errors.Join(errs...)
+	})
+	return r.shutdownErr
 }
 
 func hasEndpoint(signalEndpoint string) bool {

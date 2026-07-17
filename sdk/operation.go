@@ -42,7 +42,7 @@ func (operation Operation) Terminal() bool {
 	}
 }
 
-func validateOperation(operation Operation) error {
+func ValidateOperation(operation Operation) error {
 	if operation.ID == "" {
 		return errors.New("operation ID is empty")
 	}
@@ -73,8 +73,4 @@ func validateOperation(operation Operation) error {
 		return fmt.Errorf("operation %q has invalid state %q", operation.ID, operation.State)
 	}
 	return nil
-}
-
-func ValidateOperation(operation Operation) error {
-	return validateOperation(operation)
 }

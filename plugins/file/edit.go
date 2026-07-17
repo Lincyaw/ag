@@ -79,8 +79,8 @@ func (tool editTool) Call(ctx context.Context, raw json.RawMessage) (sdk.ToolRes
 	if err != nil {
 		return toolFailure(err), nil
 	}
-	unlock := tool.filesystem.lockPath(target)
-	defer unlock()
+	tool.filesystem.writeMu.Lock()
+	defer tool.filesystem.writeMu.Unlock()
 
 	source, info, err := tool.filesystem.readText(target)
 	if err != nil {

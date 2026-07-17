@@ -9,64 +9,46 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
-	. "github.com/lincyaw/ag/sdk"
+	sdk "github.com/lincyaw/ag/sdk"
 )
-
-var operationDirectoryLocks sync.Map
 
 const operationStoreSchemaVersion uint32 = 2
 
 type fileOperationState struct {
-	SchemaVersion uint32                     `json:"schema_version"`
-	Operations    map[string]OperationRecord `json:"operations"`
+	SchemaVersion uint32                         `json:"schema_version"`
+	Operations    map[string]sdk.OperationRecord `json:"operations"`
 }
 
-type FileOperationStore struct {
+type fileOperationStore struct {
 	directory string
 	path      string
 	lockPath  string
-	mu        *sync.Mutex
 }
 
-func NewFileOperationStore(directory string) (*FileOperationStore, error) {
-	absolute, err := filepath.Abs(strings.TrimSpace(directory))
+func NewFileOperationStore(directory string) (sdk.OperationStore, error) {
+	absolute, err := prepareDirectory("operation", directory)
 	if err != nil {
-		return nil, fmt.Errorf("resolve operation directory: %w", err)
+		return nil, err
 	}
-	if err := os.MkdirAll(absolute, 0o700); err != nil {
-		return nil, fmt.Errorf("create operation directory: %w", err)
-	}
-	value, _ := operationDirectoryLocks.LoadOrStore(absolute, &sync.Mutex{})
-	return &FileOperationStore{
+	return &fileOperationStore{
 		directory: absolute,
 		path:      filepath.Join(absolute, "operations.json"),
 		lockPath:  filepath.Join(absolute, "operations.json.lock"),
-		mu:        value.(*sync.Mutex),
 	}, nil
 }
 
-func (store *FileOperationStore) Directory() string {
-	if store == nil {
-		return ""
-	}
-	return store.directory
-}
-
-func (store *FileOperationStore) Submit(
+func (store *fileOperationStore) Submit(
 	ctx context.Context,
-	record OperationRecord,
-) (OperationRecord, bool, error) {
+	record sdk.OperationRecord,
+) (sdk.OperationRecord, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return OperationRecord{}, false, err
+		return sdk.OperationRecord{}, false, err
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	var result OperationRecord
+	var result sdk.OperationRecord
 	var created bool
-	err := WithFileLock(store.lockPath, true, func() error {
+	err := withFileLock(store.lockPath, true, func() error {
 		memory, readErr := store.readLocked()
 		if readErr != nil {
 			return readErr
@@ -77,20 +59,21 @@ func (store *FileOperationStore) Submit(
 		}
 		return store.writeLocked(ctx, memory)
 	})
-	return result, created, err
+	if err != nil {
+		return sdk.OperationRecord{}, false, err
+	}
+	return result, created, nil
 }
 
-func (store *FileOperationStore) Get(
+func (store *fileOperationStore) Get(
 	ctx context.Context,
 	id string,
-) (OperationRecord, error) {
+) (sdk.OperationRecord, error) {
 	if err := ctx.Err(); err != nil {
-		return OperationRecord{}, err
+		return sdk.OperationRecord{}, err
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	var result OperationRecord
-	err := WithFileLock(store.lockPath, false, func() error {
+	var result sdk.OperationRecord
+	err := withFileLock(store.lockPath, false, func() error {
 		memory, readErr := store.readLocked()
 		if readErr != nil {
 			return readErr
@@ -101,21 +84,19 @@ func (store *FileOperationStore) Get(
 	return result, err
 }
 
-func (store *FileOperationStore) Transition(
+func (store *fileOperationStore) Transition(
 	ctx context.Context,
 	id string,
 	expectedRevision uint64,
-	state OperationState,
+	state sdk.OperationState,
 	output json.RawMessage,
 	operationError string,
-) (OperationRecord, error) {
+) (sdk.OperationRecord, error) {
 	if err := ctx.Err(); err != nil {
-		return OperationRecord{}, err
+		return sdk.OperationRecord{}, err
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	var result OperationRecord
-	err := WithFileLock(store.lockPath, true, func() error {
+	var result sdk.OperationRecord
+	err := withFileLock(store.lockPath, true, func() error {
 		memory, readErr := store.readLocked()
 		if readErr != nil {
 			return readErr
@@ -133,42 +114,45 @@ func (store *FileOperationStore) Transition(
 		}
 		return store.writeLocked(ctx, memory)
 	})
-	return result, err
+	if err != nil {
+		return sdk.OperationRecord{}, err
+	}
+	return result, nil
 }
 
-func (store *FileOperationStore) Claim(
+func (store *fileOperationStore) Claim(
 	ctx context.Context,
 	id string,
 	owner string,
 	now time.Time,
 	ttl time.Duration,
-) (OperationRecord, error) {
-	return store.mutate(ctx, func(memory *MemoryOperationStore) (OperationRecord, error) {
+) (sdk.OperationRecord, error) {
+	return store.mutate(ctx, func(memory *memoryOperationStore) (sdk.OperationRecord, error) {
 		return memory.Claim(ctx, id, owner, now, ttl)
 	})
 }
 
-func (store *FileOperationStore) Renew(
+func (store *fileOperationStore) Renew(
 	ctx context.Context,
 	id string,
 	token string,
 	now time.Time,
 	ttl time.Duration,
-) (OperationRecord, error) {
-	return store.mutate(ctx, func(memory *MemoryOperationStore) (OperationRecord, error) {
+) (sdk.OperationRecord, error) {
+	return store.mutate(ctx, func(memory *memoryOperationStore) (sdk.OperationRecord, error) {
 		return memory.Renew(ctx, id, token, now, ttl)
 	})
 }
 
-func (store *FileOperationStore) Complete(
+func (store *fileOperationStore) Complete(
 	ctx context.Context,
 	id string,
 	token string,
-	state OperationState,
+	state sdk.OperationState,
 	output json.RawMessage,
 	operationError string,
-) (OperationRecord, error) {
-	return store.mutate(ctx, func(memory *MemoryOperationStore) (OperationRecord, error) {
+) (sdk.OperationRecord, error) {
+	return store.mutate(ctx, func(memory *memoryOperationStore) (sdk.OperationRecord, error) {
 		return memory.Complete(
 			ctx,
 			id,
@@ -180,27 +164,25 @@ func (store *FileOperationStore) Complete(
 	})
 }
 
-func (store *FileOperationStore) Release(
+func (store *fileOperationStore) Release(
 	ctx context.Context,
 	id string,
 	token string,
-) (OperationRecord, error) {
-	return store.mutate(ctx, func(memory *MemoryOperationStore) (OperationRecord, error) {
+) (sdk.OperationRecord, error) {
+	return store.mutate(ctx, func(memory *memoryOperationStore) (sdk.OperationRecord, error) {
 		return memory.Release(ctx, id, token)
 	})
 }
 
-func (store *FileOperationStore) mutate(
+func (store *fileOperationStore) mutate(
 	ctx context.Context,
-	mutation func(*MemoryOperationStore) (OperationRecord, error),
-) (OperationRecord, error) {
+	mutation func(*memoryOperationStore) (sdk.OperationRecord, error),
+) (sdk.OperationRecord, error) {
 	if err := ctx.Err(); err != nil {
-		return OperationRecord{}, err
+		return sdk.OperationRecord{}, err
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	var result OperationRecord
-	err := WithFileLock(store.lockPath, true, func() error {
+	var result sdk.OperationRecord
+	err := withFileLock(store.lockPath, true, func() error {
 		memory, readErr := store.readLocked()
 		if readErr != nil {
 			return readErr
@@ -211,19 +193,20 @@ func (store *FileOperationStore) mutate(
 		}
 		return store.writeLocked(ctx, memory)
 	})
-	return result, err
+	if err != nil {
+		return sdk.OperationRecord{}, err
+	}
+	return result, nil
 }
 
-func (store *FileOperationStore) List(
+func (store *fileOperationStore) List(
 	ctx context.Context,
-) ([]OperationRecord, error) {
+) ([]sdk.OperationRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	var result []OperationRecord
-	err := WithFileLock(store.lockPath, false, func() error {
+	var result []sdk.OperationRecord
+	err := withFileLock(store.lockPath, false, func() error {
 		memory, readErr := store.readLocked()
 		if readErr != nil {
 			return readErr
@@ -234,42 +217,45 @@ func (store *FileOperationStore) List(
 	return result, err
 }
 
-func (store *FileOperationStore) ListPage(
+func (store *fileOperationStore) ListPage(
 	ctx context.Context,
-	request PageRequest,
-) (OperationPage, error) {
+	request sdk.PageRequest,
+) (sdk.OperationPage, error) {
 	items, err := store.List(ctx)
 	if err != nil {
-		return OperationPage{}, err
+		return sdk.OperationPage{}, err
 	}
-	page, next, err := PageWindow(
+	page, next, err := pageWindow(
 		items,
 		request,
-		func(item OperationRecord) string { return item.Operation.ID },
+		func(item sdk.OperationRecord) string { return item.Operation.ID },
 	)
 	if err != nil {
-		return OperationPage{}, err
+		return sdk.OperationPage{}, err
 	}
-	return OperationPage{Items: page, Next: next}, nil
+	return sdk.OperationPage{Items: page, Next: next}, nil
 }
 
-func (store *FileOperationStore) PurgeTerminal(
+func (store *fileOperationStore) PurgeTerminal(
 	ctx context.Context,
 	before time.Time,
 ) (int, error) {
 	removed := 0
-	_, err := store.mutate(ctx, func(memory *MemoryOperationStore) (OperationRecord, error) {
+	_, err := store.mutate(ctx, func(memory *memoryOperationStore) (sdk.OperationRecord, error) {
 		var purgeErr error
 		removed, purgeErr = memory.PurgeTerminal(ctx, before)
-		return OperationRecord{}, purgeErr
+		return sdk.OperationRecord{}, purgeErr
 	})
-	return removed, err
+	if err != nil {
+		return 0, err
+	}
+	return removed, nil
 }
 
-func (store *FileOperationStore) readLocked() (*MemoryOperationStore, error) {
+func (store *fileOperationStore) readLocked() (*memoryOperationStore, error) {
 	raw, err := os.ReadFile(store.path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return NewMemoryOperationStore(), nil
+		return newMemoryOperationStore(), nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read operations: %w", err)
@@ -285,10 +271,13 @@ func (store *FileOperationStore) readLocked() (*MemoryOperationStore, error) {
 			operationStoreSchemaVersion,
 		)
 	}
-	memory := NewMemoryOperationStore()
+	memory := newMemoryOperationStore()
 	for id, record := range state.Operations {
 		if id != record.Operation.ID {
 			return nil, fmt.Errorf("operation map key %q contains ID %q", id, record.Operation.ID)
+		}
+		if err := validateLoadedOperationRecord(record); err != nil {
+			return nil, fmt.Errorf("validate operation %q: %w", id, err)
 		}
 		key := operationIdempotencyIndex(record)
 		if existing, exists := memory.keys[key]; exists {
@@ -300,20 +289,39 @@ func (store *FileOperationStore) readLocked() (*MemoryOperationStore, error) {
 	return memory, nil
 }
 
-func (store *FileOperationStore) writeLocked(
+func validateLoadedOperationRecord(record sdk.OperationRecord) error {
+	if err := validateNewOperationRecord(record); err != nil {
+		return err
+	}
+	if err := sdk.ValidateOperation(record.Operation); err != nil {
+		return err
+	}
+	if record.Execution == nil {
+		return nil
+	}
+	if record.Operation.State != sdk.OperationRunning ||
+		strings.TrimSpace(record.Execution.Owner) == "" ||
+		record.Execution.Token == "" ||
+		record.Execution.ExpiresAt.IsZero() {
+		return errors.New("operation execution lease is invalid")
+	}
+	return nil
+}
+
+func (store *fileOperationStore) writeLocked(
 	ctx context.Context,
-	memory *MemoryOperationStore,
+	memory *memoryOperationStore,
 ) error {
 	memory.mu.Lock()
 	state := fileOperationState{
 		SchemaVersion: operationStoreSchemaVersion,
-		Operations:    make(map[string]OperationRecord, len(memory.operations)),
+		Operations:    make(map[string]sdk.OperationRecord, len(memory.operations)),
 	}
 	for id, record := range memory.operations {
 		state.Operations[id] = cloneOperationRecord(record)
 	}
 	memory.mu.Unlock()
-	return WriteJSONAtomic(
+	return writeJSONAtomic(
 		ctx,
 		store.directory,
 		store.path,

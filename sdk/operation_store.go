@@ -20,7 +20,6 @@ const (
 	OperationKindProvider   OperationKind = "provider"
 	OperationKindTool       OperationKind = "tool"
 	OperationKindCapability OperationKind = "capability"
-	OperationKindRun        OperationKind = "run"
 )
 
 type OperationRecord struct {
@@ -80,41 +79,4 @@ type OperationStore interface {
 	List(context.Context) ([]OperationRecord, error)
 	ListPage(context.Context, PageRequest) (OperationPage, error)
 	PurgeTerminal(context.Context, time.Time) (int, error)
-}
-
-func ResourceRevision(
-	manifest Manifest,
-	kind OperationKind,
-	name string,
-	spec any,
-) string {
-	return PluginResourceRevision(manifest, string(kind), name, spec)
-}
-
-func PluginResourceRevision(
-	manifest Manifest,
-	kind string,
-	name string,
-	spec any,
-) string {
-	raw, err := json.Marshal(struct {
-		Plugin  string `json:"plugin"`
-		Version string `json:"version"`
-		Kind    string `json:"kind"`
-		Name    string `json:"name"`
-		Spec    any    `json:"spec"`
-	}{
-		Plugin:  manifest.Name,
-		Version: manifest.Version,
-		Kind:    kind,
-		Name:    name,
-		Spec:    spec,
-	})
-	if err != nil {
-		return digestString(
-			manifest.Name + "\x00" + manifest.Version + "\x00" +
-				kind + "\x00" + name,
-		)
-	}
-	return digestBytes(raw)
 }

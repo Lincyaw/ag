@@ -16,6 +16,7 @@ import (
 
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
+	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 )
 
 func TestBashToolExecutesInRootWithExplicitEnvironment(t *testing.T) {
@@ -40,6 +41,24 @@ func TestBashToolExecutesInRootWithExplicitEnvironment(t *testing.T) {
 		if !strings.Contains(result.Content, expected) {
 			t.Fatalf("result %q does not contain %q", result.Content, expected)
 		}
+	}
+}
+
+func TestPluginSnapshotsEnvironmentConfiguration(t *testing.T) {
+	t.Parallel()
+	environment := []string{"SNAPSHOT=original"}
+	plugin := New(Config{Root: t.TempDir(), Environment: environment})
+	environment[0] = "SNAPSHOT=mutated"
+
+	runner, err := newRunner(plugin.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := call(t, runner, map[string]any{
+		"command": `printf '%s' "$SNAPSHOT"`,
+	})
+	if !strings.Contains(result.Content, "stdout:\noriginal") {
+		t.Fatalf("result after caller mutation = %q", result.Content)
 	}
 }
 
@@ -163,7 +182,9 @@ func TestBashToolConcurrentCallsAndRuntimeMount(t *testing.T) {
 		t.Error(err)
 	}
 
-	runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{})
+	runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{
+		Storage: sdkstorage.NewMemoryStateBackend(),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

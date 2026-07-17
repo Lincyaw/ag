@@ -8,137 +8,113 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
 	"time"
 
-	. "github.com/lincyaw/ag/sdk"
+	sdk "github.com/lincyaw/ag/sdk"
 )
-
-var deliveryFileLocks sync.Map
 
 const deliveryStoreSchemaVersion uint32 = 2
 
 type fileDeliveryState struct {
-	SchemaVersion uint32              `json:"schema_version"`
-	NextSequence  uint64              `json:"next_sequence"`
-	Deliveries    map[string]Delivery `json:"deliveries"`
+	SchemaVersion uint32                  `json:"schema_version"`
+	NextSequence  uint64                  `json:"next_sequence"`
+	Deliveries    map[string]sdk.Delivery `json:"deliveries"`
 }
 
-type FileDeliveryStore struct {
+type fileDeliveryStore struct {
 	directory string
 	path      string
 	lockPath  string
-	mu        *sync.Mutex
 }
 
-// FileOutboxStore is kept as a source-compatible alias.
-type FileOutboxStore = FileDeliveryStore
-
-func NewFileDeliveryStore(directory string) (*FileDeliveryStore, error) {
+func NewFileDeliveryStore(directory string) (sdk.DeliveryStore, error) {
 	return newFileDeliveryStore(directory, "deliveries.json")
-}
-
-func NewFileOutboxStore(directory string) (*FileDeliveryStore, error) {
-	return newFileDeliveryStore(directory, "outbox.json")
 }
 
 func newFileDeliveryStore(
 	directory string,
 	filename string,
-) (*FileDeliveryStore, error) {
-	absolute, err := filepath.Abs(strings.TrimSpace(directory))
+) (*fileDeliveryStore, error) {
+	absolute, err := prepareDirectory("delivery", directory)
 	if err != nil {
-		return nil, fmt.Errorf("resolve delivery directory: %w", err)
+		return nil, err
 	}
-	if err := os.MkdirAll(absolute, 0o700); err != nil {
-		return nil, fmt.Errorf("create delivery directory: %w", err)
-	}
-	lockKey := filepath.Join(absolute, filename)
-	value, _ := deliveryFileLocks.LoadOrStore(lockKey, &sync.Mutex{})
-	return &FileDeliveryStore{
+	return &fileDeliveryStore{
 		directory: absolute,
 		path:      filepath.Join(absolute, filename),
 		lockPath:  filepath.Join(absolute, filename+".lock"),
-		mu:        value.(*sync.Mutex),
 	}, nil
 }
 
-func (store *FileDeliveryStore) Directory() string {
-	if store == nil {
-		return ""
-	}
-	return store.directory
-}
-
-func (store *FileDeliveryStore) Enqueue(
+func (store *fileDeliveryStore) Enqueue(
 	ctx context.Context,
-	deliveries ...Delivery,
+	deliveries ...sdk.Delivery,
 ) error {
-	return store.mutate(ctx, func(memory *MemoryDeliveryStore) error {
+	return store.mutate(ctx, func(memory *memoryDeliveryStore) error {
 		return memory.Enqueue(ctx, deliveries...)
 	})
 }
 
-func (store *FileDeliveryStore) Lease(
+func (store *fileDeliveryStore) Lease(
 	ctx context.Context,
 	now time.Time,
 	duration time.Duration,
-) (Delivery, error) {
-	var delivery Delivery
-	err := store.mutate(ctx, func(memory *MemoryDeliveryStore) error {
+) (sdk.Delivery, error) {
+	var delivery sdk.Delivery
+	err := store.mutate(ctx, func(memory *memoryDeliveryStore) error {
 		var leaseErr error
 		delivery, leaseErr = memory.Lease(ctx, now, duration)
 		return leaseErr
 	})
-	return delivery, err
+	if err != nil {
+		return sdk.Delivery{}, err
+	}
+	return delivery, nil
 }
 
-func (store *FileDeliveryStore) Ack(
+func (store *fileDeliveryStore) Ack(
 	ctx context.Context,
 	id string,
 	token string,
 	now time.Time,
 ) error {
-	return store.mutate(ctx, func(memory *MemoryDeliveryStore) error {
+	return store.mutate(ctx, func(memory *memoryDeliveryStore) error {
 		return memory.Ack(ctx, id, token, now)
 	})
 }
 
-func (store *FileDeliveryStore) Retry(
+func (store *fileDeliveryStore) Retry(
 	ctx context.Context,
 	id string,
 	token string,
 	availableAt time.Time,
 	lastError string,
 ) error {
-	return store.mutate(ctx, func(memory *MemoryDeliveryStore) error {
+	return store.mutate(ctx, func(memory *memoryDeliveryStore) error {
 		return memory.Retry(ctx, id, token, availableAt, lastError)
 	})
 }
 
-func (store *FileDeliveryStore) DeadLetter(
+func (store *fileDeliveryStore) DeadLetter(
 	ctx context.Context,
 	id string,
 	token string,
 	now time.Time,
 	lastError string,
 ) error {
-	return store.mutate(ctx, func(memory *MemoryDeliveryStore) error {
+	return store.mutate(ctx, func(memory *memoryDeliveryStore) error {
 		return memory.DeadLetter(ctx, id, token, now, lastError)
 	})
 }
 
-func (store *FileDeliveryStore) List(
+func (store *fileDeliveryStore) List(
 	ctx context.Context,
-) ([]Delivery, error) {
+) ([]sdk.Delivery, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	var result []Delivery
-	err := WithFileLock(store.lockPath, false, func() error {
+	var result []sdk.Delivery
+	err := withFileLock(store.lockPath, false, func() error {
 		memory, readErr := store.readLocked()
 		if readErr != nil {
 			return readErr
@@ -149,46 +125,47 @@ func (store *FileDeliveryStore) List(
 	return result, err
 }
 
-func (store *FileDeliveryStore) ListPage(
+func (store *fileDeliveryStore) ListPage(
 	ctx context.Context,
-	request PageRequest,
-) (DeliveryPage, error) {
+	request sdk.PageRequest,
+) (sdk.DeliveryPage, error) {
 	items, err := store.List(ctx)
 	if err != nil {
-		return DeliveryPage{}, err
+		return sdk.DeliveryPage{}, err
 	}
-	page, next, err := PageWindow(items, request, func(item Delivery) string {
+	page, next, err := pageWindow(items, request, func(item sdk.Delivery) string {
 		return item.ID
 	})
 	if err != nil {
-		return DeliveryPage{}, err
+		return sdk.DeliveryPage{}, err
 	}
-	return DeliveryPage{Items: page, Next: next}, nil
+	return sdk.DeliveryPage{Items: page, Next: next}, nil
 }
 
-func (store *FileDeliveryStore) PurgeTerminal(
+func (store *fileDeliveryStore) PurgeTerminal(
 	ctx context.Context,
 	before time.Time,
 ) (int, error) {
 	removed := 0
-	err := store.mutate(ctx, func(memory *MemoryDeliveryStore) error {
+	err := store.mutate(ctx, func(memory *memoryDeliveryStore) error {
 		var purgeErr error
 		removed, purgeErr = memory.PurgeTerminal(ctx, before)
 		return purgeErr
 	})
-	return removed, err
+	if err != nil {
+		return 0, err
+	}
+	return removed, nil
 }
 
-func (store *FileDeliveryStore) mutate(
+func (store *fileDeliveryStore) mutate(
 	ctx context.Context,
-	mutation func(*MemoryDeliveryStore) error,
+	mutation func(*memoryDeliveryStore) error,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	return WithFileLock(store.lockPath, true, func() error {
+	return withFileLock(store.lockPath, true, func() error {
 		memory, err := store.readLocked()
 		if err != nil {
 			return err
@@ -200,10 +177,10 @@ func (store *FileDeliveryStore) mutate(
 	})
 }
 
-func (store *FileDeliveryStore) readLocked() (*MemoryDeliveryStore, error) {
+func (store *fileDeliveryStore) readLocked() (*memoryDeliveryStore, error) {
 	raw, err := os.ReadFile(store.path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return NewMemoryDeliveryStore(), nil
+		return newMemoryDeliveryStore(), nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read deliveries: %w", err)
@@ -220,10 +197,10 @@ func (store *FileDeliveryStore) readLocked() (*MemoryDeliveryStore, error) {
 		)
 	}
 	if state.Deliveries == nil {
-		state.Deliveries = make(map[string]Delivery)
+		state.Deliveries = make(map[string]sdk.Delivery)
 	}
-	memory := &MemoryDeliveryStore{
-		deliveries:   make(map[string]Delivery, len(state.Deliveries)),
+	memory := &memoryDeliveryStore{
+		deliveries:   make(map[string]sdk.Delivery, len(state.Deliveries)),
 		nextSequence: state.NextSequence,
 	}
 	for id, delivery := range state.Deliveries {
@@ -234,14 +211,41 @@ func (store *FileDeliveryStore) readLocked() (*MemoryDeliveryStore, error) {
 				delivery.ID,
 			)
 		}
-		memory.deliveries[id] = cloneDelivery(delivery)
+		if err := validateLoadedDelivery(delivery); err != nil {
+			return nil, fmt.Errorf("validate delivery %q: %w", id, err)
+		}
+		memory.deliveries[id] = sdk.CloneDelivery(delivery)
 	}
 	return memory, nil
 }
 
-func (store *FileDeliveryStore) writeLocked(
+func validateLoadedDelivery(delivery sdk.Delivery) error {
+	if err := validateNewDelivery(delivery); err != nil {
+		return err
+	}
+	if delivery.Attempt < 0 {
+		return errors.New("delivery attempt cannot be negative")
+	}
+	switch delivery.State {
+	case sdk.DeliveryLeased:
+		if delivery.Attempt == 0 ||
+			delivery.LeaseToken == "" ||
+			delivery.LeaseExpiresAt.IsZero() {
+			return errors.New("leased delivery has an invalid lease")
+		}
+	case sdk.DeliveryPending, sdk.DeliveryDelivered, sdk.DeliveryDeadLetter:
+		if delivery.LeaseToken != "" || !delivery.LeaseExpiresAt.IsZero() {
+			return errors.New("unleased delivery contains a lease")
+		}
+	default:
+		return fmt.Errorf("delivery has invalid state %q", delivery.State)
+	}
+	return nil
+}
+
+func (store *fileDeliveryStore) writeLocked(
 	ctx context.Context,
-	memory *MemoryDeliveryStore,
+	memory *memoryDeliveryStore,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -250,13 +254,13 @@ func (store *FileDeliveryStore) writeLocked(
 	state := fileDeliveryState{
 		SchemaVersion: deliveryStoreSchemaVersion,
 		NextSequence:  memory.nextSequence,
-		Deliveries:    make(map[string]Delivery, len(memory.deliveries)),
+		Deliveries:    make(map[string]sdk.Delivery, len(memory.deliveries)),
 	}
 	for id, delivery := range memory.deliveries {
-		state.Deliveries[id] = cloneDelivery(delivery)
+		state.Deliveries[id] = sdk.CloneDelivery(delivery)
 	}
 	memory.mu.Unlock()
-	return WriteJSONAtomic(
+	return writeJSONAtomic(
 		ctx,
 		store.directory,
 		store.path,

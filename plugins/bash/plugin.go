@@ -38,7 +38,10 @@ type Plugin struct {
 	config Config
 }
 
-func New(config Config) *Plugin { return &Plugin{config: config} }
+func New(config Config) *Plugin {
+	config.Environment = append([]string(nil), config.Environment...)
+	return &Plugin{config: config}
+}
 
 func (Plugin) Manifest() sdk.Manifest {
 	return sdk.Manifest{

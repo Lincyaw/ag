@@ -5,53 +5,55 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/lincyaw/ag/sdk"
 )
 
-type pollOperation func(context.Context, string, uint64) (Operation, error)
-type cancelOperation func(context.Context, string) (Operation, error)
+type pollOperation func(context.Context, string, uint64) (sdk.Operation, error)
+type cancelOperation func(context.Context, string) (sdk.Operation, error)
 
 func (runtime *Runtime) awaitOperation(
 	ctx context.Context,
-	initial Operation,
+	initial sdk.Operation,
 	poll pollOperation,
 	cancel cancelOperation,
-) (Operation, error) {
+) (sdk.Operation, error) {
 	current := initial
-	if err := validateOperation(current); err != nil {
-		return Operation{}, err
+	if err := sdk.ValidateOperation(current); err != nil {
+		return sdk.Operation{}, err
 	}
 	for !current.Terminal() {
-		if !waitContext(ctx, runtime.operationPoll) {
+		if !waitContext(ctx, runtime.operation.poll) {
 			cancelCtx, cancelFunc := context.WithTimeout(
 				context.WithoutCancel(ctx),
 				2*time.Second,
 			)
 			defer cancelFunc()
 			_, cancelErr := cancel(cancelCtx, current.ID)
-			return Operation{}, errors.Join(ctx.Err(), cancelErr)
+			return sdk.Operation{}, errors.Join(ctx.Err(), cancelErr)
 		}
 		next, err := poll(ctx, current.ID, current.Revision)
 		if err != nil {
-			return Operation{}, err
+			return sdk.Operation{}, err
 		}
-		if err := validateOperation(next); err != nil {
-			return Operation{}, err
+		if err := sdk.ValidateOperation(next); err != nil {
+			return sdk.Operation{}, err
 		}
 		if next.ID != current.ID {
-			return Operation{}, fmt.Errorf(
+			return sdk.Operation{}, fmt.Errorf(
 				"operation poll returned ID %q, expected %q",
 				next.ID,
 				current.ID,
 			)
 		}
 		if next.IdempotencyKey != current.IdempotencyKey {
-			return Operation{}, fmt.Errorf(
+			return sdk.Operation{}, fmt.Errorf(
 				"operation %q idempotency key changed during poll",
 				current.ID,
 			)
 		}
 		if next.Revision < current.Revision {
-			return Operation{}, fmt.Errorf(
+			return sdk.Operation{}, fmt.Errorf(
 				"operation %q revision regressed from %d to %d",
 				current.ID,
 				current.Revision,
@@ -59,13 +61,13 @@ func (runtime *Runtime) awaitOperation(
 			)
 		}
 		if next.Revision == current.Revision && next.State != current.State {
-			return Operation{}, fmt.Errorf(
+			return sdk.Operation{}, fmt.Errorf(
 				"operation %q changed state without a revision increment",
 				current.ID,
 			)
 		}
-		if current.State == OperationRunning && next.State == OperationPending {
-			return Operation{}, fmt.Errorf(
+		if current.State == sdk.OperationRunning && next.State == sdk.OperationPending {
+			return sdk.Operation{}, fmt.Errorf(
 				"operation %q regressed from running to pending",
 				current.ID,
 			)
@@ -73,16 +75,16 @@ func (runtime *Runtime) awaitOperation(
 		current = next
 	}
 	switch current.State {
-	case OperationSucceeded:
+	case sdk.OperationSucceeded:
 		return current, nil
-	case OperationFailed:
-		return Operation{}, fmt.Errorf(
+	case sdk.OperationFailed:
+		return sdk.Operation{}, fmt.Errorf(
 			"operation %q failed: %s",
 			current.ID,
 			current.Error,
 		)
-	case OperationCancelled:
-		return Operation{}, fmt.Errorf("operation %q was cancelled", current.ID)
+	case sdk.OperationCancelled:
+		return sdk.Operation{}, fmt.Errorf("operation %q was cancelled", current.ID)
 	default:
 		panic("unreachable operation state")
 	}

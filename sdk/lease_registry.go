@@ -56,13 +56,6 @@ func NewLeaseRegistry(config LeaseRegistryConfig) *LeaseRegistry {
 	}
 }
 
-func (registry *LeaseRegistry) Registry() *PluginRegistry {
-	if registry == nil {
-		return nil
-	}
-	return registry.registry
-}
-
 func (registry *LeaseRegistry) Register(
 	ctx context.Context,
 	registration PluginRegistration,
@@ -86,7 +79,8 @@ func (registry *LeaseRegistry) Register(
 	if err := registration.Manifest.Validate(); err != nil {
 		return PluginLease{}, err
 	}
-	if strings.TrimSpace(registration.URI) == "" {
+	registration.URI = strings.TrimSpace(registration.URI)
+	if registration.URI == "" {
 		return PluginLease{}, errors.New("registration URI is empty")
 	}
 
@@ -97,14 +91,14 @@ func (registry *LeaseRegistry) Register(
 	if _, exists := registry.names[registration.Name]; exists {
 		return PluginLease{}, fmt.Errorf("plugin registration %q already has an active lease", registration.Name)
 	}
-	if err := registry.registry.Register(PluginReference{
+	lease := PluginLease{ID: NewID(), ExpiresAt: now.Add(ttl)}
+	if err := registry.registry.register(PluginReference{
 		Name:        registration.Name,
 		URI:         registration.URI,
 		Description: registration.Manifest.Description,
-	}); err != nil {
+	}, lease.ID); err != nil {
 		return PluginLease{}, err
 	}
-	lease := PluginLease{ID: newDispatchID(), ExpiresAt: now.Add(ttl)}
 	registration.Manifest = cloneManifest(registration.Manifest)
 	registry.registrations[lease.ID] = registration
 	registry.leases[lease.ID] = lease
@@ -213,7 +207,7 @@ func (registry *LeaseRegistry) removeLocked(id string) {
 	}
 	if registry.names[registration.Name] == id {
 		delete(registry.names, registration.Name)
-		_ = registry.registry.Unregister(registration.Name)
+		registry.registry.unregisterOwned(registration.Name, id)
 	}
 	delete(registry.registrations, id)
 	delete(registry.leases, id)

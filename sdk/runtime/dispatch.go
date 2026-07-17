@@ -2,15 +2,13 @@ package runtime
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime/debug"
 	"slices"
-	"time"
 
+	"github.com/lincyaw/ag/sdk"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
@@ -18,9 +16,9 @@ import (
 )
 
 type DispatchResult struct {
-	Event   Event
-	Block   *Block
-	Actions []Action
+	Event   sdk.Event
+	Block   *sdk.Block
+	Actions []sdk.Action
 }
 
 func (runtime *Runtime) Emit(
@@ -58,8 +56,8 @@ func (runtime *Runtime) dispatch(
 	if err != nil {
 		return DispatchResult{}, fmt.Errorf("encode %s event: %w", eventName, err)
 	}
-	event := Event{
-		ID:         newDispatchID(),
+	event := sdk.Event{
+		ID:         sdk.NewID(),
 		Name:       eventName,
 		SessionID:  sessionID,
 		Generation: snapshot.generation,
@@ -88,7 +86,7 @@ func (runtime *Runtime) dispatch(
 	for _, ownedHook := range hooks {
 		effect, hookErr := runtime.invokeHook(ctx, ownedHook, event)
 		if hookErr != nil {
-			if ownedHook.spec.FailurePolicy == FailurePolicyContinue {
+			if ownedHook.spec.FailurePolicy == sdk.FailurePolicyContinue {
 				runtime.logger.WarnContext(
 					ctx,
 					"plugin hook failed; continuing",
@@ -150,8 +148,8 @@ func (runtime *Runtime) dispatch(
 func (runtime *Runtime) invokeHook(
 	ctx context.Context,
 	owned ownedHook,
-	event Event,
-) (effect Effect, err error) {
+	event sdk.Event,
+) (effect sdk.Effect, err error) {
 	if owned.spec.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, owned.spec.Timeout)
@@ -183,14 +181,40 @@ func (runtime *Runtime) invokeHook(
 			recordSpanError(span, err)
 		}
 	}()
-	effect, err = owned.hook.Handle(ctx, event)
+	effect, err = owned.value.Handle(ctx, sdk.CloneEvent(event))
 	if err != nil {
 		recordSpanError(span, err)
+	} else {
+		effect = cloneEffect(effect)
 	}
 	return effect, err
 }
 
-func validateEffect(contract EventContract, effect Effect) error {
+func cloneEffect(effect sdk.Effect) sdk.Effect {
+	if effect.Patch != nil {
+		patch := make(map[string]json.RawMessage, len(effect.Patch))
+		for field, value := range effect.Patch {
+			patch[field] = append(json.RawMessage(nil), value...)
+		}
+		effect.Patch = patch
+	}
+	if effect.Block != nil {
+		block := *effect.Block
+		effect.Block = &block
+	}
+	if effect.Action != nil {
+		action := *effect.Action
+		if action.Cause != nil {
+			cause := *action.Cause
+			action.Cause = &cause
+		}
+		action.Messages = cloneMessages(action.Messages)
+		effect.Action = &action
+	}
+	return effect
+}
+
+func validateEffect(contract sdk.EventContract, effect sdk.Effect) error {
 	if len(effect.Patch) > 0 {
 		allowed := make(map[string]struct{}, len(contract.MutableFields))
 		for _, field := range contract.MutableFields {
@@ -219,15 +243,15 @@ func validateEffect(contract EventContract, effect Effect) error {
 			return fmt.Errorf("event %q does not allow actions", contract.Name)
 		}
 		switch effect.Action.Kind {
-		case ActionStep:
+		case sdk.ActionStep:
 			if effect.Action.Cause != nil || len(effect.Action.Messages) != 0 {
 				return errors.New("step action cannot carry cause or messages")
 			}
-		case ActionStop:
+		case sdk.ActionStop:
 			if effect.Action.Cause == nil || effect.Action.Cause.Code == "" {
 				return errors.New("stop action requires a cause")
 			}
-		case ActionInject:
+		case sdk.ActionInject:
 			if len(effect.Action.Messages) == 0 {
 				return errors.New("inject action requires messages")
 			}
@@ -277,14 +301,6 @@ func marshalEventPayload(payload any) (json.RawMessage, error) {
 	return raw, nil
 }
 
-func newDispatchID() string {
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
-	}
-	return hex.EncodeToString(raw[:])
-}
-
 func recordSpanError(span trace.Span, err error) {
 	span.RecordError(err)
 	span.SetStatus(codes.Error, err.Error())
@@ -313,14 +329,14 @@ func (runtime *Runtime) InvokeCapability(
 		),
 	)
 	defer span.End()
-	asynchronous, ok := owned.capability.(AsyncCapability)
+	asynchronous, ok := owned.value.(sdk.AsyncCapability)
 	if !ok {
 		err := fmt.Errorf("capability %q has no asynchronous execution implementation", name)
 		recordSpanError(span, err)
 		return nil, err
 	}
-	initial, err := asynchronous.SubmitInvoke(ctx, OperationRequest{
-		IdempotencyKey: newDispatchID(),
+	initial, err := asynchronous.SubmitInvoke(ctx, sdk.OperationRequest{
+		IdempotencyKey: sdk.NewID(),
 		Input:          append(json.RawMessage(nil), input...),
 	})
 	if err != nil {

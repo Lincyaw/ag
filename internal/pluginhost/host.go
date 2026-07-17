@@ -44,10 +44,77 @@ type Ready struct {
 	PID            int    `json:"pid"`
 }
 
-func Serve(ctx context.Context, config Config) error {
+func Serve(ctx context.Context, config Config) (returnErr error) {
 	if config.Plugin == nil {
 		return errors.New("plugin is nil")
 	}
+	runContext, runCancel := context.WithCancel(ctx)
+	var (
+		storage       sdk.StateBackend
+		adapter       *pluginrpc.Server
+		listener      net.Listener
+		server        *grpc.Server
+		registry      *pluginrpc.RegistryClient
+		lease         sdk.PluginLease
+		serveDone     chan error
+		serverStarted bool
+		serveObserved bool
+	)
+	defer func() {
+		runCancel()
+		var cleanupErr error
+		if registry != nil {
+			if lease.ID != "" {
+				cleanupCtx, cancel := context.WithTimeout(
+					context.Background(),
+					2*time.Second,
+				)
+				cleanupErr = errors.Join(
+					cleanupErr,
+					registry.Unregister(cleanupCtx, lease.ID),
+				)
+				cancel()
+			}
+			cleanupErr = errors.Join(cleanupErr, registry.Close())
+		}
+		if serverStarted {
+			stopServer(server)
+			if !serveObserved {
+				serveErr := <-serveDone
+				if serveErr != nil &&
+					!errors.Is(serveErr, grpc.ErrServerStopped) &&
+					!errors.Is(serveErr, net.ErrClosed) {
+					cleanupErr = errors.Join(cleanupErr, serveErr)
+				}
+			}
+		} else if listener != nil {
+			if err := listener.Close(); err != nil &&
+				!errors.Is(err, net.ErrClosed) {
+				cleanupErr = errors.Join(cleanupErr, err)
+			}
+		}
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			15*time.Second,
+		)
+		if adapter != nil {
+			cleanupErr = errors.Join(cleanupErr, adapter.Close(closeCtx))
+		} else if closer, ok := config.Plugin.(interface {
+			Close(context.Context) error
+		}); ok {
+			cleanupErr = errors.Join(cleanupErr, closer.Close(closeCtx))
+		}
+		cancel()
+		if storage != nil {
+			closeCtx, cancel = context.WithTimeout(
+				context.Background(),
+				5*time.Second,
+			)
+			cleanupErr = errors.Join(cleanupErr, storage.Close(closeCtx))
+			cancel()
+		}
+		returnErr = errors.Join(returnErr, cleanupErr)
+	}()
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
@@ -71,7 +138,6 @@ func Serve(ctx context.Context, config Config) error {
 		return err
 	}
 	stateDirectory := ""
-	var storage sdk.StateBackend
 	var err error
 	if strings.TrimSpace(config.StorageURI) != "" {
 		storage, err = sdkstorage.NewDefaultStorageRegistry().Open(
@@ -87,35 +153,26 @@ func Serve(ctx context.Context, config Config) error {
 	if err != nil {
 		return fmt.Errorf("configure plugin state backend: %w", err)
 	}
-	closeStorage := true
-	defer func() {
-		if closeStorage {
-			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = storage.Close(closeCtx)
-		}
-	}()
 	inbox, err := storage.Deliveries(sdk.PluginInboxQueue)
 	if err != nil {
 		return err
 	}
-	adapter, err := pluginrpc.NewServer(ctx, pluginrpc.ServerConfig{
+	adapter, err = pluginrpc.NewServer(ctx, pluginrpc.ServerConfig{
 		Plugin: config.Plugin, Operations: storage.Operations(), Inbox: inbox, Logger: config.Logger,
 	})
 	if err != nil {
 		return err
 	}
-	listener, err := net.Listen("tcp", config.Listen)
+	listener, err = net.Listen("tcp", config.Listen)
 	if err != nil {
 		return fmt.Errorf("listen for plugin RPC: %w", err)
 	}
-	defer listener.Close()
 
 	serverOptions, scheme, err := tlsServerOptions(config)
 	if err != nil {
 		return err
 	}
-	server, err := pluginrpc.NewGRPCServer(adapter, config.MaxMessageBytes, serverOptions...)
+	server, err = pluginrpc.NewGRPCServer(adapter, config.MaxMessageBytes, serverOptions...)
 	if err != nil {
 		return err
 	}
@@ -127,26 +184,20 @@ func Serve(ctx context.Context, config Config) error {
 		uri = scheme + "://" + listener.Addr().String()
 	}
 
-	runContext, cancel := context.WithCancel(ctx)
-	defer cancel()
-	serveDone := make(chan error, 1)
+	serveDone = make(chan error, 1)
+	serverStarted = true
 	go func() { serveDone <- server.Serve(listener) }()
 
-	var registry *pluginrpc.RegistryClient
-	var lease sdk.PluginLease
 	leaseDone := make(chan error, 1)
 	if config.RegistryURI != "" {
 		registry, err = pluginrpc.NewRegistryClient(runContext, config.RegistryURI, pluginrpc.ClientConfig{})
 		if err != nil {
-			stopServer(server)
 			return fmt.Errorf("connect plugin registry: %w", err)
 		}
 		lease, err = registry.Register(runContext, sdk.PluginRegistration{
 			Name: manifest.Name, URI: uri, Manifest: manifest,
 		}, config.LeaseTTL)
 		if err != nil {
-			_ = registry.Close()
-			stopServer(server)
 			return fmt.Errorf("register plugin lease: %w", err)
 		}
 		go renewLease(runContext, registry, lease, config.LeaseTTL, leaseDone)
@@ -155,8 +206,6 @@ func Serve(ctx context.Context, config Config) error {
 		Name: manifest.Name, URI: uri, StateDirectory: stateDirectory,
 		Storage: storage.String(), PID: os.Getpid(),
 	}); err != nil {
-		cancel()
-		stopServer(server)
 		return fmt.Errorf("write plugin ready record: %w", err)
 	}
 	config.Logger.InfoContext(ctx, "plugin RPC server ready", "plugin", manifest.Name, "uri", uri)
@@ -165,6 +214,7 @@ func Serve(ctx context.Context, config Config) error {
 	select {
 	case <-ctx.Done():
 	case serveErr := <-serveDone:
+		serveObserved = true
 		if serveErr != nil && !errors.Is(serveErr, grpc.ErrServerStopped) {
 			runErr = fmt.Errorf("serve plugin RPC: %w", serveErr)
 		}
@@ -172,26 +222,6 @@ func Serve(ctx context.Context, config Config) error {
 		if leaseErr != nil && !errors.Is(leaseErr, context.Canceled) {
 			runErr = leaseErr
 		}
-	}
-	cancel()
-	if registry != nil {
-		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		unregisterErr := registry.Unregister(cleanupContext, lease.ID)
-		cleanupCancel()
-		runErr = errors.Join(runErr, unregisterErr, registry.Close())
-	}
-	closeContext, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	runErr = errors.Join(runErr, adapter.Close(closeContext))
-	runErr = errors.Join(runErr, storage.Close(closeContext))
-	closeStorage = false
-	closeCancel()
-	stopServer(server)
-	select {
-	case serveErr := <-serveDone:
-		if serveErr != nil && !errors.Is(serveErr, grpc.ErrServerStopped) {
-			runErr = errors.Join(runErr, serveErr)
-		}
-	default:
 	}
 	return runErr
 }

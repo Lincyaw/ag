@@ -111,8 +111,11 @@ retention cleanup. It still rewrites whole JSON state files and does not provide
 one transaction across trajectory, operation, and delivery state; large or
 distributed deployments should provide a database/object/network backend.
 
-The runtime owns and closes a supplied backend by default.
-`StorageBorrowed` transfers lifecycle ownership to the embedding application.
+`NewRuntime` requires a `StateBackend`; selecting memory, file, or an external
+driver is an application composition decision. A successful construction
+transfers ownership to the runtime by default. If construction fails, ownership
+remains with the caller. `StorageBorrowed` keeps lifecycle ownership with the
+embedding application after successful construction.
 
 ## Unified plugin entry
 
@@ -137,6 +140,11 @@ after missed renewals. The initial backend is in-memory and can be exposed
 through the gRPC registry service. Persistent or external service-discovery
 backends implement the same port without changing `Runtime`.
 
+`pluginrpc.NewServer` receives its `OperationStore` and inbox `DeliveryStore`
+explicitly. The standalone plugin host opens both from its configured
+`StateBackend`; tests may choose memory stores. The RPC adapter does not select
+or import a concrete storage implementation.
+
 `PluginDriver` resolves one URI scheme into a `Source`. The initial drivers are:
 
 - direct in-process `Source` registrations;
@@ -148,7 +156,11 @@ not by changing `Runtime`.
 
 `Source.Open` returns a `Connection`. A connection exposes the same logical
 `Plugin` contract regardless of whether it is an in-process object or an RPC
-proxy.
+proxy. A successful open transfers one connection to the caller, which must
+close it. `sdk.Local(plugin)` wraps one existing plugin instance and is
+therefore a one-shot source with an idempotent connection close; create a new
+plugin instance for another mount. Transport-backed sources may create a fresh
+connection on each open.
 
 ```text
 Registry.Resolve
@@ -270,9 +282,10 @@ the next hook receives the event.
 
 Hooks are synchronous only because their Patch, Block, or Action is required
 before the loop can cross the boundary. They have an explicit short timeout;
-zero uses the runtime default (one second unless configured). Active hooks
-default to `fail_closed`, so a broken permission or mutation policy cannot
-silently disappear or block the runtime indefinitely.
+zero uses the runtime default (one second unless configured). Hooks on events
+that allow patches, blocking, or actions default to `fail_closed`, so a broken
+permission or mutation policy cannot silently disappear or block the runtime
+indefinitely.
 
 Passive observation is not a Hook. A `Subscriber` receives an immutable event
 from a durable delivery queue through its inbox. Subscriber execution is
@@ -282,10 +295,11 @@ and lost. Subscribers cannot patch, block, or choose an action. The
 OpenTelemetry projection is the first built-in subscriber plugin.
 
 Each delivery has a stable delivery ID, event ID, subscription ID, attempt,
-and timestamp. Delivery is at-least-once: the receiver durably deduplicates by
-delivery ID before acknowledging. A missing acknowledgement causes retry with
-bounded exponential backoff and eventually a dead-letter state. Ordering is
-preserved per trajectory, not globally.
+and timestamp. The queue deduplicates enqueue by delivery ID, then processes
+the record at least once. If a receiver succeeds but acknowledgement fails,
+the same delivery may invoke it again; subscriber effects must therefore be
+idempotent. Retries use bounded exponential backoff and eventually reach a
+dead-letter state. Ordering is preserved per trajectory, not globally.
 
 The initial kernel event boundaries are:
 

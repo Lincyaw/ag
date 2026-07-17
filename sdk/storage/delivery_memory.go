@@ -9,34 +9,31 @@ import (
 	"sync"
 	"time"
 
-	. "github.com/lincyaw/ag/sdk"
+	sdk "github.com/lincyaw/ag/sdk"
 )
 
-type MemoryDeliveryStore struct {
+type memoryDeliveryStore struct {
 	mu           sync.Mutex
-	deliveries   map[string]Delivery
+	deliveries   map[string]sdk.Delivery
 	nextSequence uint64
 }
 
-// MemoryOutboxStore is kept as a source-compatible alias.
-type MemoryOutboxStore = MemoryDeliveryStore
-
-func NewMemoryDeliveryStore() *MemoryDeliveryStore {
-	return &MemoryDeliveryStore{deliveries: make(map[string]Delivery)}
+func NewMemoryDeliveryStore() sdk.DeliveryStore {
+	return newMemoryDeliveryStore()
 }
 
-func NewMemoryOutboxStore() *MemoryDeliveryStore {
-	return NewMemoryDeliveryStore()
+func newMemoryDeliveryStore() *memoryDeliveryStore {
+	return &memoryDeliveryStore{deliveries: make(map[string]sdk.Delivery)}
 }
 
-func (store *MemoryDeliveryStore) Enqueue(
+func (store *memoryDeliveryStore) Enqueue(
 	ctx context.Context,
-	deliveries ...Delivery,
+	deliveries ...sdk.Delivery,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	prepared := make([]Delivery, len(deliveries))
+	prepared := make([]sdk.Delivery, len(deliveries))
 	for index, delivery := range deliveries {
 		if err := validateNewDelivery(delivery); err != nil {
 			return err
@@ -45,7 +42,7 @@ func (store *MemoryDeliveryStore) Enqueue(
 		if now.IsZero() {
 			now = time.Now().UTC()
 		}
-		delivery.State = DeliveryPending
+		delivery.State = sdk.DeliveryPending
 		delivery.Attempt = 0
 		delivery.AvailableAt = delivery.AvailableAt.UTC()
 		if delivery.AvailableAt.IsZero() {
@@ -55,7 +52,7 @@ func (store *MemoryDeliveryStore) Enqueue(
 		delivery.LeaseExpiresAt = time.Time{}
 		delivery.CreatedAt = now
 		delivery.UpdatedAt = now
-		delivery.Event = cloneEvent(delivery.Event)
+		delivery.Event = sdk.CloneEvent(delivery.Event)
 		prepared[index] = delivery
 	}
 
@@ -79,23 +76,23 @@ func (store *MemoryDeliveryStore) Enqueue(
 	return nil
 }
 
-func (store *MemoryDeliveryStore) Lease(
+func (store *memoryDeliveryStore) Lease(
 	ctx context.Context,
 	now time.Time,
 	duration time.Duration,
-) (Delivery, error) {
+) (sdk.Delivery, error) {
 	if err := ctx.Err(); err != nil {
-		return Delivery{}, err
+		return sdk.Delivery{}, err
 	}
 	if duration <= 0 {
-		return Delivery{}, errors.New("delivery lease duration must be positive")
+		return sdk.Delivery{}, errors.New("delivery lease duration must be positive")
 	}
 	now = now.UTC()
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	heads := make(map[string]Delivery)
+	heads := make(map[string]sdk.Delivery)
 	for _, delivery := range store.deliveries {
-		if delivery.State == DeliveryDelivered || delivery.State == DeliveryDeadLetter {
+		if delivery.State == sdk.DeliveryDelivered || delivery.State == sdk.DeliveryDeadLetter {
 			continue
 		}
 		partition := deliveryPartition(delivery)
@@ -104,40 +101,40 @@ func (store *MemoryDeliveryStore) Lease(
 			heads[partition] = delivery
 		}
 	}
-	candidates := make([]Delivery, 0, len(heads))
+	candidates := make([]sdk.Delivery, 0, len(heads))
 	for _, delivery := range heads {
-		available := delivery.State == DeliveryPending &&
+		available := delivery.State == sdk.DeliveryPending &&
 			!delivery.AvailableAt.After(now)
-		expired := delivery.State == DeliveryLeased &&
+		expired := delivery.State == sdk.DeliveryLeased &&
 			!delivery.LeaseExpiresAt.After(now)
 		if available || expired {
 			candidates = append(candidates, delivery)
 		}
 	}
 	if len(candidates) == 0 {
-		return Delivery{}, ErrNoDelivery
+		return sdk.Delivery{}, sdk.ErrNoDelivery
 	}
 	slices.SortFunc(candidates, compareDeliveries)
 	delivery := candidates[0]
-	delivery.State = DeliveryLeased
+	delivery.State = sdk.DeliveryLeased
 	delivery.Attempt++
-	delivery.LeaseToken = NewID()
+	delivery.LeaseToken = sdk.NewID()
 	delivery.LeaseExpiresAt = now.Add(duration)
 	delivery.UpdatedAt = now
 	store.deliveries[delivery.ID] = delivery
-	return cloneDelivery(delivery), nil
+	return sdk.CloneDelivery(delivery), nil
 }
 
-func (store *MemoryDeliveryStore) Ack(
+func (store *memoryDeliveryStore) Ack(
 	ctx context.Context,
 	id string,
 	token string,
 	now time.Time,
 ) error {
-	return store.transition(ctx, id, token, now, DeliveryDelivered, time.Time{}, "")
+	return store.transition(ctx, id, token, now, sdk.DeliveryDelivered, time.Time{}, "")
 }
 
-func (store *MemoryDeliveryStore) Retry(
+func (store *memoryDeliveryStore) Retry(
 	ctx context.Context,
 	id string,
 	token string,
@@ -149,13 +146,13 @@ func (store *MemoryDeliveryStore) Retry(
 		id,
 		token,
 		time.Now().UTC(),
-		DeliveryPending,
+		sdk.DeliveryPending,
 		availableAt.UTC(),
 		lastError,
 	)
 }
 
-func (store *MemoryDeliveryStore) DeadLetter(
+func (store *memoryDeliveryStore) DeadLetter(
 	ctx context.Context,
 	id string,
 	token string,
@@ -167,18 +164,18 @@ func (store *MemoryDeliveryStore) DeadLetter(
 		id,
 		token,
 		now,
-		DeliveryDeadLetter,
+		sdk.DeliveryDeadLetter,
 		time.Time{},
 		lastError,
 	)
 }
 
-func (store *MemoryDeliveryStore) transition(
+func (store *memoryDeliveryStore) transition(
 	ctx context.Context,
 	id string,
 	token string,
 	now time.Time,
-	state DeliveryState,
+	state sdk.DeliveryState,
 	availableAt time.Time,
 	lastError string,
 ) error {
@@ -191,14 +188,14 @@ func (store *MemoryDeliveryStore) transition(
 	if !exists {
 		return fmt.Errorf("delivery %q not found", id)
 	}
-	if delivery.State != DeliveryLeased || delivery.LeaseToken != token {
-		return fmt.Errorf("%w: %s", ErrDeliveryLease, id)
+	if delivery.State != sdk.DeliveryLeased || delivery.LeaseToken != token {
+		return fmt.Errorf("%w: %s", sdk.ErrDeliveryLease, id)
 	}
 	delivery.State = state
 	delivery.AvailableAt = availableAt
 	delivery.LeaseToken = ""
 	delivery.LeaseExpiresAt = time.Time{}
-	if state != DeliveryDelivered || lastError != "" {
+	if state != sdk.DeliveryDelivered || lastError != "" {
 		delivery.LastError = lastError
 	}
 	delivery.UpdatedAt = now.UTC()
@@ -206,40 +203,40 @@ func (store *MemoryDeliveryStore) transition(
 	return nil
 }
 
-func (store *MemoryDeliveryStore) List(
+func (store *memoryDeliveryStore) List(
 	ctx context.Context,
-) ([]Delivery, error) {
+) ([]sdk.Delivery, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	result := make([]Delivery, 0, len(store.deliveries))
+	result := make([]sdk.Delivery, 0, len(store.deliveries))
 	for _, delivery := range store.deliveries {
-		result = append(result, cloneDelivery(delivery))
+		result = append(result, sdk.CloneDelivery(delivery))
 	}
 	slices.SortFunc(result, compareDeliveries)
 	return result, nil
 }
 
-func (store *MemoryDeliveryStore) ListPage(
+func (store *memoryDeliveryStore) ListPage(
 	ctx context.Context,
-	request PageRequest,
-) (DeliveryPage, error) {
+	request sdk.PageRequest,
+) (sdk.DeliveryPage, error) {
 	items, err := store.List(ctx)
 	if err != nil {
-		return DeliveryPage{}, err
+		return sdk.DeliveryPage{}, err
 	}
-	page, next, err := PageWindow(items, request, func(item Delivery) string {
+	page, next, err := pageWindow(items, request, func(item sdk.Delivery) string {
 		return item.ID
 	})
 	if err != nil {
-		return DeliveryPage{}, err
+		return sdk.DeliveryPage{}, err
 	}
-	return DeliveryPage{Items: page, Next: next}, nil
+	return sdk.DeliveryPage{Items: page, Next: next}, nil
 }
 
-func (store *MemoryDeliveryStore) PurgeTerminal(
+func (store *memoryDeliveryStore) PurgeTerminal(
 	ctx context.Context,
 	before time.Time,
 ) (int, error) {
@@ -253,8 +250,8 @@ func (store *MemoryDeliveryStore) PurgeTerminal(
 	defer store.mu.Unlock()
 	removed := 0
 	for id, delivery := range store.deliveries {
-		if (delivery.State == DeliveryDelivered ||
-			delivery.State == DeliveryDeadLetter) &&
+		if (delivery.State == sdk.DeliveryDelivered ||
+			delivery.State == sdk.DeliveryDeadLetter) &&
 			delivery.UpdatedAt.Before(before) {
 			delete(store.deliveries, id)
 			removed++
@@ -263,14 +260,14 @@ func (store *MemoryDeliveryStore) PurgeTerminal(
 	return removed, nil
 }
 
-func validateNewDelivery(delivery Delivery) error {
+func validateNewDelivery(delivery sdk.Delivery) error {
 	if delivery.ID == "" {
 		return errors.New("delivery ID is empty")
 	}
-	if err := ValidateResourceName("plugin", delivery.Plugin); err != nil {
+	if err := sdk.ValidateResourceName("plugin", delivery.Plugin); err != nil {
 		return err
 	}
-	if err := ValidateResourceName("subscription", delivery.Subscription); err != nil {
+	if err := sdk.ValidateResourceName("subscription", delivery.Subscription); err != nil {
 		return err
 	}
 	if delivery.Event.ID == "" || delivery.Event.Name == "" {
@@ -282,7 +279,7 @@ func validateNewDelivery(delivery Delivery) error {
 	return nil
 }
 
-func sameDeliveryIdentity(left, right Delivery) bool {
+func sameDeliveryIdentity(left, right sdk.Delivery) bool {
 	return left.ID == right.ID &&
 		left.Plugin == right.Plugin &&
 		left.PluginVersion == right.PluginVersion &&
@@ -291,7 +288,7 @@ func sameDeliveryIdentity(left, right Delivery) bool {
 		left.Event.ID == right.Event.ID
 }
 
-func compareDeliveries(left, right Delivery) int {
+func compareDeliveries(left, right sdk.Delivery) int {
 	if left.Sequence != 0 || right.Sequence != 0 {
 		if left.Sequence < right.Sequence {
 			return -1
@@ -315,19 +312,9 @@ func compareDeliveries(left, right Delivery) int {
 	return 0
 }
 
-func deliveryPartition(delivery Delivery) string {
+func deliveryPartition(delivery sdk.Delivery) string {
 	if delivery.Partition != "" {
 		return delivery.Partition
 	}
 	return delivery.Plugin + "/" + delivery.Subscription
-}
-
-func cloneEvent(event Event) Event {
-	event.Payload = append(json.RawMessage(nil), event.Payload...)
-	return event
-}
-
-func cloneDelivery(delivery Delivery) Delivery {
-	delivery.Event = cloneEvent(delivery.Event)
-	return delivery
 }

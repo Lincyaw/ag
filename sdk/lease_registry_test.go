@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -72,7 +73,7 @@ func TestLeaseRegistryConcurrentRenewExpiryAndReplacement(t *testing.T) {
 	}
 
 	replacement := registration
-	replacement.URI = "grpc://127.0.0.1:9001"
+	replacement.URI = "  grpc://127.0.0.1:9001  "
 	replacementLease, err := registry.Register(ctx, replacement, time.Minute)
 	if err != nil {
 		t.Fatalf("register replacement: %v", err)
@@ -84,8 +85,14 @@ func TestLeaseRegistryConcurrentRenewExpiryAndReplacement(t *testing.T) {
 		t.Fatalf("old lease unregister = %v", err)
 	}
 	discovered, err := base.Discover(ctx, DiscoveryQuery{Name: replacement.Name})
-	if err != nil || len(discovered) != 1 || discovered[0].URI != replacement.URI {
+	if err != nil || len(discovered) != 1 ||
+		discovered[0].URI != strings.TrimSpace(replacement.URI) {
 		t.Fatalf("replacement discovery = %v, %v", discovered, err)
+	}
+	listed, err = registry.List(ctx)
+	if err != nil || len(listed) != 1 ||
+		listed[0].URI != strings.TrimSpace(replacement.URI) {
+		t.Fatalf("replacement registration = %v, %v", listed, err)
 	}
 }
 
@@ -118,5 +125,51 @@ func TestLeaseRegistryConcurrentSameNameRegistrationHasOneWinner(t *testing.T) {
 	wait.Wait()
 	if got := created.Load(); got != 1 {
 		t.Fatalf("successful registrations = %d, want 1", got)
+	}
+}
+
+func TestLeaseExpiryDoesNotRemoveReplacementOwnedByCompositionRoot(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, 7, 17, 16, 0, 0, 0, time.UTC)
+	base := NewPluginRegistry()
+	registry := NewLeaseRegistry(LeaseRegistryConfig{
+		Registry: base,
+		Clock:    func() time.Time { return now },
+	})
+	registration := PluginRegistration{
+		Name: "shared-name",
+		URI:  "grpc://127.0.0.1:9000",
+		Manifest: Manifest{
+			Name:        "shared-name",
+			Version:     "1.0.0",
+			Description: "leased registration",
+			APIVersion:  APIVersion,
+		},
+	}
+	if _, err := registry.Register(ctx, registration, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Unregister(registration.Name); err != nil {
+		t.Fatal(err)
+	}
+	replacement := PluginReference{
+		Name: registration.Name,
+		URI:  "grpc://127.0.0.1:9001",
+	}
+	if err := base.Register(replacement); err != nil {
+		t.Fatal(err)
+	}
+
+	now = now.Add(2 * time.Minute)
+	if err := registry.Prune(ctx); err != nil {
+		t.Fatal(err)
+	}
+	discovered, err := base.Discover(ctx, DiscoveryQuery{Name: registration.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovered) != 1 || discovered[0].URI != replacement.URI {
+		t.Fatalf("replacement after lease expiry = %#v", discovered)
 	}
 }

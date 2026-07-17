@@ -19,54 +19,6 @@ const (
 	EventTrajectoryRollback = "trajectory_rolled_back"
 )
 
-var builtinEventContracts = []EventContract{
-	{
-		Name:          EventBeforeAgentStart,
-		MutableFields: []string{"messages", "system"},
-		AllowBlock:    true,
-	},
-	{Name: EventAgentStart},
-	{Name: EventTurnStart},
-	{
-		Name:          EventBeforeProvider,
-		MutableFields: []string{"messages", "provider", "system", "tools"},
-	},
-	{Name: EventAfterProvider},
-	{
-		Name:          EventBeforeTool,
-		MutableFields: []string{"call"},
-		AllowBlock:    true,
-	},
-	{
-		Name:          EventToolError,
-		MutableFields: []string{"result"},
-	},
-	{
-		Name:          EventAfterTool,
-		MutableFields: []string{"result"},
-	},
-	{Name: EventDecide, AllowAction: true},
-	{Name: EventTurnEnd},
-	{Name: EventAgentEnd},
-	{Name: EventPluginMounted},
-	{Name: EventPluginUnmounted},
-	{Name: EventTrajectoryAppend},
-	{Name: EventTrajectoryRestore},
-	{Name: EventTrajectoryRollback},
-}
-
-func BuiltinEventContracts() []EventContract {
-	result := make([]EventContract, len(builtinEventContracts))
-	for index, contract := range builtinEventContracts {
-		result[index] = contract
-		result[index].MutableFields = append(
-			[]string(nil),
-			contract.MutableFields...,
-		)
-	}
-	return result
-}
-
 type BeforeAgentStartPayload struct {
 	Messages []Message `json:"messages"`
 	System   string    `json:"system,omitempty"`

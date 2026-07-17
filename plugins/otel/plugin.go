@@ -220,10 +220,6 @@ func (plugin *Plugin) receive(ctx context.Context, delivery sdk.Delivery) error 
 func (plugin *Plugin) startRun(ctx context.Context, event sdk.Event) {
 	plugin.mu.Lock()
 	defer plugin.mu.Unlock()
-	if previous := plugin.runSpans[event.SessionID]; previous != nil {
-		previous.SetStatus(codes.Error, "new run started before prior run ended")
-		previous.End()
-	}
 	_, span := plugin.tracer.Start(
 		ctx,
 		"agent.run",
@@ -232,7 +228,7 @@ func (plugin *Plugin) startRun(ctx context.Context, event sdk.Event) {
 			attribute.Int64("agentm.registry.generation", int64(event.Generation)),
 		),
 	)
-	plugin.runSpans[event.SessionID] = span
+	replaceSpanLocked(plugin.runSpans, event.SessionID, span)
 	plugin.runs.Add(ctx, 1)
 }
 
@@ -241,7 +237,11 @@ func (plugin *Plugin) startTurn(ctx context.Context, event sdk.Event, payload sd
 	defer plugin.mu.Unlock()
 	parent := plugin.parentContext(ctx, event.SessionID)
 	_, span := plugin.tracer.Start(parent, "agent.turn", trace.WithAttributes(attribute.Int("agentm.turn", payload.Turn)))
-	plugin.turnSpans[turnKey(event.SessionID, payload.Turn)] = span
+	replaceSpanLocked(
+		plugin.turnSpans,
+		turnKey(event.SessionID, payload.Turn),
+		span,
+	)
 }
 
 func (plugin *Plugin) startProvider(ctx context.Context, event sdk.Event, payload sdk.BeforeProviderPayload) {
@@ -262,7 +262,11 @@ func (plugin *Plugin) startProvider(ctx context.Context, event sdk.Event, payloa
 			attribute.Int("agentm.tool_count", len(payload.Tools)),
 		),
 	)
-	plugin.providerSpans[turnKey(event.SessionID, payload.Turn)] = span
+	replaceSpanLocked(
+		plugin.providerSpans,
+		turnKey(event.SessionID, payload.Turn),
+		span,
+	)
 	plugin.providerCalls.Add(ctx, 1, metric.WithAttributes(attribute.String("gen_ai.provider.name", payload.Provider)))
 }
 
@@ -309,7 +313,11 @@ func (plugin *Plugin) startTool(ctx context.Context, event sdk.Event, payload sd
 			attribute.Int("agentm.turn", payload.Turn),
 		),
 	)
-	plugin.toolSpans[toolKey(event.SessionID, payload.Call.ID)] = span
+	replaceSpanLocked(
+		plugin.toolSpans,
+		toolKey(event.SessionID, payload.Call.ID),
+		span,
+	)
 	plugin.toolCalls.Add(ctx, 1, metric.WithAttributes(attribute.String("gen_ai.tool.name", payload.Call.Name)))
 }
 
@@ -382,6 +390,18 @@ func (plugin *Plugin) endSpan(spans map[string]trace.Span, key string) {
 		span.End()
 		delete(spans, key)
 	}
+}
+
+func replaceSpanLocked(
+	spans map[string]trace.Span,
+	key string,
+	replacement trace.Span,
+) {
+	if previous := spans[key]; previous != nil {
+		previous.SetStatus(codes.Error, "start event repeated before prior span ended")
+		previous.End()
+	}
+	spans[key] = replacement
 }
 
 func decode(event sdk.Event, target any) error {

@@ -233,17 +233,18 @@ func (process *childProcess) stop(t *testing.T) {
 
 func startRegistry(
 	t *testing.T,
-) (string, *pluginrpc.RegistryClient, *sdk.LeaseRegistry) {
+) (string, *pluginrpc.RegistryClient, *sdk.PluginRegistry) {
 	t.Helper()
-	leaseRegistry := sdk.NewLeaseRegistry(sdk.LeaseRegistryConfig{})
+	registry := sdk.NewPluginRegistry()
+	leaseRegistry := sdk.NewLeaseRegistry(sdk.LeaseRegistryConfig{
+		Registry: registry,
+	})
 	adapter, err := pluginrpc.NewRegistryServer(leaseRegistry)
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := grpc.NewServer()
-	if err := pluginrpc.RegisterRegistryService(server, adapter); err != nil {
-		t.Fatal(err)
-	}
+	pluginv1.RegisterRegistryServiceServer(server, adapter)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +264,7 @@ func startRegistry(
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
-	return uri, client, leaseRegistry
+	return uri, client, registry
 }
 
 func connectPlugin(

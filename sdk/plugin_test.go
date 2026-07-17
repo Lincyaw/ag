@@ -47,3 +47,36 @@ func TestManifestRejectsIncompatibleOrInvalidAPIRange(t *testing.T) {
 		}
 	}
 }
+
+func TestManifestValidationDoesNotMutateResourceSlices(t *testing.T) {
+	t.Parallel()
+	requires := []string{ToolResource("reader"), "untouched"}
+	manifest := Manifest{
+		Name:        "non-mutating",
+		Version:     "1.0.0",
+		Description: "keeps caller-owned resource slices unchanged",
+		APIVersion:  APIVersion,
+		Requires:    requires[:1],
+		Conflicts:   []string{ToolResource("writer")},
+	}
+	if err := manifest.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if requires[1] != "untouched" {
+		t.Fatalf("validation changed caller-owned capacity to %q", requires[1])
+	}
+}
+
+func TestResourceRevisionEncodingIsStable(t *testing.T) {
+	t.Parallel()
+	revision := ResourceRevision(
+		Manifest{Name: "plugin", Version: "1.0.0"},
+		"tool",
+		"echo",
+		nil,
+	)
+	const expected = "eaa8a305bf12ee42c5247855690f25f434fd98d4559b1be6dde0ed9a3b7bd47e"
+	if revision != expected {
+		t.Fatalf("resource revision = %q, want %q", revision, expected)
+	}
+}

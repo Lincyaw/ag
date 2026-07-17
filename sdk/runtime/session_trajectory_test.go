@@ -7,26 +7,64 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/lincyaw/ag/sdk"
+	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 )
 
 type trajectoryTestProvider struct {
 	mu          sync.Mutex
-	operations  map[string]Operation
-	requests    []OperationRequest
+	operations  map[string]sdk.Operation
+	requests    []sdk.OperationRequest
 	submissions int
 	failNext    bool
 }
 
-func (provider *trajectoryTestProvider) Spec() ProviderSpec {
-	return ProviderSpec{Name: "scripted", Model: "scripted-v1"}
+type postRollbackLoadFailStore struct {
+	sdk.TrajectoryStore
+	failLoad              atomic.Bool
+	postRollbackLoadCalls atomic.Int64
+}
+
+func (store *postRollbackLoadFailStore) Append(
+	ctx context.Context,
+	id string,
+	expectedHead string,
+	entries ...sdk.TrajectoryEntry,
+) (string, error) {
+	head, err := store.TrajectoryStore.Append(ctx, id, expectedHead, entries...)
+	if err == nil {
+		for _, entry := range entries {
+			if entry.Kind == sdk.TrajectoryKindRollback {
+				store.failLoad.Store(true)
+			}
+		}
+	}
+	return head, err
+}
+
+func (store *postRollbackLoadFailStore) Load(
+	ctx context.Context,
+	id string,
+) (sdk.Trajectory, error) {
+	if store.failLoad.Load() {
+		store.postRollbackLoadCalls.Add(1)
+		return sdk.Trajectory{}, errors.New("post-rollback load failed")
+	}
+	return store.TrajectoryStore.Load(ctx, id)
+}
+
+func (provider *trajectoryTestProvider) Spec() sdk.ProviderSpec {
+	return sdk.ProviderSpec{Name: "scripted", Model: "scripted-v1"}
 }
 
 func (provider *trajectoryTestProvider) SubmitCompletion(
 	_ context.Context,
-	request OperationRequest,
-) (Operation, error) {
+	request sdk.OperationRequest,
+) (sdk.Operation, error) {
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	if operation, exists := provider.operations[request.IdempotencyKey]; exists {
@@ -34,10 +72,10 @@ func (provider *trajectoryTestProvider) SubmitCompletion(
 	}
 	provider.submissions++
 	provider.requests = append(provider.requests, request)
-	operation := Operation{
+	operation := sdk.Operation{
 		ID:             fmt.Sprintf("provider-operation-%d", provider.submissions),
 		IdempotencyKey: request.IdempotencyKey,
-		State:          OperationPending,
+		State:          sdk.OperationPending,
 		Revision:       1,
 	}
 	if provider.failNext {
@@ -52,7 +90,7 @@ func (provider *trajectoryTestProvider) PollCompletion(
 	_ context.Context,
 	id string,
 	_ uint64,
-) (Operation, error) {
+) (sdk.Operation, error) {
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	for key, operation := range provider.operations {
@@ -60,16 +98,16 @@ func (provider *trajectoryTestProvider) PollCompletion(
 			continue
 		}
 		if operation.Error == "fail-on-poll" {
-			operation.State = OperationFailed
+			operation.State = sdk.OperationFailed
 			operation.Revision++
 			operation.Error = "scripted provider failure"
 			provider.operations[key] = operation
 			return operation, nil
 		}
-		var response ModelResponse
+		var response sdk.ModelResponse
 		if id == "provider-operation-1" {
-			response = ModelResponse{
-				ToolCalls: []ToolCall{{
+			response = sdk.ModelResponse{
+				ToolCalls: []sdk.ToolCall{{
 					ID:        "tool-call-1",
 					Name:      "echo",
 					Arguments: []byte(`{"value":"hello"}`),
@@ -78,7 +116,7 @@ func (provider *trajectoryTestProvider) PollCompletion(
 				FinishReason: "tool_calls",
 			}
 		} else {
-			response = ModelResponse{
+			response = sdk.ModelResponse{
 				Content:      "finished",
 				Model:        "scripted-v1",
 				FinishReason: "stop",
@@ -86,42 +124,42 @@ func (provider *trajectoryTestProvider) PollCompletion(
 		}
 		output, err := json.Marshal(response)
 		if err != nil {
-			return Operation{}, err
+			return sdk.Operation{}, err
 		}
-		operation.State = OperationSucceeded
+		operation.State = sdk.OperationSucceeded
 		operation.Revision++
 		operation.Output = output
 		provider.operations[key] = operation
 		return operation, nil
 	}
-	return Operation{}, errors.New("provider operation not found")
+	return sdk.Operation{}, errors.New("provider operation not found")
 }
 
 func (provider *trajectoryTestProvider) CancelCompletion(
 	_ context.Context,
 	id string,
-) (Operation, error) {
+) (sdk.Operation, error) {
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	for key, operation := range provider.operations {
 		if operation.ID == id {
-			operation.State = OperationCancelled
+			operation.State = sdk.OperationCancelled
 			operation.Revision++
 			provider.operations[key] = operation
 			return operation, nil
 		}
 	}
-	return Operation{}, errors.New("provider operation not found")
+	return sdk.Operation{}, errors.New("provider operation not found")
 }
 
 type trajectoryTestTool struct {
 	mu         sync.Mutex
-	operations map[string]Operation
-	requests   []OperationRequest
+	operations map[string]sdk.Operation
+	requests   []sdk.OperationRequest
 }
 
-func (tool *trajectoryTestTool) Spec() ToolSpec {
-	return ToolSpec{
+func (tool *trajectoryTestTool) Spec() sdk.ToolSpec {
+	return sdk.ToolSpec{
 		Name:        "echo",
 		Description: "returns its input",
 		Parameters:  map[string]any{"type": "object"},
@@ -130,18 +168,18 @@ func (tool *trajectoryTestTool) Spec() ToolSpec {
 
 func (tool *trajectoryTestTool) SubmitCall(
 	_ context.Context,
-	request OperationRequest,
-) (Operation, error) {
+	request sdk.OperationRequest,
+) (sdk.Operation, error) {
 	tool.mu.Lock()
 	defer tool.mu.Unlock()
 	if operation, exists := tool.operations[request.IdempotencyKey]; exists {
 		return operation, nil
 	}
 	tool.requests = append(tool.requests, request)
-	operation := Operation{
+	operation := sdk.Operation{
 		ID:             "tool-operation-1",
 		IdempotencyKey: request.IdempotencyKey,
-		State:          OperationRunning,
+		State:          sdk.OperationRunning,
 		Revision:       1,
 	}
 	tool.operations[request.IdempotencyKey] = operation
@@ -152,38 +190,38 @@ func (tool *trajectoryTestTool) PollCall(
 	_ context.Context,
 	id string,
 	_ uint64,
-) (Operation, error) {
+) (sdk.Operation, error) {
 	tool.mu.Lock()
 	defer tool.mu.Unlock()
 	for key, operation := range tool.operations {
 		if operation.ID == id {
-			output, err := json.Marshal(ToolResult{Content: "hello"})
+			output, err := json.Marshal(sdk.ToolResult{Content: "hello"})
 			if err != nil {
-				return Operation{}, err
+				return sdk.Operation{}, err
 			}
-			operation.State = OperationSucceeded
+			operation.State = sdk.OperationSucceeded
 			operation.Revision++
 			operation.Output = output
 			tool.operations[key] = operation
 			return operation, nil
 		}
 	}
-	return Operation{}, errors.New("tool operation not found")
+	return sdk.Operation{}, errors.New("tool operation not found")
 }
 
 func (tool *trajectoryTestTool) CancelCall(
 	context.Context,
 	string,
-) (Operation, error) {
-	return Operation{}, errors.New("unexpected tool cancellation")
+) (sdk.Operation, error) {
+	return sdk.Operation{}, errors.New("unexpected tool cancellation")
 }
 
 func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store := NewMemoryTrajectoryStore()
+	store := sdkstorage.NewMemoryTrajectoryStore()
 	runtime, err := NewRuntime(RuntimeConfig{
-		Trajectories:  store,
+		Storage:       testStateBackendWithStores(store, nil),
 		OperationPoll: time.Millisecond,
 	})
 	if err != nil {
@@ -196,27 +234,27 @@ func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 			t.Errorf("close runtime: %v", err)
 		}
 	})
-	provider := &trajectoryTestProvider{operations: make(map[string]Operation)}
-	tool := &trajectoryTestTool{operations: make(map[string]Operation)}
-	plugin := PluginFunc{
-		PluginManifest: Manifest{
+	provider := &trajectoryTestProvider{operations: make(map[string]sdk.Operation)}
+	tool := &trajectoryTestTool{operations: make(map[string]sdk.Operation)}
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
 			Name:        "scripted-agent",
 			Version:     "1.0.0",
 			Description: "async provider and tool for trajectory end-to-end testing",
-			APIVersion:  APIVersion,
+			APIVersion:  sdk.APIVersion,
 			Registers: []string{
-				ProviderResource("scripted"),
-				ToolResource("echo"),
+				sdk.ProviderResource("scripted"),
+				sdk.ToolResource("echo"),
 			},
 		},
-		InstallFunc: func(_ context.Context, registrar Registrar) error {
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
 			return errors.Join(
 				registrar.RegisterProvider(provider),
 				registrar.RegisterTool(tool),
 			)
 		},
 	}
-	if _, err := runtime.Mount(ctx, Local(plugin)); err != nil {
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
 		t.Fatalf("mount: %v", err)
 	}
 	session, err := runtime.NewSession(ctx, SessionConfig{
@@ -243,11 +281,11 @@ func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 	var providerRequestIDs, toolCallIDs, checkpoints []string
 	for _, entry := range trajectory.Entries {
 		switch entry.Kind {
-		case TrajectoryKindProviderRequest:
+		case sdk.TrajectoryKindProviderRequest:
 			providerRequestIDs = append(providerRequestIDs, entry.ID)
-		case TrajectoryKindToolCall:
+		case sdk.TrajectoryKindToolCall:
 			toolCallIDs = append(toolCallIDs, entry.ID)
-		case TrajectoryKindCheckpoint:
+		case sdk.TrajectoryKindCheckpoint:
 			checkpoints = append(checkpoints, entry.ID)
 		}
 	}
@@ -283,7 +321,7 @@ func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 	}
 	var failedUserID string
 	for _, entry := range failed.Entries {
-		if entry.Kind == TrajectoryKindUserMessage &&
+		if entry.Kind == sdk.TrajectoryKindUserMessage &&
 			strings.Contains(string(entry.Payload), "this attempt fails") {
 			failedUserID = entry.ID
 		}
@@ -295,7 +333,7 @@ func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if failedBranch[len(failedBranch)-1].Kind != TrajectoryKindRestore {
+	if failedBranch[len(failedBranch)-1].Kind != sdk.TrajectoryKindRestore {
 		t.Fatalf("failed prompt head = %#v, want restore", failedBranch[len(failedBranch)-1])
 	}
 	for _, entry := range failedBranch {
@@ -342,7 +380,7 @@ func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rollbackBranch[len(rollbackBranch)-1].Kind != TrajectoryKindRollback {
+	if rollbackBranch[len(rollbackBranch)-1].Kind != sdk.TrajectoryKindRollback {
 		t.Fatalf("rollback head = %#v", rollbackBranch[len(rollbackBranch)-1])
 	}
 	for _, entry := range rollbackBranch {
@@ -358,8 +396,10 @@ func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 func TestResumeWithoutCheckpointBranchesFromEmptyRoot(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store := NewMemoryTrajectoryStore()
-	runtime, err := NewRuntime(RuntimeConfig{Trajectories: store})
+	store := sdkstorage.NewMemoryTrajectoryStore()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: testStateBackendWithStores(store, nil),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,9 +414,9 @@ func TestResumeWithoutCheckpointBranchesFromEmptyRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	failedTail := TrajectoryEntry{
+	failedTail := sdk.TrajectoryEntry{
 		ID:        "failed-user-message",
-		Kind:      TrajectoryKindUserMessage,
+		Kind:      sdk.TrajectoryKindUserMessage,
 		Timestamp: time.Now().UTC(),
 		Payload:   []byte(`{"role":"user","content":"never committed"}`),
 	}
@@ -398,7 +438,55 @@ func TestResumeWithoutCheckpointBranchesFromEmptyRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(branch) != 1 || branch[0].Kind != TrajectoryKindRestore || branch[0].ParentID != "" {
+	if len(branch) != 1 || branch[0].Kind != sdk.TrajectoryKindRestore || branch[0].ParentID != "" {
 		t.Fatalf("restored root branch = %#v", branch)
+	}
+}
+
+func TestSessionRollbackDoesNotReloadAfterCommit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base := sdkstorage.NewMemoryTrajectoryStore()
+	store := &postRollbackLoadFailStore{TrajectoryStore: base}
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: testStateBackendWithStores(store, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	session, err := runtime.NewSession(ctx, SessionConfig{ID: "rollback-no-reload"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.checkpointTrajectory(
+		ctx,
+		0,
+		[]sdk.Message{{Role: sdk.RoleUser, Content: "checkpoint"}},
+		Result{},
+		sdk.Action{Kind: sdk.ActionStep},
+		"system",
+	); err != nil {
+		t.Fatal(err)
+	}
+	trajectory, err := base.Load(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := session.Rollback(ctx, trajectory.Head); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if got := store.postRollbackLoadCalls.Load(); got != 0 {
+		t.Fatalf("post-rollback Load calls = %d, want 0", got)
+	}
+	if got := session.Messages(); len(got) != 1 || got[0].Content != "checkpoint" {
+		t.Fatalf("session messages after rollback = %#v", got)
 	}
 }

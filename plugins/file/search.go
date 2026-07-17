@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -127,6 +126,11 @@ func (tool searchTool) Call(
 	if err := ctx.Err(); err != nil {
 		return sdk.ToolResult{}, err
 	}
+	rootHandle, err := tool.filesystem.openRoot()
+	if err != nil {
+		return toolFailure(err), nil
+	}
+	defer rootHandle.Close()
 
 	matches := make([]searchMatch, 0, maxResults)
 	filesScanned := 0
@@ -137,15 +141,11 @@ func (tool searchTool) Call(
 			truncated = true
 			return errSearchTruncated
 		}
-		relative, err := filepath.Rel(tool.filesystem.root, path)
-		if err != nil {
-			return err
-		}
-		display := filepath.ToSlash(relative)
+		display := filepath.ToSlash(path)
 		if glob != nil && !glob.matches(display) {
 			return nil
 		}
-		info, err := os.Stat(path)
+		info, err := rootHandle.Stat(path)
 		if err != nil {
 			return err
 		}
@@ -157,7 +157,7 @@ func (tool searchTool) Call(
 			filesSkipped++
 			return nil
 		}
-		data, _, err := tool.filesystem.readText(path)
+		data, _, err := tool.filesystem.readTextAt(rootHandle, path)
 		if err != nil {
 			filesSkipped++
 			return nil
@@ -185,7 +185,7 @@ func (tool searchTool) Call(
 		return nil
 	}
 
-	info, err := os.Stat(root)
+	info, err := rootHandle.Stat(root)
 	if err != nil {
 		return toolFailure(err), nil
 	}
@@ -194,7 +194,8 @@ func (tool searchTool) Call(
 	} else if !info.IsDir() {
 		return toolFailure(errors.New("search path is not a regular file or directory")), nil
 	} else {
-		err = filepath.WalkDir(root, func(
+		walkRoot := filepath.ToSlash(root)
+		err = fs.WalkDir(rootHandle.FS(), walkRoot, func(
 			path string,
 			entry fs.DirEntry,
 			walkErr error,
@@ -209,14 +210,14 @@ func (tool searchTool) Call(
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if path != root && !arguments.IncludeHidden &&
+			if path != walkRoot && !arguments.IncludeHidden &&
 				strings.HasPrefix(entry.Name(), ".") {
 				if entry.IsDir() {
 					return fs.SkipDir
 				}
 				return nil
 			}
-			if entry.Type()&os.ModeSymlink != 0 {
+			if entry.Type()&fs.ModeSymlink != 0 {
 				if entry.IsDir() {
 					return fs.SkipDir
 				}
