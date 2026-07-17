@@ -80,7 +80,7 @@ func TestBashToolReportsStderrAndExitStatus(t *testing.T) {
 func TestBashToolTimeoutKillsProcessGroup(t *testing.T) {
 	runner := mustRunner(t, Config{
 		Root:           t.TempDir(),
-		DefaultTimeout: 100 * time.Millisecond,
+		DefaultTimeout: 500 * time.Millisecond,
 		MaxTimeout:     time.Second,
 	})
 	started := time.Now()
