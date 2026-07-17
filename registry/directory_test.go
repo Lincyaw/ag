@@ -139,6 +139,13 @@ func TestDirectoryContract(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if _, err := directory.List(
+				ctx,
+				DiscoveryQuery{Name: "invalid name"},
+				PageRequest{},
+			); !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("invalid query error = %v", err)
+			}
 			if len(filtered.Items) != 1 ||
 				filtered.Items[0].InstanceID != first.InstanceID ||
 				filtered.Revision != 2 {

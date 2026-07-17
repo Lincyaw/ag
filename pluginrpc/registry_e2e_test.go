@@ -66,6 +66,17 @@ func TestRegistryServiceDirectoryContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close(context.Background()) })
+	if _, err := client.List(
+		ctx,
+		registry.DiscoveryQuery{Name: "invalid name"},
+		registry.PageRequest{},
+	); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf(
+			"invalid discovery status = %s, error = %v",
+			status.Code(err),
+			err,
+		)
+	}
 	registration := func(instanceID, zone string) registry.PluginRegistration {
 		return registry.PluginRegistration{
 			Namespace:  registry.DefaultNamespace,

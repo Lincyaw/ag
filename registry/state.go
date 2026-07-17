@@ -67,11 +67,13 @@ func (state *directoryState) register(
 	maxChanges int,
 ) (PluginLease, bool, error) {
 	if ttl <= 0 {
-		return PluginLease{}, false, errors.New("plugin lease TTL must be positive")
+		return PluginLease{}, false, invalidRequest(
+			errors.New("plugin lease TTL must be positive"),
+		)
 	}
 	registration, err := normalizeRegistration(registration)
 	if err != nil {
-		return PluginLease{}, false, err
+		return PluginLease{}, false, invalidRequest(err)
 	}
 	changed := state.pruneExpired(now, maxChanges)
 	key := instanceMapKey(registration.Key())
@@ -124,7 +126,9 @@ func (state *directoryState) renew(
 	maxChanges int,
 ) (PluginLease, bool, error) {
 	if ttl <= 0 {
-		return PluginLease{}, false, errors.New("plugin lease TTL must be positive")
+		return PluginLease{}, false, invalidRequest(
+			errors.New("plugin lease TTL must be positive"),
+		)
 	}
 	lease, exists := state.Leases[credential.ID]
 	if !exists {
@@ -194,7 +198,7 @@ func (state *directoryState) get(
 		key.Namespace = DefaultNamespace
 	}
 	if err := validateKey(key); err != nil {
-		return PluginInstance{}, false, err
+		return PluginInstance{}, false, invalidRequest(err)
 	}
 	changed := state.pruneExpired(now, maxChanges)
 	instance, exists := state.Instances[instanceMapKey(key)]
@@ -216,11 +220,11 @@ func (state *directoryState) list(
 ) (DiscoveryPage, bool, error) {
 	query, err := normalizeQuery(query)
 	if err != nil {
-		return DiscoveryPage{}, false, err
+		return DiscoveryPage{}, false, invalidRequest(err)
 	}
 	request, after, err := validatePage(request)
 	if err != nil {
-		return DiscoveryPage{}, false, err
+		return DiscoveryPage{}, false, invalidRequest(err)
 	}
 	changed := state.pruneExpired(now, maxChanges)
 	keys := make([]string, 0, len(state.Instances))
@@ -252,15 +256,15 @@ func (state *directoryState) poll(
 ) (ChangePage, bool, error) {
 	request, err := validatePoll(request)
 	if err != nil {
-		return ChangePage{}, false, err
+		return ChangePage{}, false, invalidRequest(err)
 	}
 	changed := state.pruneExpired(now, maxChanges)
 	if request.AfterRevision > state.Revision {
-		return ChangePage{}, changed, fmt.Errorf(
+		return ChangePage{}, changed, invalidRequest(fmt.Errorf(
 			"poll revision %d is ahead of current revision %d",
 			request.AfterRevision,
 			state.Revision,
-		)
+		))
 	}
 	if request.AfterRevision > 0 && len(state.Changes) > 0 &&
 		request.AfterRevision+1 < state.Changes[0].Revision {

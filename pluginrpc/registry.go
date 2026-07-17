@@ -618,6 +618,8 @@ func registryRPCError(err error) error {
 		return status.Error(codes.Canceled, err.Error())
 	case errors.Is(err, context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, err.Error())
+	case errors.Is(err, registry.ErrInvalidRequest):
+		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, registry.ErrInstanceNotFound),
 		errors.Is(err, registry.ErrLeaseNotFound):
 		return status.Error(codes.NotFound, err.Error())

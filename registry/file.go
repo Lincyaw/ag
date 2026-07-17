@@ -177,7 +177,7 @@ func (directory *fileDirectory) Poll(
 ) (ChangePage, error) {
 	request, err := validatePoll(request)
 	if err != nil {
-		return ChangePage{}, err
+		return ChangePage{}, invalidRequest(err)
 	}
 	deadline := time.Now().Add(request.Wait)
 	for {

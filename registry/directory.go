@@ -22,6 +22,7 @@ const (
 )
 
 var (
+	ErrInvalidRequest   = errors.New("invalid registry request")
 	ErrInstanceNotFound = errors.New("plugin instance not found")
 	ErrInstanceConflict = errors.New("plugin instance already registered")
 	ErrLeaseNotFound    = errors.New("plugin lease not found")
@@ -302,6 +303,10 @@ func validatePoll(request ChangePollRequest) (ChangePollRequest, error) {
 		return ChangePollRequest{}, errors.New("poll wait cannot be negative")
 	}
 	return request, nil
+}
+
+func invalidRequest(err error) error {
+	return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 }
 
 func matches(instance PluginInstance, query DiscoveryQuery) bool {
