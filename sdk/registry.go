@@ -48,14 +48,12 @@ type registeredPluginDriver struct {
 type PluginRegistry struct {
 	mu      sync.RWMutex
 	entries map[string]PluginReference
-	owners  map[string]string
 	drivers map[string]PluginDriver
 }
 
 func NewPluginRegistry() *PluginRegistry {
 	return &PluginRegistry{
 		entries: make(map[string]PluginReference),
-		owners:  make(map[string]string),
 		drivers: make(map[string]PluginDriver),
 	}
 }
@@ -87,13 +85,6 @@ func (registry *PluginRegistry) RegisterDrivers(drivers ...PluginDriver) error {
 }
 
 func (registry *PluginRegistry) Register(reference PluginReference) error {
-	return registry.register(reference, "")
-}
-
-func (registry *PluginRegistry) register(
-	reference PluginReference,
-	owner string,
-) error {
 	reference, err := normalizePluginReference(reference)
 	if err != nil {
 		return err
@@ -105,7 +96,6 @@ func (registry *PluginRegistry) register(
 		return fmt.Errorf("plugin registration %q already exists", reference.Name)
 	}
 	registry.entries[reference.Name] = reference
-	registry.owners[reference.Name] = owner
 	return nil
 }
 
@@ -116,18 +106,7 @@ func (registry *PluginRegistry) Unregister(name string) error {
 		return fmt.Errorf("plugin registration %q not found", name)
 	}
 	delete(registry.entries, name)
-	delete(registry.owners, name)
 	return nil
-}
-
-func (registry *PluginRegistry) unregisterOwned(name, owner string) {
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	if registry.owners[name] != owner {
-		return
-	}
-	delete(registry.entries, name)
-	delete(registry.owners, name)
 }
 
 func (registry *PluginRegistry) Resolve(

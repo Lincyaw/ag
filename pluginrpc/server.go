@@ -444,10 +444,6 @@ func rpcError(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, sdk.ErrOperationConflict):
 		return status.Error(codes.Aborted, err.Error())
-	case errors.Is(err, sdk.ErrLeaseNotFound):
-		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, sdk.ErrLeaseExpired):
-		return status.Error(codes.FailedPrecondition, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}
