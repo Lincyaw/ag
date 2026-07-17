@@ -11,7 +11,9 @@ import (
 )
 
 type gatewayTestProvider struct {
-	block chan struct{}
+	block        chan struct{}
+	closeStarted chan struct{}
+	closeRelease chan struct{}
 }
 
 func (*gatewayTestProvider) Spec() sdk.ProviderSpec {
@@ -33,6 +35,19 @@ func (provider *gatewayTestProvider) Complete(
 	return sdk.ModelResponse{
 		Content: "gateway result", FinishReason: "stop", Model: "test",
 	}, nil
+}
+
+func (provider *gatewayTestProvider) Close(ctx context.Context) error {
+	if provider.closeStarted == nil {
+		return nil
+	}
+	close(provider.closeStarted)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-provider.closeRelease:
+		return nil
+	}
 }
 
 func TestRuntimeExecutionBackendSubmitsPollsAndCancels(t *testing.T) {
@@ -111,6 +126,53 @@ func TestRuntimeExecutionBackendRecoversPendingExecution(t *testing.T) {
 		completed.Result == nil ||
 		completed.Result.Output != "gateway result" {
 		t.Fatalf("completed recovery = %#v", completed)
+	}
+}
+
+func TestRuntimeExecutionBackendPollWaitsForHostClose(t *testing.T) {
+	provider := &gatewayTestProvider{}
+	backend := newTestRuntimeExecutionBackend(t, provider)
+	session := Session{
+		ID: "runtime-poll-close", UserID: "user-a",
+		Provider: "gateway-test", MaxTurns: 3,
+	}
+	if err := backend.CreateSession(t.Context(), session); err != nil {
+		t.Fatal(err)
+	}
+	provider.closeStarted = make(chan struct{})
+	provider.closeRelease = make(chan struct{})
+	submitted, err := backend.Submit(t.Context(), session, "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-provider.closeStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("execution host did not start closing")
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := backend.Get(
+			t.Context(),
+			session,
+			submitted.Execution.ID,
+		)
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		t.Fatalf("poll returned before execution host closed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(provider.closeRelease)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("poll did not return after execution host closed")
 	}
 }
 
@@ -242,7 +304,7 @@ func testGatewayRuntimeBuilder(provider sdk.Provider) RuntimeBuilder {
 		if err != nil {
 			return nil, err
 		}
-		plugin := sdk.PluginFunc{
+		plugin := gatewayTestPlugin{PluginFunc: sdk.PluginFunc{
 			PluginManifest: sdk.Manifest{
 				Name: "gateway-provider", Version: "1.0.0",
 				Description: "gateway runtime backend test provider",
@@ -257,7 +319,7 @@ func testGatewayRuntimeBuilder(provider sdk.Provider) RuntimeBuilder {
 			) error {
 				return registrar.RegisterProvider(provider)
 			},
-		}
+		}, provider: provider}
 		if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
 			closeCtx, cancel := context.WithTimeout(
 				context.Background(),
@@ -269,6 +331,20 @@ func testGatewayRuntimeBuilder(provider sdk.Provider) RuntimeBuilder {
 		}
 		return runtime, nil
 	}
+}
+
+type gatewayTestPlugin struct {
+	sdk.PluginFunc
+	provider sdk.Provider
+}
+
+func (plugin gatewayTestPlugin) Close(ctx context.Context) error {
+	if closer, ok := plugin.provider.(interface {
+		Close(context.Context) error
+	}); ok {
+		return closer.Close(ctx)
+	}
+	return nil
 }
 
 func waitGatewayExecution(
