@@ -60,7 +60,7 @@ func Serve(ctx context.Context, config Config) (returnErr error) {
 		adapter        pluginrpc.Server
 		listener       net.Listener
 		server         *grpc.Server
-		registryClient *pluginrpc.RegistryClient
+		registryClient pluginregistry.Directory
 		lease          pluginregistry.PluginLease
 		serveDone      chan error
 		serverStarted  bool
@@ -271,7 +271,7 @@ func Serve(ctx context.Context, config Config) (returnErr error) {
 
 func renewLease(
 	ctx context.Context,
-	client *pluginrpc.RegistryClient,
+	client pluginregistry.Directory,
 	lease pluginregistry.PluginLease,
 	ttl time.Duration,
 	done chan<- error,

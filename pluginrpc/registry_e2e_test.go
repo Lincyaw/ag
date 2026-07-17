@@ -250,7 +250,7 @@ func TestRegistryServiceDirectoryContract(t *testing.T) {
 
 func TestRegistryClientRejectsUnrepresentableRequests(t *testing.T) {
 	t.Parallel()
-	client := &RegistryClient{}
+	client := &registryClient{}
 	if _, err := client.Register(
 		context.Background(),
 		registry.PluginRegistration{},

@@ -243,7 +243,7 @@ func (process *childProcess) stop(t *testing.T) {
 
 func startRegistry(
 	t *testing.T,
-) (string, *pluginrpc.RegistryClient, registry.Directory) {
+) (string, registry.Directory, registry.Directory) {
 	t.Helper()
 	directory := registry.NewMemoryDirectory(registry.MemoryConfig{})
 	adapter, err := pluginrpc.NewRegistryServer(directory)

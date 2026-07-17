@@ -179,7 +179,7 @@ func (server *registryServer) PollRegistrations(
 	return response, nil
 }
 
-type RegistryClient struct {
+type registryClient struct {
 	uri        string
 	connection *grpc.ClientConn
 	client     pluginv1.RegistryServiceClient
@@ -189,7 +189,7 @@ func NewRegistryClient(
 	ctx context.Context,
 	uri string,
 	config ClientConfig,
-) (*RegistryClient, error) {
+) (registry.Directory, error) {
 	parsed, err := parseSourceURI(uri)
 	if err != nil {
 		return nil, err
@@ -198,14 +198,14 @@ func NewRegistryClient(
 	if err != nil {
 		return nil, err
 	}
-	return &RegistryClient{
+	return &registryClient{
 		uri:        parsed.String(),
 		connection: connection,
 		client:     pluginv1.NewRegistryServiceClient(connection),
 	}, nil
 }
 
-func (client *RegistryClient) Register(
+func (client *registryClient) Register(
 	ctx context.Context,
 	registration registry.PluginRegistration,
 	options registry.LeaseOptions,
@@ -224,7 +224,7 @@ func (client *RegistryClient) Register(
 	return fromProtoLease(response.GetLease())
 }
 
-func (client *RegistryClient) Renew(
+func (client *registryClient) Renew(
 	ctx context.Context,
 	credential registry.LeaseCredential,
 	ttl time.Duration,
@@ -243,7 +243,7 @@ func (client *RegistryClient) Renew(
 	return fromProtoLease(response.GetLease())
 }
 
-func (client *RegistryClient) Unregister(
+func (client *registryClient) Unregister(
 	ctx context.Context,
 	credential registry.LeaseCredential,
 ) error {
@@ -253,7 +253,7 @@ func (client *RegistryClient) Unregister(
 	return err
 }
 
-func (client *RegistryClient) Get(
+func (client *registryClient) Get(
 	ctx context.Context,
 	key registry.InstanceKey,
 ) (registry.PluginInstance, error) {
@@ -267,7 +267,7 @@ func (client *RegistryClient) Get(
 	return fromProtoInstance(response.GetInstance())
 }
 
-func (client *RegistryClient) List(
+func (client *registryClient) List(
 	ctx context.Context,
 	query registry.DiscoveryQuery,
 	request registry.PageRequest,
@@ -318,7 +318,7 @@ func (client *RegistryClient) List(
 	return page, nil
 }
 
-func (client *RegistryClient) Poll(
+func (client *registryClient) Poll(
 	ctx context.Context,
 	request registry.ChangePollRequest,
 ) (registry.ChangePage, error) {
@@ -365,21 +365,21 @@ func (client *RegistryClient) Poll(
 	return page, nil
 }
 
-func (*RegistryClient) Capabilities() registry.Capabilities {
+func (*registryClient) Capabilities() registry.Capabilities {
 	return registry.Capabilities{
 		Distributed: true,
 		Poll:        true,
 	}
 }
 
-func (client *RegistryClient) String() string {
+func (client *registryClient) String() string {
 	if client == nil {
 		return ""
 	}
 	return client.uri
 }
 
-func (client *RegistryClient) Close(context.Context) error {
+func (client *registryClient) Close(context.Context) error {
 	if client == nil || client.connection == nil {
 		return nil
 	}
@@ -638,4 +638,4 @@ func registryRPCError(err error) error {
 	}
 }
 
-var _ registry.Directory = (*RegistryClient)(nil)
+var _ registry.Directory = (*registryClient)(nil)
