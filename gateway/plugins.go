@@ -34,15 +34,20 @@ type PluginDirectory interface {
 	Close(context.Context) error
 }
 
+type SessionRepository interface {
+	Get(context.Context, string) (Session, error)
+	Save(context.Context, Session, uint64) (Session, error)
+}
+
 type ManagerConfig struct {
-	Store            SessionStore
+	Store            SessionRepository
 	Directory        PluginCatalog
 	DefaultNamespace string
 	RequireIdle      IdleGuard
 }
 
 type Manager struct {
-	store            SessionStore
+	store            SessionRepository
 	directory        PluginCatalog
 	defaultNamespace string
 	requireIdle      IdleGuard
