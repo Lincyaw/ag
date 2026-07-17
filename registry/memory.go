@@ -214,7 +214,7 @@ func (directory *memoryDirectory) Poll(
 }
 
 func (*memoryDirectory) Capabilities() Capabilities {
-	return Capabilities{Poll: true}
+	return Capabilities{}
 }
 
 func (*memoryDirectory) String() string { return "memory://local" }

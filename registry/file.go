@@ -219,7 +219,6 @@ func (*fileDirectory) Capabilities() Capabilities {
 	return Capabilities{
 		Durable:          true,
 		MultiProcessSafe: fileLocksAreMultiProcessSafe,
-		Poll:             true,
 	}
 }
 

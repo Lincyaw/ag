@@ -366,10 +366,7 @@ func (client *registryClient) Poll(
 }
 
 func (*registryClient) Capabilities() registry.Capabilities {
-	return registry.Capabilities{
-		Distributed: true,
-		Poll:        true,
-	}
+	return registry.Capabilities{Distributed: true}
 }
 
 func (client *registryClient) String() string {

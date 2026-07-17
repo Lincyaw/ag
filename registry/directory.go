@@ -134,8 +134,6 @@ type Capabilities struct {
 	Durable          bool `json:"durable"`
 	MultiProcessSafe bool `json:"multi_process_safe"`
 	Distributed      bool `json:"distributed"`
-	Poll             bool `json:"poll"`
-	NativeLease      bool `json:"native_lease"`
 }
 
 type Directory interface {
