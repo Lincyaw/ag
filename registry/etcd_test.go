@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"net/url"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/lincyaw/ag/sdk"
+	"go.etcd.io/etcd/api/v3/mvccpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func TestEtcdDriverValidatesAndRedactsConfiguration(t *testing.T) {
@@ -145,6 +148,66 @@ func TestEtcdDirectoryClassifiesInvalidRequests(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if err := run(); !errors.Is(err, ErrInvalidRequest) {
 				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestEtcdPluginChangeUsesEventTimeSource(t *testing.T) {
+	t.Parallel()
+	recordedAt := time.Date(2026, time.July, 17, 12, 0, 0, 0, time.UTC)
+	observedAt := recordedAt.Add(time.Minute)
+
+	tests := []struct {
+		name      string
+		removal   ChangeKind
+		wantKind  ChangeKind
+		wantStamp time.Time
+	}{
+		{
+			name: "explicit delete", removal: ChangeDelete,
+			wantKind: ChangeDelete, wantStamp: recordedAt,
+		},
+		{
+			name: "lease expiry", wantKind: ChangeExpire,
+			wantStamp: observedAt,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record, err := json.Marshal(etcdInstanceRecord{
+				PluginInstance: PluginInstance{
+					PluginRegistration: testRegistration(
+						"file",
+						"node-a",
+						"grpc://127.0.0.1:9001",
+					),
+					UpdatedAt: recordedAt,
+				},
+				Removal: test.removal,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			change, include, err := etcdPluginChange(
+				&clientv3.Event{
+					Type: mvccpb.DELETE,
+					Kv: &mvccpb.KeyValue{
+						ModRevision: 2,
+					},
+					PrevKv: &mvccpb.KeyValue{
+						Value:          record,
+						CreateRevision: 1,
+					},
+				},
+				observedAt,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !include || change.Kind != test.wantKind ||
+				!change.Instance.UpdatedAt.Equal(test.wantStamp) {
+				t.Fatalf("change = %#v", change)
 			}
 		})
 	}

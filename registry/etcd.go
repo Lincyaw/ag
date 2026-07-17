@@ -703,7 +703,10 @@ func (directory *etcdDirectory) Poll(
 					page.CurrentRevision,
 					uint64(response.Header.Revision),
 				)
-				change, include, err := etcdPluginChange(event)
+				change, include, err := etcdPluginChange(
+					event,
+					directory.clock().UTC(),
+				)
 				if err != nil {
 					return ChangePage{}, err
 				}
@@ -1026,6 +1029,7 @@ func decodeEtcdInstance(
 
 func etcdPluginChange(
 	event *clientv3.Event,
+	observedAt time.Time,
 ) (PluginChange, bool, error) {
 	if event == nil {
 		return PluginChange{}, false, nil
@@ -1066,8 +1070,9 @@ func etcdPluginChange(
 		kind := ChangeExpire
 		if removal == ChangeDelete {
 			kind = ChangeDelete
+		} else {
+			instance.UpdatedAt = observedAt
 		}
-		instance.UpdatedAt = time.Now().UTC()
 		instance.Revision = uint64(revision)
 		return PluginChange{
 			Revision: uint64(revision),
