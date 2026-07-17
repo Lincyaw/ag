@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lincyaw/ag/internal/plugincontract"
 	pluginv1 "github.com/lincyaw/ag/pluginrpc/v1"
 	"github.com/lincyaw/ag/sdk"
 	"google.golang.org/grpc/codes"
@@ -37,7 +38,7 @@ type Server interface {
 type server struct {
 	pluginv1.UnimplementedPluginServiceServer
 	manifest          sdk.Manifest
-	registrar         *serverRegistrar
+	registrar         *plugincontract.Registrar
 	pluginCloser      interface{ Close(context.Context) error }
 	operations        sdk.OperationStore
 	inbox             sdk.DeliveryStore
@@ -101,18 +102,18 @@ func NewServer(ctx context.Context, config ServerConfig) (Server, error) {
 			"subscriber timeout must be shorter than the inbox lease",
 		)
 	}
-	manifest := config.Plugin.Manifest()
-	manifest.Requires = slices.Clone(manifest.Requires)
-	manifest.Conflicts = slices.Clone(manifest.Conflicts)
-	manifest.Registers = slices.Clone(manifest.Registers)
+	manifest := plugincontract.CloneManifest(config.Plugin.Manifest())
 	if err := manifest.Validate(); err != nil {
 		return nil, fmt.Errorf("validate plugin manifest: %w", err)
 	}
-	registrar := newServerRegistrar()
+	registrar := plugincontract.NewRegistrar()
 	if err := config.Plugin.Install(ctx, registrar); err != nil {
 		return nil, fmt.Errorf("install plugin into RPC server: %w", err)
 	}
-	if err := registrar.validateManifest(manifest); err != nil {
+	if err := registrar.ValidateManifest(manifest); err != nil {
+		return nil, err
+	}
+	if err := validateRPCContributions(registrar); err != nil {
 		return nil, err
 	}
 	serverContext, cancel := context.WithCancel(context.Background())
@@ -141,7 +142,7 @@ func NewServer(ctx context.Context, config ServerConfig) (Server, error) {
 		cancel()
 		return nil, err
 	}
-	if len(registrar.subscribers) > 0 {
+	if len(registrar.Subscribers) > 0 {
 		for worker := range server.inboxWorkers {
 			server.wait.Add(1)
 			go server.inboxLoop(worker)
@@ -202,31 +203,45 @@ func (server *server) Describe(
 	}
 	defer server.wait.Done()
 	response := &pluginv1.DescribeResponse{Manifest: toProtoManifest(server.manifest)}
-	for _, name := range sortedKeys(server.registrar.providers) {
-		response.Providers = append(response.Providers, toProtoProviderSpec(server.registrar.providers[name].spec))
+	for _, name := range sortedKeys(server.registrar.Providers) {
+		response.Providers = append(
+			response.Providers,
+			toProtoProviderSpec(server.registrar.Providers[name].Spec),
+		)
 	}
-	for _, name := range sortedKeys(server.registrar.tools) {
-		spec, err := toProtoToolSpec(server.registrar.tools[name].spec)
+	for _, name := range sortedKeys(server.registrar.Tools) {
+		spec, err := toProtoToolSpec(server.registrar.Tools[name].Spec)
 		if err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 		response.Tools = append(response.Tools, spec)
 	}
-	for _, name := range sortedKeys(server.registrar.hooks) {
-		response.Hooks = append(response.Hooks, toProtoHookSpec(server.registrar.hooks[name].spec))
+	for _, name := range sortedKeys(server.registrar.Hooks) {
+		response.Hooks = append(
+			response.Hooks,
+			toProtoHookSpec(server.registrar.Hooks[name].Spec),
+		)
 	}
-	for _, name := range sortedKeys(server.registrar.subscribers) {
-		response.Subscribers = append(response.Subscribers, toProtoSubscriberSpec(server.registrar.subscribers[name].spec))
+	for _, name := range sortedKeys(server.registrar.Subscribers) {
+		response.Subscribers = append(
+			response.Subscribers,
+			toProtoSubscriberSpec(server.registrar.Subscribers[name].Spec),
+		)
 	}
-	for _, name := range sortedKeys(server.registrar.capabilities) {
-		spec, err := toProtoCapabilitySpec(server.registrar.capabilities[name].spec)
+	for _, name := range sortedKeys(server.registrar.Capabilities) {
+		spec, err := toProtoCapabilitySpec(
+			server.registrar.Capabilities[name].Spec,
+		)
 		if err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 		response.Capabilities = append(response.Capabilities, spec)
 	}
-	for _, name := range sortedKeys(server.registrar.events) {
-		response.Events = append(response.Events, toProtoEventContract(server.registrar.events[name]))
+	for _, name := range sortedKeys(server.registrar.Events) {
+		response.Events = append(
+			response.Events,
+			toProtoEventContract(server.registrar.Events[name]),
+		)
 	}
 	return response, nil
 }
@@ -337,11 +352,11 @@ func (server *server) operationResource(
 ) (operationResource, error) {
 	switch kind {
 	case sdk.OperationKindProvider:
-		provider, exists := server.registrar.providers[name]
+		provider, exists := server.registrar.Providers[name]
 		if !exists {
 			return operationResource{}, status.Errorf(codes.NotFound, "%s %q not found", kind, name)
 		}
-		if asynchronous, ok := provider.value.(sdk.AsyncProvider); ok {
+		if asynchronous, ok := provider.Value.(sdk.AsyncProvider); ok {
 			return operationResource{
 				submit: asynchronous.SubmitCompletion,
 				poll:   asynchronous.PollCompletion,
@@ -349,11 +364,11 @@ func (server *server) operationResource(
 			}, nil
 		}
 	case sdk.OperationKindTool:
-		tool, exists := server.registrar.tools[name]
+		tool, exists := server.registrar.Tools[name]
 		if !exists {
 			return operationResource{}, status.Errorf(codes.NotFound, "%s %q not found", kind, name)
 		}
-		if asynchronous, ok := tool.value.(sdk.AsyncTool); ok {
+		if asynchronous, ok := tool.Value.(sdk.AsyncTool); ok {
 			return operationResource{
 				submit: asynchronous.SubmitCall,
 				poll:   asynchronous.PollCall,
@@ -361,11 +376,11 @@ func (server *server) operationResource(
 			}, nil
 		}
 	case sdk.OperationKindCapability:
-		capability, exists := server.registrar.capabilities[name]
+		capability, exists := server.registrar.Capabilities[name]
 		if !exists {
 			return operationResource{}, status.Errorf(codes.NotFound, "%s %q not found", kind, name)
 		}
-		if asynchronous, ok := capability.value.(sdk.AsyncCapability); ok {
+		if asynchronous, ok := capability.Value.(sdk.AsyncCapability); ok {
 			return operationResource{
 				submit: asynchronous.SubmitInvoke,
 				poll:   asynchronous.PollInvoke,
@@ -406,7 +421,7 @@ func (server *server) HandleHook(
 		return nil, err
 	}
 	defer server.wait.Done()
-	hook, exists := server.registrar.hooks[request.GetHook()]
+	hook, exists := server.registrar.Hooks[request.GetHook()]
 	if !exists {
 		return nil, status.Errorf(codes.NotFound, "hook %q not found", request.GetHook())
 	}
@@ -414,7 +429,7 @@ func (server *server) HandleHook(
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	effect, err := hook.value.Handle(ctx, event)
+	effect, err := hook.Value.Handle(ctx, event)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -440,7 +455,7 @@ func (server *server) Deliver(
 	if delivery.Plugin != server.manifest.Name {
 		return nil, status.Errorf(codes.InvalidArgument, "delivery targets plugin %q", delivery.Plugin)
 	}
-	subscriber, exists := server.registrar.subscribers[delivery.Subscription]
+	subscriber, exists := server.registrar.Subscribers[delivery.Subscription]
 	if !exists {
 		return nil, status.Errorf(codes.NotFound, "subscriber %q not found", delivery.Subscription)
 	}
@@ -448,7 +463,7 @@ func (server *server) Deliver(
 		server.manifest,
 		"subscriber",
 		delivery.Subscription,
-		subscriber.spec,
+		subscriber.Spec,
 	)
 	if delivery.PluginVersion != "" &&
 		delivery.PluginVersion != server.manifest.Version {
@@ -490,3 +505,23 @@ func rpcError(err error) error {
 }
 
 func sortedKeys[V any](values map[string]V) []string { return slices.Sorted(maps.Keys(values)) }
+
+func validateRPCContributions(
+	registrar *plugincontract.Registrar,
+) error {
+	for name, tool := range registrar.Tools {
+		if _, err := toProtoToolSpec(tool.Spec); err != nil {
+			return fmt.Errorf("encode tool %q for RPC: %w", name, err)
+		}
+	}
+	for name, capability := range registrar.Capabilities {
+		if _, err := toProtoCapabilitySpec(capability.Spec); err != nil {
+			return fmt.Errorf(
+				"encode capability %q for RPC: %w",
+				name,
+				err,
+			)
+		}
+	}
+	return nil
+}

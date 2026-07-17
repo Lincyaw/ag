@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/lincyaw/ag/internal/plugincontract"
 	"github.com/lincyaw/ag/sdk"
 	"github.com/lincyaw/ag/sdk/runtime/internal/durability"
 )
@@ -103,7 +104,7 @@ func selectProviderName(
 func snapshotToolSpecs(snapshot *registrySnapshot) []sdk.ToolSpec {
 	specs := make([]sdk.ToolSpec, 0, len(snapshot.tools))
 	for _, owned := range snapshot.tools {
-		specs = append(specs, cloneToolSpec(owned.spec))
+		specs = append(specs, plugincontract.CloneToolSpec(owned.spec))
 	}
 	slices.SortFunc(specs, func(left, right sdk.ToolSpec) int {
 		return strings.Compare(left.Name, right.Name)
@@ -118,7 +119,7 @@ func resolveAdvertisedTools(
 	result := make([]sdk.ToolSpec, 0, len(specs))
 	index := make(map[string]sdk.Tool, len(specs))
 	for _, spec := range specs {
-		if err := validateToolSpec(spec); err != nil {
+		if err := plugincontract.ValidateToolSpec(spec); err != nil {
 			return nil, nil, err
 		}
 		owned, exists := snapshot.tools[spec.Name]

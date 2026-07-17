@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"runtime/debug"
 	"sync"
 	"time"
 
+	"github.com/lincyaw/ag/internal/operationworker"
+	"github.com/lincyaw/ag/internal/plugincontract"
 	"github.com/lincyaw/ag/sdk"
 )
 
@@ -92,7 +93,7 @@ type syncCapabilityAdapter struct {
 }
 
 func (capability syncCapabilityAdapter) Spec() sdk.CapabilitySpec {
-	return cloneCapabilitySpec(capability.spec)
+	return plugincontract.CloneCapabilitySpec(capability.spec)
 }
 
 func (capability syncCapabilityAdapter) SubmitInvoke(
@@ -130,7 +131,9 @@ func (capability syncCapabilityAdapter) CancelInvoke(
 	)
 }
 
-func (tool syncToolAdapter) Spec() sdk.ToolSpec { return cloneToolSpec(tool.spec) }
+func (tool syncToolAdapter) Spec() sdk.ToolSpec {
+	return plugincontract.CloneToolSpec(tool.spec)
+}
 
 func (tool syncToolAdapter) SubmitCall(
 	ctx context.Context,
@@ -168,59 +171,59 @@ func (tool syncToolAdapter) CancelCall(
 }
 
 func (runtime *Runtime) adaptSynchronousResources(
-	registrar *stagingRegistrar,
+	registrar *plugincontract.AgentRegistrar,
 	manifest sdk.Manifest,
 ) {
-	for name, staged := range registrar.providers {
-		if _, asynchronous := staged.value.(sdk.AsyncProvider); asynchronous {
+	for name, staged := range registrar.Providers {
+		if _, asynchronous := staged.Value.(sdk.AsyncProvider); asynchronous {
 			continue
 		}
-		staged.value = syncProviderAdapter{
+		staged.Value = syncProviderAdapter{
 			runtime:     runtime,
-			synchronous: staged.value.(sdk.SyncProvider),
-			spec:        staged.spec,
+			synchronous: staged.Value.(sdk.SyncProvider),
+			spec:        staged.Spec,
 			revision: sdk.ResourceRevision(
 				manifest,
 				string(sdk.OperationKindProvider),
 				name,
-				staged.spec,
+				staged.Spec,
 			),
 		}
-		registrar.providers[name] = staged
+		registrar.Providers[name] = staged
 	}
-	for name, staged := range registrar.tools {
-		if _, asynchronous := staged.value.(sdk.AsyncTool); asynchronous {
+	for name, staged := range registrar.Tools {
+		if _, asynchronous := staged.Value.(sdk.AsyncTool); asynchronous {
 			continue
 		}
-		staged.value = syncToolAdapter{
+		staged.Value = syncToolAdapter{
 			runtime:     runtime,
-			synchronous: staged.value.(sdk.SyncTool),
-			spec:        staged.spec,
+			synchronous: staged.Value.(sdk.SyncTool),
+			spec:        staged.Spec,
 			revision: sdk.ResourceRevision(
 				manifest,
 				string(sdk.OperationKindTool),
 				name,
-				staged.spec,
+				staged.Spec,
 			),
 		}
-		registrar.tools[name] = staged
+		registrar.Tools[name] = staged
 	}
-	for name, staged := range registrar.capabilities {
-		if _, asynchronous := staged.value.(sdk.AsyncCapability); asynchronous {
+	for name, staged := range registrar.Capabilities {
+		if _, asynchronous := staged.Value.(sdk.AsyncCapability); asynchronous {
 			continue
 		}
-		staged.value = syncCapabilityAdapter{
+		staged.Value = syncCapabilityAdapter{
 			runtime:     runtime,
-			synchronous: staged.value.(sdk.SyncCapability),
-			spec:        staged.spec,
+			synchronous: staged.Value.(sdk.SyncCapability),
+			spec:        staged.Spec,
 			revision: sdk.ResourceRevision(
 				manifest,
 				string(sdk.OperationKindCapability),
 				name,
-				staged.spec,
+				staged.Spec,
 			),
 		}
-		registrar.capabilities[name] = staged
+		registrar.Capabilities[name] = staged
 	}
 }
 
@@ -258,12 +261,8 @@ func (runtime *Runtime) submitLocalOperation(
 		return sdk.Operation{}, err
 	}
 	if !record.Operation.Terminal() {
-		operationCtx := sdk.WithInvocation(
-			ctx,
-			record.Invocation,
-		)
 		started = runtime.startLocalOperation(
-			operationCtx,
+			ctx,
 			record.Operation.ID,
 			execute,
 		)
@@ -304,150 +303,23 @@ func (runtime *Runtime) executeLocalOperation(
 	id string,
 	execute operationExecutor,
 ) {
-	record, err := runtime.operation.store.Claim(
+	worker := operationworker.Runner{
+		Store:  runtime.operation.store,
+		Logger: runtime.logger,
+		Owner:  runtime.operation.workerID,
+		Lease:  runtime.operation.lease,
+	}
+	worker.Run(
 		ctx,
 		id,
-		runtime.operation.workerID,
-		time.Now().UTC(),
-		runtime.operation.lease,
+		nil,
+		func(
+			ctx context.Context,
+			record sdk.OperationRecord,
+		) (json.RawMessage, error) {
+			return execute(ctx, record.Input)
+		},
 	)
-	if err != nil {
-		if !errors.Is(err, sdk.ErrOperationClaimed) {
-			runtime.logger.Debug(
-				"claim local operation",
-				"operation_id",
-				id,
-				"error",
-				err,
-			)
-		}
-		return
-	}
-	token := record.Execution.Token
-	executionCtx, cancelExecution := context.WithCancel(ctx)
-	defer cancelExecution()
-	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
-	defer stopHeartbeat()
-	heartbeatDone := make(chan struct{})
-	leaseLost := make(chan error, 1)
-	go runtime.renewOperationLease(
-		heartbeatCtx,
-		id,
-		token,
-		cancelExecution,
-		heartbeatDone,
-		leaseLost,
-	)
-	output, executeErr := invokeOperationExecutor(
-		executionCtx,
-		record.Input,
-		execute,
-	)
-	stopHeartbeat()
-	<-heartbeatDone
-	select {
-	case lostErr := <-leaseLost:
-		runtime.logger.Warn(
-			"local operation lease lost",
-			"operation_id",
-			id,
-			"error",
-			lostErr,
-		)
-		return
-	default:
-	}
-	if ctx.Err() != nil {
-		_, releaseErr := runtime.operation.store.Release(
-			context.Background(),
-			id,
-			token,
-		)
-		if releaseErr != nil && !errors.Is(releaseErr, sdk.ErrOperationFence) {
-			runtime.logger.Error(
-				"release local operation",
-				"operation_id",
-				id,
-				"error",
-				releaseErr,
-			)
-		}
-		return
-	}
-	state := sdk.OperationSucceeded
-	errorText := ""
-	if executeErr != nil {
-		state = sdk.OperationFailed
-		output = nil
-		errorText = executeErr.Error()
-	}
-	_, err = runtime.operation.store.Complete(
-		context.Background(),
-		id,
-		token,
-		state,
-		output,
-		errorText,
-	)
-	if err != nil && !errors.Is(err, sdk.ErrOperationFence) {
-		runtime.logger.Error("complete local operation", "operation_id", id, "error", err)
-	}
-}
-
-func invokeOperationExecutor(
-	ctx context.Context,
-	input json.RawMessage,
-	execute operationExecutor,
-) (output json.RawMessage, err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf(
-				"plugin operation panic: %v\n%s",
-				recovered,
-				debug.Stack(),
-			)
-		}
-	}()
-	return execute(ctx, input)
-}
-
-func (runtime *Runtime) renewOperationLease(
-	ctx context.Context,
-	id string,
-	token string,
-	cancelExecution context.CancelFunc,
-	done chan<- struct{},
-	lost chan<- error,
-) {
-	defer close(done)
-	interval := runtime.operation.lease / 3
-	if interval < time.Millisecond {
-		interval = time.Millisecond
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case now := <-ticker.C:
-			_, err := runtime.operation.store.Renew(
-				ctx,
-				id,
-				token,
-				now.UTC(),
-				runtime.operation.lease,
-			)
-			if err != nil {
-				select {
-				case lost <- err:
-				default:
-				}
-				cancelExecution()
-				return
-			}
-		}
-	}
 }
 
 func (runtime *Runtime) pollLocalOperation(

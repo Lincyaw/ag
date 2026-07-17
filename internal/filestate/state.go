@@ -1,4 +1,7 @@
-package storage
+// Package filestate owns the filesystem guarantees shared by local durable
+// state adapters: private directories, atomic JSON replacement, and directory
+// synchronization.
+package filestate
 
 import (
 	"context"
@@ -9,7 +12,7 @@ import (
 	"strings"
 )
 
-func prepareDirectory(label string, directory string) (string, error) {
+func PrepareDirectory(label, directory string) (string, error) {
 	directory = strings.TrimSpace(directory)
 	if directory == "" {
 		return "", fmt.Errorf("%s directory is empty", label)
@@ -24,22 +27,32 @@ func prepareDirectory(label string, directory string) (string, error) {
 	return absolute, nil
 }
 
-func writeJSONAtomic(
+func WriteJSON(
 	ctx context.Context,
 	directory string,
 	path string,
-	prefix string,
 	label string,
 	value any,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if filepath.Clean(directory) != filepath.Clean(filepath.Dir(path)) {
+		return fmt.Errorf(
+			"%s path %q is outside state directory %q",
+			label,
+			path,
+			directory,
+		)
+	}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", label, err)
 	}
-	temporary, err := os.CreateTemp(directory, prefix)
+	temporary, err := os.CreateTemp(
+		directory,
+		"."+filepath.Base(path)+"-*.tmp",
+	)
 	if err != nil {
 		return fmt.Errorf("create %s temporary file: %w", label, err)
 	}
@@ -72,25 +85,17 @@ func writeJSONAtomic(
 		return fmt.Errorf("publish %s: %w", label, err)
 	}
 	removeTemporary = false
-	directoryHandle, err := os.Open(directory)
+	return SyncDirectory(directory, label)
+}
+
+func SyncDirectory(directory, label string) error {
+	handle, err := os.Open(directory)
 	if err != nil {
 		return fmt.Errorf("open %s directory for sync: %w", label, err)
 	}
-	defer directoryHandle.Close()
-	if err := directoryHandle.Sync(); err != nil {
-		return fmt.Errorf("sync %s directory: %w", label, err)
-	}
-	return nil
-}
-
-func syncDirectory(directory string) error {
-	handle, err := os.Open(directory)
-	if err != nil {
-		return fmt.Errorf("open directory for sync: %w", err)
-	}
 	defer handle.Close()
 	if err := handle.Sync(); err != nil {
-		return fmt.Errorf("sync directory: %w", err)
+		return fmt.Errorf("sync %s directory: %w", label, err)
 	}
 	return nil
 }

@@ -7,22 +7,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lincyaw/ag/internal/plugincontract"
 	"github.com/lincyaw/ag/sdk"
 )
 
 // ownedResource ties a published resource to its plugin lifecycle owner.
 type ownedResource[Resource, Spec any] struct {
-	registeredResource[Resource, Spec]
+	value Resource
+	spec  Spec
 	owner *mountState
 }
 
 func ownResource[Resource, Spec any](
 	owner *mountState,
-	resource registeredResource[Resource, Spec],
+	resource plugincontract.Contribution[Resource, Spec],
 ) ownedResource[Resource, Spec] {
 	return ownedResource[Resource, Spec]{
-		registeredResource: resource,
-		owner:              owner,
+		value: resource.Value,
+		spec:  resource.Spec,
+		owner: owner,
 	}
 }
 
@@ -210,7 +213,7 @@ func validatePluginResources(
 
 func (snapshot *registrySnapshot) add(
 	state *mountState,
-	staged *stagingRegistrar,
+	staged *plugincontract.AgentRegistrar,
 	nextSequence *uint64,
 	defaultHookTimeout time.Duration,
 ) error {
@@ -221,7 +224,7 @@ func (snapshot *registrySnapshot) add(
 
 	resources := snapshot.resources()
 	resources[sdk.PluginResource(name)] = struct{}{}
-	for _, resource := range staged.resources() {
+	for _, resource := range staged.Resources() {
 		if _, exists := resources[resource]; exists {
 			return fmt.Errorf(
 				"plugin %q cannot register existing resource %q",
@@ -239,7 +242,7 @@ func (snapshot *registrySnapshot) add(
 	if err := validatePluginResources(state.manifest, resources); err != nil {
 		return err
 	}
-	for _, agent := range staged.agents {
+	for _, agent := range staged.Agents {
 		if err := validateAgentResources(
 			state.manifest.Name,
 			agent,
@@ -249,9 +252,11 @@ func (snapshot *registrySnapshot) add(
 		}
 	}
 
-	for event, hooks := range staged.hooks {
+	for _, hookName := range staged.HookOrder {
+		hook := staged.Hooks[hookName]
+		event := hook.Spec.Event
 		if _, exists := snapshot.events[event]; !exists {
-			if _, stagedEvent := staged.events[event]; !stagedEvent {
+			if _, stagedEvent := staged.Events[event]; !stagedEvent {
 				return fmt.Errorf(
 					"plugin %q hook targets unknown event %q",
 					name,
@@ -259,17 +264,12 @@ func (snapshot *registrySnapshot) add(
 				)
 			}
 		}
-		for _, hook := range hooks {
-			if hook.spec.Event != event {
-				panic("staging registrar indexed a hook under the wrong event")
-			}
-		}
 	}
-	for _, subscriber := range staged.subscribers {
-		spec := subscriber.spec
+	for _, subscriber := range staged.Subscribers {
+		spec := subscriber.Spec
 		for _, event := range spec.Events {
 			if _, exists := snapshot.events[event]; !exists {
-				if _, stagedEvent := staged.events[event]; !stagedEvent {
+				if _, stagedEvent := staged.Events[event]; !stagedEvent {
 					return fmt.Errorf(
 						"plugin %q subscriber %q targets unknown event %q",
 						name,
@@ -282,47 +282,47 @@ func (snapshot *registrySnapshot) add(
 	}
 
 	snapshot.plugins[name] = state
-	for providerName, provider := range staged.providers {
+	for providerName, provider := range staged.Providers {
 		snapshot.providers[providerName] = ownResource(state, provider)
 	}
-	for toolName, tool := range staged.tools {
+	for toolName, tool := range staged.Tools {
 		snapshot.tools[toolName] = ownResource(state, tool)
 	}
-	for agentName, agent := range staged.agents {
+	for agentName, agent := range staged.Agents {
 		snapshot.agents[agentName] = ownedAgent{
 			owner: state,
 			spec:  agent,
 		}
 	}
-	for capabilityName, capability := range staged.capabilities {
+	for capabilityName, capability := range staged.Capabilities {
 		snapshot.capabilities[capabilityName] = ownResource(state, capability)
 	}
-	for subscriberName, subscriber := range staged.subscribers {
+	for subscriberName, subscriber := range staged.Subscribers {
 		snapshot.subscribers[subscriberName] = ownResource(state, subscriber)
 	}
-	for eventName, contract := range staged.events {
+	for eventName, contract := range staged.Events {
 		snapshot.events[eventName] = ownedEvent{
 			owner:    state,
 			contract: contract,
 		}
 	}
-	for eventName, hooks := range staged.hooks {
+	for _, hookName := range staged.HookOrder {
+		hook := staged.Hooks[hookName]
+		eventName := hook.Spec.Event
 		contract := snapshot.events[eventName].contract
-		for _, hook := range hooks {
-			hook.spec = normalizeHookSpec(
-				hook.spec,
-				contract,
-				defaultHookTimeout,
-			)
-			snapshot.hooks[eventName] = append(
-				snapshot.hooks[eventName],
-				ownedHook{
-					ownedResource: ownResource(state, hook),
-					seq:           *nextSequence,
-				},
-			)
-			*nextSequence++
-		}
+		hook.Spec = normalizeHookSpec(
+			hook.Spec,
+			contract,
+			defaultHookTimeout,
+		)
+		snapshot.hooks[eventName] = append(
+			snapshot.hooks[eventName],
+			ownedHook{
+				ownedResource: ownResource(state, hook),
+				seq:           *nextSequence,
+			},
+		)
+		*nextSequence++
 		slices.SortFunc(snapshot.hooks[eventName], compareOwnedHooks)
 	}
 	return nil

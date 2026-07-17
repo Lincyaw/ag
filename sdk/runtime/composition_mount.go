@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"sync"
 	"time"
 
+	"github.com/lincyaw/ag/internal/plugincontract"
 	"github.com/lincyaw/ag/sdk"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -76,10 +76,7 @@ func (runtime *Runtime) Mount(
 		return nil, errors.Join(cause, connection.Close(closeCtx))
 	}
 
-	manifest := connection.Manifest()
-	manifest.Requires = slices.Clone(manifest.Requires)
-	manifest.Conflicts = slices.Clone(manifest.Conflicts)
-	manifest.Registers = slices.Clone(manifest.Registers)
+	manifest := plugincontract.CloneManifest(connection.Manifest())
 	if err := manifest.Validate(); err != nil {
 		recordSpanError(span, err)
 		return closeOnError(fmt.Errorf("validate plugin manifest: %w", err))
@@ -89,7 +86,7 @@ func (runtime *Runtime) Mount(
 		attribute.String("plugin.version", manifest.Version),
 	)
 
-	staged := newStagingRegistrar()
+	staged := plugincontract.NewAgentRegistrar()
 	if err := connection.Install(ctx, staged); err != nil {
 		recordSpanError(span, err)
 		return closeOnError(fmt.Errorf(
@@ -98,7 +95,7 @@ func (runtime *Runtime) Mount(
 			err,
 		))
 	}
-	if err := staged.validateManifest(manifest); err != nil {
+	if err := staged.ValidateManifest(manifest); err != nil {
 		recordSpanError(span, err)
 		return closeOnError(err)
 	}
@@ -123,7 +120,7 @@ func (runtime *Runtime) Mount(
 	}
 	next.generation++
 	runtime.current.Store(next)
-	if len(staged.subscribers) > 0 {
+	if len(staged.Subscribers) > 0 {
 		runtime.startDeliveryWorkersLocked()
 	}
 	runtime.mu.Unlock()

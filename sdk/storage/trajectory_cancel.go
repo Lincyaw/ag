@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lincyaw/ag/internal/filestate"
 	"github.com/lincyaw/ag/sdk"
 )
 
@@ -70,7 +71,7 @@ func (store *fileTrajectoryStore) CancelExecution(
 	}
 	now = normalizedMutationTime(now)
 	var metadata sdk.TrajectoryMetadata
-	err := withFileLock(store.lockPath, true, func() error {
+	err := filestate.WithExclusiveLock(store.lockPath, func() error {
 		stored, err := store.readStoredLocked(trajectoryID)
 		if err != nil {
 			return err

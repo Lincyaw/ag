@@ -35,7 +35,7 @@ func (server *server) inboxLoop(worker int) {
 }
 
 func (server *server) receiveDelivery(delivery sdk.Delivery) {
-	subscriber, exists := server.registrar.subscribers[delivery.Subscription]
+	subscriber, exists := server.registrar.Subscribers[delivery.Subscription]
 	if !exists {
 		server.retryDelivery(delivery, errors.New("subscriber disappeared"))
 		return
@@ -44,7 +44,7 @@ func (server *server) receiveDelivery(delivery sdk.Delivery) {
 		server.manifest,
 		"subscriber",
 		delivery.Subscription,
-		subscriber.spec,
+		subscriber.Spec,
 	)
 	if delivery.Plugin != server.manifest.Name ||
 		(delivery.PluginVersion != "" &&
@@ -78,11 +78,11 @@ func (server *server) receiveDelivery(delivery sdk.Delivery) {
 		return
 	}
 	timeout := server.subscriberTimeout
-	if configured := subscriber.spec.Timeout; configured > 0 && configured < timeout {
+	if configured := subscriber.Spec.Timeout; configured > 0 && configured < timeout {
 		timeout = configured
 	}
 	ctx, cancel := context.WithTimeout(server.context, timeout)
-	err := safeReceive(ctx, subscriber.value, delivery)
+	err := safeReceive(ctx, subscriber.Value, delivery)
 	cancel()
 	if err != nil {
 		server.retryDelivery(delivery, err)

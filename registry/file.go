@@ -9,9 +9,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/lincyaw/ag/internal/filestate"
 )
 
 type FileConfig struct {
@@ -32,16 +33,12 @@ type fileDirectory struct {
 }
 
 func NewFileDirectory(config FileConfig) (Directory, error) {
-	directory := strings.TrimSpace(config.Directory)
-	if directory == "" {
-		return nil, errors.New("registry directory is empty")
-	}
-	absolute, err := filepath.Abs(directory)
+	absolute, err := filestate.PrepareDirectory(
+		"registry",
+		config.Directory,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("resolve registry directory: %w", err)
-	}
-	if err := os.MkdirAll(absolute, 0o700); err != nil {
-		return nil, fmt.Errorf("create registry directory: %w", err)
+		return nil, err
 	}
 	if config.Clock == nil {
 		config.Clock = func() time.Time { return time.Now().UTC() }
@@ -218,7 +215,7 @@ func (directory *fileDirectory) Poll(
 func (*fileDirectory) Capabilities() Capabilities {
 	return Capabilities{
 		Durable:          true,
-		MultiProcessSafe: fileLocksAreMultiProcessSafe,
+		MultiProcessSafe: filestate.MultiProcessSafe,
 	}
 }
 
@@ -241,7 +238,7 @@ func (directory *fileDirectory) withState(
 	if directory.closed.Load() {
 		return ErrClosed
 	}
-	return withFileLock(directory.lockPath, true, func() error {
+	return filestate.WithExclusiveLock(directory.lockPath, func() error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -284,53 +281,11 @@ func (directory *fileDirectory) writeState(
 	ctx context.Context,
 	state directoryState,
 ) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	raw, err := json.Marshal(state)
-	if err != nil {
-		return fmt.Errorf("encode registry state: %w", err)
-	}
-	temporary, err := os.CreateTemp(directory.directory, ".registry-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create registry temporary file: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	removeTemporary := true
-	defer func() {
-		if removeTemporary {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("secure registry temporary file: %w", err)
-	}
-	if _, err := temporary.Write(raw); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("write registry state: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("sync registry state: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close registry state: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryPath, directory.statePath); err != nil {
-		return fmt.Errorf("publish registry state: %w", err)
-	}
-	removeTemporary = false
-	handle, err := os.Open(directory.directory)
-	if err != nil {
-		return fmt.Errorf("open registry directory for sync: %w", err)
-	}
-	defer handle.Close()
-	if err := handle.Sync(); err != nil {
-		return fmt.Errorf("sync registry directory: %w", err)
-	}
-	return nil
+	return filestate.WriteJSON(
+		ctx,
+		directory.directory,
+		directory.statePath,
+		"registry state",
+		state,
+	)
 }

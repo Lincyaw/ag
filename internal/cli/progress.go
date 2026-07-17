@@ -210,11 +210,17 @@ func (reporter *progressReporter) writeLine(record progressRecord) {
 func (reporter *progressReporter) record(event sdk.Event) progressRecord {
 	switch event.Name {
 	case sdk.EventAgentStart:
+		var payload sdk.AgentStartPayload
+		_ = decodeProgressPayload(event, &payload)
+		task := summarizeTask(payload.Messages)
 		return progressRecord{
 			Status:    progressStatusRun,
 			SessionID: event.SessionID,
-			Label:     "session",
-			Detail:    emptyAs(event.SessionID, "new"),
+			Task:      task,
+			Label:     "Starting",
+			Detail:    emptyAs(task, "new session"),
+			Technical: "session=" + emptyAs(event.SessionID, "new"),
+			Overview:  true,
 		}
 	case sdk.EventTurnStart:
 		var payload sdk.TurnStartPayload
@@ -222,10 +228,11 @@ func (reporter *progressReporter) record(event sdk.Event) progressRecord {
 			return progressRecord{}
 		}
 		return progressRecord{
-			Status: progressStatusModel,
-			Turn:   payload.Turn + 1,
-			Label:  fmt.Sprintf("turn %d", payload.Turn+1),
-			Detail: "preparing model request",
+			Status:    progressStatusModel,
+			Turn:      payload.Turn + 1,
+			Label:     "Thinking",
+			Detail:    "preparing next step",
+			Technical: fmt.Sprintf("turn=%d preparing model request", payload.Turn+1),
 		}
 	case sdk.EventBeforeProvider:
 		var payload sdk.BeforeProviderPayload
@@ -241,8 +248,14 @@ func (reporter *progressReporter) record(event sdk.Event) progressRecord {
 			Status:   progressStatusModel,
 			Turn:     payload.Turn + 1,
 			Provider: payload.Provider,
-			Label:    emptyAs(payload.Provider, "provider"),
-			Detail:   detail,
+			Label:    "Thinking",
+			Detail:   "deciding the next step",
+			Technical: fmt.Sprintf(
+				"provider=%s %s",
+				emptyAs(payload.Provider, "unknown"),
+				detail,
+			),
+			Overview: true,
 		}
 	case sdk.EventAfterProvider:
 		var payload sdk.AfterProviderPayload
@@ -251,49 +264,63 @@ func (reporter *progressReporter) record(event sdk.Event) progressRecord {
 		}
 		if payload.Error != "" {
 			return progressRecord{
-				Status:   progressStatusError,
-				Turn:     payload.Turn + 1,
-				Provider: payload.Provider,
-				Label:    emptyAs(payload.Provider, "provider"),
-				Detail:   "provider failed: " + summarizeText(payload.Error, 180),
+				Status:    progressStatusError,
+				Turn:      payload.Turn + 1,
+				Provider:  payload.Provider,
+				Label:     "Model request failed",
+				Detail:    summarizeText(payload.Error, 180),
+				Technical: "provider=" + emptyAs(payload.Provider, "unknown"),
+				Overview:  true,
+				Recent:    true,
 			}
 		}
 		if payload.Response == nil {
 			return progressRecord{
-				Status:   progressStatusModel,
-				Turn:     payload.Turn + 1,
-				Provider: payload.Provider,
-				Label:    emptyAs(payload.Provider, "provider"),
-				Detail:   "provider returned",
+				Status:    progressStatusModel,
+				Turn:      payload.Turn + 1,
+				Provider:  payload.Provider,
+				Label:     "Thinking",
+				Detail:    "model returned",
+				Technical: "provider=" + emptyAs(payload.Provider, "unknown"),
 			}
 		}
 		if len(payload.Response.ToolCalls) == 0 {
 			return progressRecord{
-				Status:   progressStatusAnswer,
-				Turn:     payload.Turn + 1,
-				Provider: payload.Provider,
-				Label:    "answer",
-				Detail:   summarizeModelResponse(*payload.Response),
+				Status:    progressStatusAnswer,
+				Turn:      payload.Turn + 1,
+				Provider:  payload.Provider,
+				Label:     "Answer ready",
+				Detail:    summarizeAnswer(payload.Response),
+				Technical: summarizeModelResponse(*payload.Response),
+				Overview:  true,
+				Recent:    true,
 			}
 		}
 		return progressRecord{
-			Status:   progressStatusPlan,
-			Turn:     payload.Turn + 1,
-			Provider: payload.Provider,
-			Label:    "tool plan",
-			Detail:   summarizeToolCalls(payload.Response.ToolCalls),
+			Status:    progressStatusPlan,
+			Turn:      payload.Turn + 1,
+			Provider:  payload.Provider,
+			Label:     "Planning",
+			Detail:    summarizeToolPlan(payload.Response.ToolCalls),
+			Technical: summarizeToolCalls(payload.Response.ToolCalls),
+			Overview:  true,
+			Recent:    true,
 		}
 	case sdk.EventBeforeTool:
 		var payload sdk.BeforeToolPayload
 		if decodeProgressPayload(event, &payload) != nil {
 			return progressRecord{}
 		}
+		label, detail, technical := summarizeToolStart(payload.Call)
 		return progressRecord{
-			Status:   progressStatusTool,
-			Turn:     payload.Turn + 1,
-			ToolName: payload.Call.Name,
-			Label:    emptyAs(payload.Call.Name, "tool"),
-			Detail:   summarizeArguments(payload.Call.Arguments),
+			Status:    progressStatusTool,
+			Turn:      payload.Turn + 1,
+			ToolName:  payload.Call.Name,
+			Label:     label,
+			Detail:    detail,
+			Technical: technical,
+			Overview:  true,
+			Recent:    true,
 		}
 	case sdk.EventAfterTool:
 		var payload sdk.AfterToolPayload
@@ -304,12 +331,16 @@ func (reporter *progressReporter) record(event sdk.Event) progressRecord {
 		if payload.Result.IsError {
 			status = progressStatusError
 		}
+		label, detail, technical := summarizeToolFinish(payload.Call, payload.Result)
 		return progressRecord{
-			Status:   status,
-			Turn:     payload.Turn + 1,
-			ToolName: payload.Call.Name,
-			Label:    emptyAs(payload.Call.Name, "tool"),
-			Detail:   summarizeToolResult(payload.Result),
+			Status:    status,
+			Turn:      payload.Turn + 1,
+			ToolName:  payload.Call.Name,
+			Label:     label,
+			Detail:    detail,
+			Technical: technical,
+			Overview:  true,
+			Recent:    true,
 		}
 	case sdk.EventToolError:
 		var payload sdk.ToolErrorPayload
@@ -317,11 +348,14 @@ func (reporter *progressReporter) record(event sdk.Event) progressRecord {
 			return progressRecord{}
 		}
 		return progressRecord{
-			Status:   progressStatusError,
-			Turn:     payload.Turn + 1,
-			ToolName: payload.Call.Name,
-			Label:    emptyAs(payload.Call.Name, "tool"),
-			Detail:   summarizeText(payload.Reason, 180),
+			Status:    progressStatusError,
+			Turn:      payload.Turn + 1,
+			ToolName:  payload.Call.Name,
+			Label:     "Tool failed",
+			Detail:    summarizeText(payload.Reason, 180),
+			Technical: "tool=" + emptyAs(payload.Call.Name, "unknown"),
+			Overview:  true,
+			Recent:    true,
 		}
 	case sdk.EventAgentEnd:
 		var payload sdk.AgentEndPayload
@@ -331,8 +365,9 @@ func (reporter *progressReporter) record(event sdk.Event) progressRecord {
 		return progressRecord{
 			Status:    progressStatusDone,
 			SessionID: event.SessionID,
-			Label:     "done",
+			Label:     "Done",
 			Detail:    emptyAs(payload.Cause.Code, "unknown"),
+			Technical: "session=" + emptyAs(event.SessionID, "unknown"),
 		}
 	default:
 		return progressRecord{}
@@ -372,8 +407,12 @@ type progressRecord struct {
 	SessionID string
 	Provider  string
 	ToolName  string
+	Task      string
 	Label     string
 	Detail    string
+	Technical string
+	Overview  bool
+	Recent    bool
 }
 
 func (record progressRecord) line() string {
@@ -381,13 +420,24 @@ func (record progressRecord) line() string {
 	if record.Turn > 0 {
 		parts = append(parts, fmt.Sprintf("turn=%d", record.Turn))
 	}
-	if record.Label != "" {
-		parts = append(parts, record.Label)
+	if display := record.display(); display != "" {
+		parts = append(parts, display)
 	}
-	if record.Detail != "" {
-		parts = append(parts, record.Detail)
+	if record.Technical != "" {
+		parts = append(parts, record.Technical)
 	}
 	return strings.Join(parts, "  ")
+}
+
+func (record progressRecord) display() string {
+	switch {
+	case record.Label == "":
+		return record.Detail
+	case record.Detail == "":
+		return record.Label
+	default:
+		return record.Label + " - " + record.Detail
+	}
 }
 
 type progressRecordMsg progressRecord
@@ -399,6 +449,7 @@ type progressModel struct {
 	width       int
 	height      int
 	tab         int
+	task        string
 	sessionID   string
 	phase       string
 	turn        int
@@ -544,6 +595,9 @@ func (model *progressModel) apply(record progressRecord) {
 	if record.SessionID != "" {
 		model.sessionID = record.SessionID
 	}
+	if record.Task != "" {
+		model.task = record.Task
+	}
 	if record.Turn > 0 {
 		model.turn = record.Turn
 	}
@@ -552,16 +606,16 @@ func (model *progressModel) apply(record progressRecord) {
 	}
 	switch record.Status {
 	case progressStatusRun:
-		model.phase = "running"
+		model.phase = "starting"
 	case progressStatusModel:
-		model.phase = "asking model"
+		model.phase = "thinking"
 	case progressStatusPlan:
-		model.phase = "planning tools"
+		model.phase = "planning"
 	case progressStatusTool:
-		model.phase = "using tools"
+		model.phase = "working"
 		model.toolStarted++
 	case progressStatusOK:
-		model.phase = "using tools"
+		model.phase = "working"
 		model.toolDone++
 	case progressStatusError:
 		model.phase = "needs attention"
@@ -621,27 +675,26 @@ func (model progressModel) bodyHeight() int {
 }
 
 func (model progressModel) renderHeader(width int) string {
-	phase := model.styles.strong.Render(emptyAs(model.phase, "running"))
+	phaseText := emptyAs(model.phase, "running")
+	phase := model.styles.strong.Render(phaseText)
 	title := model.styles.brand.Render("ag") + " " + phase
 	stats := model.metricLine()
 	if stats != "" {
-		title += "  " + model.styles.muted.Render(fitProgressText(stats, width-18))
+		title += "  " + model.styles.muted.Render(
+			fitProgressText(stats, width-len(phaseText)-6),
+		)
 	}
-	return fitProgressText(title, width)
+	return title
 }
 
 func (model progressModel) metricLine() string {
 	var stats []string
 	if model.sessionID != "" {
-		stats = append(stats, "session="+model.sessionID)
+		stats = append(stats, "session="+shortIdentifier(model.sessionID))
 	}
 	if model.turn > 0 {
 		stats = append(stats, fmt.Sprintf("turn=%d", model.turn))
 	}
-	if model.provider != "" {
-		stats = append(stats, "provider="+model.provider)
-	}
-	stats = append(stats, fmt.Sprintf("events=%d", len(model.history)))
 	if model.toolStarted > 0 || model.toolDone > 0 {
 		stats = append(stats, fmt.Sprintf("tools=%d/%d", model.toolDone, model.toolStarted))
 	}
@@ -683,15 +736,18 @@ func (model progressModel) renderBody(width int) string {
 func (model progressModel) renderOverview(width int, height int) string {
 	var lines []string
 	lines = append(lines, model.styles.section.Render("Overview"))
-	selected := model.selectedRecord()
-	if selected != nil {
-		lines = append(lines, "Current  "+model.formatRecord(*selected, width-9))
+	if model.task != "" {
+		lines = append(lines, "Task     "+fitProgressText(model.task, width-9))
+	}
+	current := model.currentOverviewRecord()
+	if current != nil {
+		lines = append(lines, "Current  "+model.formatRecord(*current, width-9))
 	} else {
-		lines = append(lines, "Current  waiting for events")
+		lines = append(lines, "Current  starting")
 	}
 	lines = append(lines, "")
 	lines = append(lines, model.styles.section.Render("Recent activity"))
-	recent := model.recentRecords(height - len(lines))
+	recent := model.recentOverviewRecords(height - len(lines))
 	for _, record := range recent {
 		lines = append(lines, "  "+model.formatRecord(record, width-2))
 	}
@@ -748,11 +804,17 @@ func (model progressModel) renderDetails(width int, height int) string {
 	if record.ToolName != "" {
 		lines = append(lines, "tool: "+record.ToolName)
 	}
+	if record.Task != "" {
+		lines = append(lines, "task: "+record.Task)
+	}
 	if record.Label != "" {
 		lines = append(lines, "label: "+record.Label)
 	}
 	if record.Detail != "" {
 		lines = append(lines, "summary: "+record.Detail)
+	}
+	if record.Technical != "" {
+		lines = append(lines, "trace: "+record.Technical)
 	}
 	for index, line := range lines {
 		lines[index] = fitProgressText(line, width)
@@ -785,14 +847,27 @@ func (model progressModel) selectedRecord() *progressRecord {
 	return &model.history[model.selected]
 }
 
-func (model progressModel) recentRecords(limit int) []progressRecord {
+func (model progressModel) currentOverviewRecord() *progressRecord {
+	for index := len(model.history) - 1; index >= 0; index-- {
+		if model.history[index].Overview {
+			return &model.history[index]
+		}
+	}
+	return nil
+}
+
+func (model progressModel) recentOverviewRecords(limit int) []progressRecord {
 	if limit <= 0 || len(model.history) == 0 {
 		return nil
 	}
-	if limit > len(model.history) {
-		limit = len(model.history)
+	records := make([]progressRecord, 0, limit)
+	for index := len(model.history) - 1; index >= 0 && len(records) < limit; index-- {
+		if model.history[index].Recent {
+			records = append(records, model.history[index])
+		}
 	}
-	return model.history[len(model.history)-limit:]
+	slices.Reverse(records)
+	return records
 }
 
 func (model progressModel) visibleRange(height int) (int, int) {
@@ -823,12 +898,12 @@ func (model progressModel) visibleRange(height int) (int, int) {
 }
 
 func (model progressModel) formatRecord(record progressRecord, width int) string {
-	detailWidth := width - 7
+	status := model.styles.status(record.Status)
+	detailWidth := width - visibleStatusWidth(record.Status) - 2
 	if detailWidth < 12 {
 		detailWidth = 12
 	}
-	return model.styles.status(record.Status) + "  " +
-		fitProgressText(record.line(), detailWidth)
+	return status + "  " + fitProgressText(record.display(), detailWidth)
 }
 
 type progressStyles struct {
@@ -906,24 +981,260 @@ func newProgressStyles(writer io.Writer, useColor bool, forceColor bool) progres
 func (styles progressStyles) status(status string) string {
 	switch status {
 	case progressStatusRun:
-		return styles.run.Render("RUN  ")
+		return styles.run.Render("Start")
 	case progressStatusModel:
-		return styles.model.Render("MODEL")
+		return styles.model.Render("Think")
 	case progressStatusPlan:
-		return styles.plan.Render("PLAN ")
+		return styles.plan.Render("Plan ")
 	case progressStatusTool:
-		return styles.tool.Render("TOOL ")
+		return styles.tool.Render("Work ")
 	case progressStatusOK:
-		return styles.ok.Render("OK   ")
+		return styles.ok.Render("Done ")
 	case progressStatusError:
-		return styles.err.Render("ERR  ")
+		return styles.err.Render("Error")
 	case progressStatusAnswer:
-		return styles.answer.Render("ANS  ")
+		return styles.answer.Render("Reply")
 	case progressStatusDone:
-		return styles.done.Render("DONE ")
+		return styles.done.Render("Done ")
 	default:
 		return ""
 	}
+}
+
+func visibleStatusWidth(_ string) int {
+	return 5
+}
+
+func summarizeTask(messages []sdk.Message) string {
+	for index := len(messages) - 1; index >= 0; index-- {
+		message := messages[index]
+		if message.Role == sdk.RoleUser && strings.TrimSpace(message.Content) != "" {
+			return summarizeText(message.Content, 120)
+		}
+	}
+	return ""
+}
+
+func summarizeAnswer(response *sdk.ModelResponse) string {
+	if response == nil {
+		return "response ready"
+	}
+	var parts []string
+	if response.Usage.OutputTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%d output token(s)", response.Usage.OutputTokens))
+	}
+	if response.FinishReason != "" {
+		parts = append(parts, "finish="+response.FinishReason)
+	}
+	if len(parts) == 0 {
+		return "response ready"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func summarizeToolPlan(calls []sdk.ToolCall) string {
+	if len(calls) == 0 {
+		return "no tool use"
+	}
+	items := make([]string, 0, len(calls))
+	for index, call := range calls {
+		if index >= 4 {
+			items = append(items, fmt.Sprintf("+%d more", len(calls)-index))
+			break
+		}
+		intent := inferToolIntent(call)
+		if intent.Subject == "" {
+			items = append(items, intent.PlanVerb)
+		} else {
+			items = append(items, intent.PlanVerb+" "+intent.Subject)
+		}
+	}
+	return strings.Join(items, ", ")
+}
+
+func summarizeToolStart(call sdk.ToolCall) (label, detail, technical string) {
+	intent := inferToolIntent(call)
+	detail = emptyAs(intent.Subject, intent.Name)
+	technical = "tool=" + emptyAs(call.Name, "unknown")
+	if args := summarizeArguments(call.Arguments); args != "" {
+		technical += " args=" + args
+	}
+	return intent.ActiveVerb, detail, technical
+}
+
+func summarizeToolFinish(
+	call sdk.ToolCall,
+	result sdk.ToolResult,
+) (label, detail, technical string) {
+	intent := inferToolIntent(call)
+	measure := summarizeResultMeasure(result.Content)
+	technical = "tool=" + emptyAs(call.Name, "unknown") + " result=" +
+		summarizeToolResult(result)
+	if result.IsError {
+		label = "Failed"
+		detail = emptyAs(intent.Subject, intent.Name)
+		if preview := summarizeText(result.Content, 120); preview != "" {
+			detail += ": " + preview
+		}
+		return label, detail, technical
+	}
+	label = intent.DoneVerb
+	detail = emptyAs(intent.Subject, intent.Name)
+	if measure != "" {
+		detail += " (" + measure + ")"
+	}
+	return label, detail, technical
+}
+
+type toolIntent struct {
+	Name       string
+	ActiveVerb string
+	PlanVerb   string
+	DoneVerb   string
+	Subject    string
+}
+
+func inferToolIntent(call sdk.ToolCall) toolIntent {
+	name := friendlyToolName(call.Name)
+	active, plan, done := toolVerbs(call.Name)
+	return toolIntent{
+		Name:       name,
+		ActiveVerb: active,
+		PlanVerb:   plan,
+		DoneVerb:   done,
+		Subject:    summarizeToolSubject(call.Arguments),
+	}
+}
+
+func toolVerbs(name string) (active, plan, done string) {
+	normalized := strings.ToLower(name)
+	switch {
+	case strings.Contains(normalized, "read"):
+		return "Reading", "read", "Read"
+	case strings.Contains(normalized, "list"):
+		return "Listing", "list", "Listed"
+	case strings.Contains(normalized, "search") ||
+		strings.Contains(normalized, "grep") ||
+		strings.Contains(normalized, "find"):
+		return "Searching", "search", "Searched"
+	case strings.Contains(normalized, "write") ||
+		strings.Contains(normalized, "edit") ||
+		strings.Contains(normalized, "patch") ||
+		strings.Contains(normalized, "update"):
+		return "Editing", "edit", "Edited"
+	case strings.Contains(normalized, "create") ||
+		strings.Contains(normalized, "new"):
+		return "Creating", "create", "Created"
+	case strings.Contains(normalized, "delete") ||
+		strings.Contains(normalized, "remove") ||
+		strings.Contains(normalized, "prune"):
+		return "Deleting", "delete", "Deleted"
+	case strings.Contains(normalized, "bash") ||
+		strings.Contains(normalized, "shell") ||
+		strings.Contains(normalized, "exec") ||
+		strings.Contains(normalized, "run"):
+		return "Running", "run", "Ran"
+	case strings.Contains(normalized, "fetch") ||
+		strings.Contains(normalized, "open") ||
+		strings.Contains(normalized, "http") ||
+		strings.Contains(normalized, "request"):
+		return "Fetching", "fetch", "Fetched"
+	default:
+		return "Using", "use", "Used"
+	}
+}
+
+func summarizeToolSubject(raw json.RawMessage) string {
+	args := decodeArgumentObject(raw)
+	if len(args) == 0 {
+		return ""
+	}
+	path := firstArgumentString(args,
+		"path", "file", "filename", "filepath", "target", "dir", "directory", "cwd",
+	)
+	query := firstArgumentString(args, "query", "pattern", "search", "text")
+	command := firstArgumentString(args, "command", "cmd", "script")
+	url := firstArgumentString(args, "url", "uri", "endpoint")
+	identifier := firstArgumentString(args, "id", "ref_id", "name")
+	switch {
+	case query != "" && path != "":
+		return strconv.Quote(summarizeText(query, 60)) + " in " + summarizeText(path, 80)
+	case query != "":
+		return strconv.Quote(summarizeText(query, 80))
+	case path != "":
+		return summarizeText(path, 100)
+	case command != "":
+		return strconv.Quote(summarizeText(command, 100))
+	case url != "":
+		return summarizeText(url, 100)
+	case identifier != "":
+		return summarizeText(identifier, 100)
+	default:
+		return summarizeArguments(raw)
+	}
+}
+
+func decodeArgumentObject(raw json.RawMessage) map[string]any {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil
+	}
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil
+	}
+	return value
+}
+
+func firstArgumentString(args map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := args[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				return typed
+			}
+		case float64:
+			return strconv.FormatFloat(typed, 'f', -1, 64)
+		case bool:
+			return strconv.FormatBool(typed)
+		default:
+			raw, err := json.Marshal(typed)
+			if err == nil && len(raw) > 0 {
+				return string(raw)
+			}
+		}
+	}
+	return ""
+}
+
+func friendlyToolName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "tool"
+	}
+	name = strings.ReplaceAll(name, "_", " ")
+	name = strings.ReplaceAll(name, "-", " ")
+	return name
+}
+
+func shortIdentifier(value string) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if len(runes) <= 12 {
+		return value
+	}
+	return string(runes[:12])
+}
+
+func summarizeResultMeasure(content string) string {
+	if content == "" {
+		return "no output"
+	}
+	return fmt.Sprintf("%s, %d line(s)", formatBytes(len(content)), lineCount(content))
 }
 
 func summarizeModelResponse(response sdk.ModelResponse) string {

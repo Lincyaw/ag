@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lincyaw/ag/internal/plugincontract"
 	pluginv1 "github.com/lincyaw/ag/pluginrpc/v1"
 	"github.com/lincyaw/ag/sdk"
 	sdkstorage "github.com/lincyaw/ag/sdk/storage"
@@ -26,6 +27,35 @@ type mutableServerSpecTool struct {
 type closingServerPlugin struct {
 	closes   atomic.Int64
 	closeErr error
+}
+
+func TestServerRejectsSameProcessAgentRegistration(t *testing.T) {
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "agent-only",
+			Version:     "1.0.0",
+			Description: "same-process agent must not cross RPC",
+			APIVersion:  sdk.APIVersion,
+			Registers:   []string{sdk.AgentResource("worker")},
+		},
+		InstallFunc: func(
+			_ context.Context,
+			registrar sdk.Registrar,
+		) error {
+			return sdk.RegisterAgent(registrar, sdk.AgentSpec{
+				Name:        "worker",
+				Description: "same-process worker",
+			})
+		},
+	}
+	_, err := NewServer(t.Context(), ServerConfig{
+		Plugin:     plugin,
+		Operations: sdkstorage.NewMemoryOperationStore(),
+		Inbox:      sdkstorage.NewMemoryDeliveryStore(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "same-process runtime") {
+		t.Fatalf("NewServer() error = %v", err)
+	}
 }
 
 func (*closingServerPlugin) Manifest() sdk.Manifest {
@@ -413,7 +443,7 @@ func TestServerDescribeUsesFrozenDefensiveSpecs(t *testing.T) {
 func TestServerDeadLettersPersistedDeliveryForAnotherPlugin(t *testing.T) {
 	t.Parallel()
 	var received atomic.Bool
-	registrar := newServerRegistrar()
+	registrar := plugincontract.NewRegistrar()
 	err := registrar.RegisterSubscriber(sdk.SubscriberFunc{
 		SubscriberSpec: sdk.SubscriberSpec{
 			Name:   "target",

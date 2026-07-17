@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/lincyaw/ag/internal/filestate"
 	"github.com/lincyaw/ag/sdk"
 )
 
@@ -25,7 +26,7 @@ func newFileStateBackend(
 	namespace string,
 	partition bool,
 ) (sdk.StateBackend, error) {
-	absolute, err := prepareDirectory("state", root)
+	absolute, err := filestate.PrepareDirectory("state", root)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +63,7 @@ func (backend *fileStateBackend) Deliveries(name string) (sdk.DeliveryStore, err
 func (*fileStateBackend) Capabilities() sdk.StorageCapabilities {
 	return sdk.StorageCapabilities{
 		Durable:            true,
-		MultiProcessSafe:   fileLocksAreMultiProcessSafe,
+		MultiProcessSafe:   filestate.MultiProcessSafe,
 		OperationFencing:   true,
 		NamedQueues:        true,
 		Pagination:         true,

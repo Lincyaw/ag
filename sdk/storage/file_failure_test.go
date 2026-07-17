@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lincyaw/ag/internal/filestate"
 	"github.com/lincyaw/ag/sdk"
 )
 
@@ -108,11 +109,10 @@ func TestFileOperationStoreRejectsInvalidPersistedState(t *testing.T) {
 		Resource: "tool",
 		Input:    []byte(`{}`),
 	}
-	if err := writeJSONAtomic(
+	if err := filestate.WriteJSON(
 		context.Background(),
 		directory,
 		filepath.Join(directory, "operations.json"),
-		".test-operations-*.tmp",
 		"test operations",
 		fileOperationState{
 			SchemaVersion: operationStoreSchemaVersion,
@@ -147,11 +147,10 @@ func TestFileDeliveryStoreRejectsInvalidPersistedState(t *testing.T) {
 		},
 		State: sdk.DeliveryState("unknown"),
 	}
-	if err := writeJSONAtomic(
+	if err := filestate.WriteJSON(
 		context.Background(),
 		directory,
 		filepath.Join(directory, "deliveries.json"),
-		".test-deliveries-*.tmp",
 		"test deliveries",
 		fileDeliveryState{
 			SchemaVersion: deliveryStoreSchemaVersion,
@@ -185,11 +184,10 @@ func TestFileTrajectoryStoreRejectsInvalidPersistedParent(t *testing.T) {
 		UpdatedAt:     now,
 		Entries:       []sdk.TrajectoryEntry{},
 	}
-	if err := writeJSONAtomic(
+	if err := filestate.WriteJSON(
 		t.Context(),
 		directory,
 		filepath.Join(directory, "child.json"),
-		".test-trajectory-*.tmp",
 		"test trajectory",
 		trajectory,
 	); err != nil {

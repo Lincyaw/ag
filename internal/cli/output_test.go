@@ -363,12 +363,14 @@ func TestProgressReporterExplainsRuntimeEvents(t *testing.T) {
 	})
 	got := stderr.String()
 	for _, expected := range []string{
-		"TOOL",
-		"custom_tool",
+		"Using",
+		"README.md",
+		"tool=custom_tool",
+		`args=limit=3`,
 		`path="README.md"`,
 		"limit=3",
 		"nested={\"owner\":\"me\"}",
-		"OK",
+		"Used",
 		"2 line(s)",
 		"first line second line",
 	} {
@@ -395,10 +397,11 @@ func TestProgressModelRendersInlineStatus(t *testing.T) {
 		ToolName:  "remote_lookup",
 		Label:     "remote_lookup",
 		Detail:    `query="status"`,
+		Overview:  true,
 	})
 	view := updated.(progressModel).View()
 	for _, expected := range []string{
-		"ag using tools",
+		"ag working",
 		"Overview",
 		"session=session-1",
 		"turn=2",

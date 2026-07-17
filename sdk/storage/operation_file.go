@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/lincyaw/ag/internal/filestate"
 	sdk "github.com/lincyaw/ag/sdk"
 )
 
@@ -27,7 +28,7 @@ type fileOperationStore struct {
 }
 
 func NewFileOperationStore(directory string) (sdk.OperationStore, error) {
-	absolute, err := prepareDirectory("operation", directory)
+	absolute, err := filestate.PrepareDirectory("operation", directory)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +48,7 @@ func (store *fileOperationStore) Submit(
 	}
 	var result sdk.OperationRecord
 	var created bool
-	err := withFileLock(store.lockPath, true, func() error {
+	err := filestate.WithExclusiveLock(store.lockPath, func() error {
 		memory, readErr := store.readLocked()
 		if readErr != nil {
 			return readErr
@@ -72,7 +73,7 @@ func (store *fileOperationStore) Get(
 		return sdk.OperationRecord{}, err
 	}
 	var result sdk.OperationRecord
-	err := withFileLock(store.lockPath, false, func() error {
+	err := filestate.WithSharedLock(store.lockPath, func() error {
 		memory, readErr := store.readLocked()
 		if readErr != nil {
 			return readErr
@@ -95,7 +96,7 @@ func (store *fileOperationStore) Transition(
 		return sdk.OperationRecord{}, err
 	}
 	var result sdk.OperationRecord
-	err := withFileLock(store.lockPath, true, func() error {
+	err := filestate.WithExclusiveLock(store.lockPath, func() error {
 		memory, readErr := store.readLocked()
 		if readErr != nil {
 			return readErr
@@ -181,7 +182,7 @@ func (store *fileOperationStore) mutate(
 		return sdk.OperationRecord{}, err
 	}
 	var result sdk.OperationRecord
-	err := withFileLock(store.lockPath, true, func() error {
+	err := filestate.WithExclusiveLock(store.lockPath, func() error {
 		memory, readErr := store.readLocked()
 		if readErr != nil {
 			return readErr
@@ -205,7 +206,7 @@ func (store *fileOperationStore) List(
 		return nil, err
 	}
 	var result []sdk.OperationRecord
-	err := withFileLock(store.lockPath, false, func() error {
+	err := filestate.WithSharedLock(store.lockPath, func() error {
 		memory, readErr := store.readLocked()
 		if readErr != nil {
 			return readErr
@@ -301,11 +302,10 @@ func (store *fileOperationStore) writeLocked(
 		state.Operations[id] = cloneOperationRecord(record)
 	}
 	memory.mu.Unlock()
-	return writeJSONAtomic(
+	return filestate.WriteJSON(
 		ctx,
 		store.directory,
 		store.path,
-		".operations-*.tmp",
 		"operations",
 		state,
 	)

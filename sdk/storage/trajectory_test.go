@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lincyaw/ag/internal/filestate"
 	"github.com/lincyaw/ag/sdk"
 )
 
@@ -637,11 +638,10 @@ func TestFileTrajectoryStoreReadsSchemaV1AsFixedEntryEnvelope(t *testing.T) {
 			Payload:        json.RawMessage(`{"messages":[]}`),
 		}},
 	}
-	if err := writeJSONAtomic(
+	if err := filestate.WriteJSON(
 		t.Context(),
 		directory,
 		filepath.Join(directory, "legacy.json"),
-		".legacy-*.tmp",
 		"legacy trajectory",
 		legacy,
 	); err != nil {

@@ -1,4 +1,6 @@
-package runtime
+// Package plugincontract collects and validates plugin contributions before
+// runtime publication or RPC serving.
+package plugincontract
 
 import (
 	"encoding/json"
@@ -11,51 +13,47 @@ import (
 	"github.com/lincyaw/ag/sdk"
 )
 
-// registeredResource is a contribution validated before composition publish.
-type registeredResource[Resource, Spec any] struct {
-	value Resource
-	spec  Spec
+type Contribution[Resource, Spec any] struct {
+	Value Resource
+	Spec  Spec
 }
 
-func registerResource[Resource, Spec any](
-	resources map[string]registeredResource[Resource, Spec],
-	kind string,
-	name string,
-	value Resource,
-	spec Spec,
-) error {
-	if _, exists := resources[name]; exists {
-		return fmt.Errorf("%s %q registered twice", kind, name)
-	}
-	resources[name] = registeredResource[Resource, Spec]{value: value, spec: spec}
-	return nil
+// Registrar collects the contribution types supported by every plugin
+// transport. It deliberately does not implement sdk.AgentRegistrar.
+type Registrar struct {
+	Providers    map[string]Contribution[sdk.Provider, sdk.ProviderSpec]
+	Tools        map[string]Contribution[sdk.Tool, sdk.ToolSpec]
+	Agents       map[string]sdk.AgentSpec
+	Hooks        map[string]Contribution[sdk.Hook, sdk.HookSpec]
+	HookOrder    []string
+	Subscribers  map[string]Contribution[sdk.Subscriber, sdk.SubscriberSpec]
+	Capabilities map[string]Contribution[sdk.Capability, sdk.CapabilitySpec]
+	Events       map[string]sdk.EventContract
 }
 
-type stagingRegistrar struct {
-	providers    map[string]registeredResource[sdk.Provider, sdk.ProviderSpec]
-	tools        map[string]registeredResource[sdk.Tool, sdk.ToolSpec]
-	agents       map[string]sdk.AgentSpec
-	hooks        map[string][]registeredResource[sdk.Hook, sdk.HookSpec]
-	hookNames    map[string]struct{}
-	subscribers  map[string]registeredResource[sdk.Subscriber, sdk.SubscriberSpec]
-	capabilities map[string]registeredResource[sdk.Capability, sdk.CapabilitySpec]
-	events       map[string]sdk.EventContract
-}
-
-func newStagingRegistrar() *stagingRegistrar {
-	return &stagingRegistrar{
-		providers:    make(map[string]registeredResource[sdk.Provider, sdk.ProviderSpec]),
-		tools:        make(map[string]registeredResource[sdk.Tool, sdk.ToolSpec]),
-		agents:       make(map[string]sdk.AgentSpec),
-		hooks:        make(map[string][]registeredResource[sdk.Hook, sdk.HookSpec]),
-		hookNames:    make(map[string]struct{}),
-		subscribers:  make(map[string]registeredResource[sdk.Subscriber, sdk.SubscriberSpec]),
-		capabilities: make(map[string]registeredResource[sdk.Capability, sdk.CapabilitySpec]),
-		events:       make(map[string]sdk.EventContract),
+func NewRegistrar() *Registrar {
+	return &Registrar{
+		Providers:    make(map[string]Contribution[sdk.Provider, sdk.ProviderSpec]),
+		Tools:        make(map[string]Contribution[sdk.Tool, sdk.ToolSpec]),
+		Agents:       make(map[string]sdk.AgentSpec),
+		Hooks:        make(map[string]Contribution[sdk.Hook, sdk.HookSpec]),
+		Subscribers:  make(map[string]Contribution[sdk.Subscriber, sdk.SubscriberSpec]),
+		Capabilities: make(map[string]Contribution[sdk.Capability, sdk.CapabilitySpec]),
+		Events:       make(map[string]sdk.EventContract),
 	}
 }
 
-func (registrar *stagingRegistrar) RegisterProvider(provider sdk.Provider) error {
+// AgentRegistrar adds the same-process agent contribution understood by the
+// runtime but intentionally absent from the RPC plugin protocol.
+type AgentRegistrar struct {
+	*Registrar
+}
+
+func NewAgentRegistrar() *AgentRegistrar {
+	return &AgentRegistrar{Registrar: NewRegistrar()}
+}
+
+func (registrar *Registrar) RegisterProvider(provider sdk.Provider) error {
 	if provider == nil {
 		return errors.New("provider is nil")
 	}
@@ -71,15 +69,21 @@ func (registrar *stagingRegistrar) RegisterProvider(provider sdk.Provider) error
 			spec.Name,
 		)
 	}
-	return registerResource(registrar.providers, "provider", spec.Name, provider, spec)
+	return register(
+		registrar.Providers,
+		"provider",
+		spec.Name,
+		provider,
+		spec,
+	)
 }
 
-func (registrar *stagingRegistrar) RegisterTool(tool sdk.Tool) error {
+func (registrar *Registrar) RegisterTool(tool sdk.Tool) error {
 	if tool == nil {
 		return errors.New("tool is nil")
 	}
 	spec := tool.Spec()
-	if err := validateToolSpec(spec); err != nil {
+	if err := ValidateToolSpec(spec); err != nil {
 		return err
 	}
 	_, asynchronous := tool.(sdk.AsyncTool)
@@ -90,21 +94,27 @@ func (registrar *stagingRegistrar) RegisterTool(tool sdk.Tool) error {
 			spec.Name,
 		)
 	}
-	return registerResource(registrar.tools, "tool", spec.Name, tool, cloneToolSpec(spec))
+	return register(
+		registrar.Tools,
+		"tool",
+		spec.Name,
+		tool,
+		CloneToolSpec(spec),
+	)
 }
 
-func (registrar *stagingRegistrar) RegisterAgent(spec sdk.AgentSpec) error {
+func (registrar *AgentRegistrar) RegisterAgent(spec sdk.AgentSpec) error {
 	if err := validateAgentSpec(spec); err != nil {
 		return err
 	}
-	if _, exists := registrar.agents[spec.Name]; exists {
+	if _, exists := registrar.Agents[spec.Name]; exists {
 		return fmt.Errorf("agent %q registered twice", spec.Name)
 	}
-	registrar.agents[spec.Name] = sdk.CloneAgentSpec(spec)
+	registrar.Agents[spec.Name] = sdk.CloneAgentSpec(spec)
 	return nil
 }
 
-func (registrar *stagingRegistrar) RegisterHook(hook sdk.Hook) error {
+func (registrar *Registrar) RegisterHook(hook sdk.Hook) error {
 	if hook == nil {
 		return errors.New("hook is nil")
 	}
@@ -112,18 +122,20 @@ func (registrar *stagingRegistrar) RegisterHook(hook sdk.Hook) error {
 	if err := validateHookSpec(spec); err != nil {
 		return err
 	}
-	if _, exists := registrar.hookNames[spec.Name]; exists {
-		return fmt.Errorf("hook %q registered twice", spec.Name)
+	if err := register(
+		registrar.Hooks,
+		"hook",
+		spec.Name,
+		hook,
+		spec,
+	); err != nil {
+		return err
 	}
-	registrar.hookNames[spec.Name] = struct{}{}
-	registrar.hooks[spec.Event] = append(registrar.hooks[spec.Event], registeredResource[sdk.Hook, sdk.HookSpec]{
-		value: hook,
-		spec:  spec,
-	})
+	registrar.HookOrder = append(registrar.HookOrder, spec.Name)
 	return nil
 }
 
-func (registrar *stagingRegistrar) RegisterSubscriber(
+func (registrar *Registrar) RegisterSubscriber(
 	subscriber sdk.Subscriber,
 ) error {
 	if subscriber == nil {
@@ -134,8 +146,8 @@ func (registrar *stagingRegistrar) RegisterSubscriber(
 		return err
 	}
 	spec.Events = slices.Clone(spec.Events)
-	return registerResource(
-		registrar.subscribers,
+	return register(
+		registrar.Subscribers,
 		"subscriber",
 		spec.Name,
 		subscriber,
@@ -143,7 +155,7 @@ func (registrar *stagingRegistrar) RegisterSubscriber(
 	)
 }
 
-func (registrar *stagingRegistrar) RegisterCapability(
+func (registrar *Registrar) RegisterCapability(
 	capability sdk.Capability,
 ) error {
 	if capability == nil {
@@ -161,63 +173,69 @@ func (registrar *stagingRegistrar) RegisterCapability(
 			spec.Name,
 		)
 	}
-	return registerResource(
-		registrar.capabilities,
+	return register(
+		registrar.Capabilities,
 		"capability",
 		spec.Name,
 		capability,
-		cloneCapabilitySpec(spec),
+		CloneCapabilitySpec(spec),
 	)
 }
 
-func (registrar *stagingRegistrar) RegisterEvent(
-	contract sdk.EventContract,
-) error {
+func (registrar *Registrar) RegisterEvent(contract sdk.EventContract) error {
 	if err := validateEventContract(contract); err != nil {
 		return err
 	}
-	if _, exists := registrar.events[contract.Name]; exists {
+	if _, exists := registrar.Events[contract.Name]; exists {
 		return fmt.Errorf("event %q registered twice", contract.Name)
 	}
-	contract.MutableFields = append([]string(nil), contract.MutableFields...)
-	registrar.events[contract.Name] = contract
+	contract.MutableFields = slices.Clone(contract.MutableFields)
+	registrar.Events[contract.Name] = contract
 	return nil
 }
 
-func (registrar *stagingRegistrar) resources() []string {
-	resources := make([]string, 0,
-		len(registrar.providers)+
-			len(registrar.tools)+
-			len(registrar.agents)+
-			len(registrar.hookNames)+
-			len(registrar.subscribers)+
-			len(registrar.capabilities)+
-			len(registrar.events),
+func register[Resource, Spec any](
+	resources map[string]Contribution[Resource, Spec],
+	kind string,
+	name string,
+	value Resource,
+	spec Spec,
+) error {
+	if _, exists := resources[name]; exists {
+		return fmt.Errorf("%s %q registered twice", kind, name)
+	}
+	resources[name] = Contribution[Resource, Spec]{
+		Value: value,
+		Spec:  spec,
+	}
+	return nil
+}
+
+func (registrar *Registrar) Resources() []string {
+	resources := make(
+		[]string,
+		0,
+		len(registrar.Providers)+
+			len(registrar.Tools)+
+			len(registrar.Agents)+
+			len(registrar.Hooks)+
+			len(registrar.Subscribers)+
+			len(registrar.Capabilities)+
+			len(registrar.Events),
 	)
-	resources = appendResourceNames(resources, registrar.providers, sdk.ProviderResource)
-	resources = appendResourceNames(resources, registrar.tools, sdk.ToolResource)
-	resources = appendResourceNames(resources, registrar.agents, sdk.AgentResource)
-	resources = appendResourceNames(resources, registrar.hookNames, sdk.HookResource)
-	resources = appendResourceNames(resources, registrar.subscribers, sdk.SubscriberResource)
-	resources = appendResourceNames(resources, registrar.capabilities, sdk.CapabilityResource)
-	resources = appendResourceNames(resources, registrar.events, sdk.EventResource)
+	resources = appendNames(resources, registrar.Providers, sdk.ProviderResource)
+	resources = appendNames(resources, registrar.Tools, sdk.ToolResource)
+	resources = appendNames(resources, registrar.Agents, sdk.AgentResource)
+	resources = appendNames(resources, registrar.Hooks, sdk.HookResource)
+	resources = appendNames(resources, registrar.Subscribers, sdk.SubscriberResource)
+	resources = appendNames(resources, registrar.Capabilities, sdk.CapabilityResource)
+	resources = appendNames(resources, registrar.Events, sdk.EventResource)
 	slices.Sort(resources)
 	return resources
 }
 
-func appendResourceNames[Value any](
-	target []string,
-	resources map[string]Value,
-	resourceName func(string) string,
-) []string {
-	for name := range resources {
-		target = append(target, resourceName(name))
-	}
-	return target
-}
-
-func (registrar *stagingRegistrar) validateManifest(manifest sdk.Manifest) error {
-	actual := registrar.resources()
+func (registrar *Registrar) ValidateManifest(manifest sdk.Manifest) error {
+	actual := registrar.Resources()
 	declared := slices.Clone(manifest.Registers)
 	slices.Sort(declared)
 	if !slices.Equal(actual, declared) {
@@ -231,6 +249,35 @@ func (registrar *stagingRegistrar) validateManifest(manifest sdk.Manifest) error
 	return nil
 }
 
+func appendNames[Value any](
+	target []string,
+	resources map[string]Value,
+	name func(string) string,
+) []string {
+	for resource := range resources {
+		target = append(target, name(resource))
+	}
+	return target
+}
+
+func CloneManifest(manifest sdk.Manifest) sdk.Manifest {
+	manifest.Requires = slices.Clone(manifest.Requires)
+	manifest.Conflicts = slices.Clone(manifest.Conflicts)
+	manifest.Registers = slices.Clone(manifest.Registers)
+	return manifest
+}
+
+func CloneToolSpec(spec sdk.ToolSpec) sdk.ToolSpec {
+	spec.Parameters = cloneJSONMap(spec.Parameters)
+	return spec
+}
+
+func CloneCapabilitySpec(spec sdk.CapabilitySpec) sdk.CapabilitySpec {
+	spec.InputSchema = cloneJSONMap(spec.InputSchema)
+	spec.OutputSchema = cloneJSONMap(spec.OutputSchema)
+	return spec
+}
+
 func validateProviderSpec(spec sdk.ProviderSpec) error {
 	if err := sdk.ValidateResourceName("provider", spec.Name); err != nil {
 		return err
@@ -241,7 +288,7 @@ func validateProviderSpec(spec sdk.ProviderSpec) error {
 	return nil
 }
 
-func validateToolSpec(spec sdk.ToolSpec) error {
+func ValidateToolSpec(spec sdk.ToolSpec) error {
 	if err := sdk.ValidateResourceName("tool", spec.Name); err != nil {
 		return err
 	}
@@ -327,7 +374,11 @@ func validateSubscriberSpec(spec sdk.SubscriberSpec) error {
 			return err
 		}
 		if _, exists := seen[event]; exists {
-			return fmt.Errorf("subscriber %q contains duplicate event %q", spec.Name, event)
+			return fmt.Errorf(
+				"subscriber %q contains duplicate event %q",
+				spec.Name,
+				event,
+			)
 		}
 		seen[event] = struct{}{}
 	}
@@ -371,17 +422,6 @@ func validateEventContract(contract sdk.EventContract) error {
 	return nil
 }
 
-func cloneToolSpec(spec sdk.ToolSpec) sdk.ToolSpec {
-	spec.Parameters = cloneJSONMap(spec.Parameters)
-	return spec
-}
-
-func cloneCapabilitySpec(spec sdk.CapabilitySpec) sdk.CapabilitySpec {
-	spec.InputSchema = cloneJSONMap(spec.InputSchema)
-	spec.OutputSchema = cloneJSONMap(spec.OutputSchema)
-	return spec
-}
-
 func cloneJSONMap(source map[string]any) map[string]any {
 	if source == nil {
 		return nil
@@ -415,3 +455,6 @@ func cloneJSONValue(value any) any {
 		return value
 	}
 }
+
+var _ sdk.Registrar = (*Registrar)(nil)
+var _ sdk.AgentRegistrar = (*AgentRegistrar)(nil)

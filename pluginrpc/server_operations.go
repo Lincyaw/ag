@@ -5,9 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"runtime/debug"
-	"time"
 
+	"github.com/lincyaw/ag/internal/operationworker"
 	"github.com/lincyaw/ag/sdk"
 )
 
@@ -168,149 +167,31 @@ func (server *server) executeStored(parent context.Context, id string) {
 		stopServerCancel()
 		cancel()
 	}()
-	record, err := server.operations.Claim(
-		operationContext,
-		id,
-		server.operationWorkerID,
-		time.Now().UTC(),
-		server.operationLease,
-	)
-	if err != nil {
-		if !errors.Is(err, sdk.ErrOperationClaimed) {
-			server.logger.Debug(
-				"claim stored operation",
-				"operation_id",
-				id,
-				"error",
-				err,
-			)
-		}
-		return
-	}
-	if err := server.validateResourceRevision(record); err != nil {
-		server.logger.Warn(
-			"claimed operation has stale resource revision",
-			"operation_id",
-			id,
-			"error",
-			err,
-		)
-		return
-	}
-	operationContext = sdk.WithInvocation(
-		operationContext,
-		record.Invocation,
-	)
-	token := record.Execution.Token
 	server.cancelMu.Lock()
+	if _, running := server.operationCancels[id]; running {
+		server.cancelMu.Unlock()
+		return
+	}
 	server.operationCancels[id] = cancel
 	server.cancelMu.Unlock()
-	executionContext, cancelExecution := context.WithCancel(operationContext)
-	heartbeatContext, stopHeartbeat := context.WithCancel(operationContext)
-	heartbeatDone := make(chan struct{})
-	leaseLost := make(chan error, 1)
-	go server.renewOperationLease(
-		heartbeatContext,
-		id,
-		token,
-		cancelExecution,
-		heartbeatDone,
-		leaseLost,
-	)
-	output, executeErr := server.executeLocal(executionContext, record)
-	stopHeartbeat()
-	<-heartbeatDone
-	cancelExecution()
-	server.cancelMu.Lock()
-	delete(server.operationCancels, id)
-	server.cancelMu.Unlock()
-	select {
-	case lostErr := <-leaseLost:
-		server.logger.Warn(
-			"stored operation lease lost",
-			"operation_id",
-			id,
-			"error",
-			lostErr,
-		)
-		return
-	default:
-	}
-	if operationContext.Err() != nil {
-		_, releaseErr := server.operations.Release(
-			context.Background(),
-			id,
-			token,
-		)
-		if releaseErr != nil &&
-			!errors.Is(releaseErr, sdk.ErrOperationFence) {
-			server.logger.Error(
-				"release stored operation",
-				"operation_id",
-				id,
-				"error",
-				releaseErr,
-			)
-		}
-		return
-	}
-	state := sdk.OperationSucceeded
-	errorText := ""
-	if executeErr != nil {
-		state = sdk.OperationFailed
-		output = nil
-		errorText = executeErr.Error()
-	}
-	_, err = server.operations.Complete(
-		context.Background(),
-		id,
-		token,
-		state,
-		output,
-		errorText,
-	)
-	if err != nil && !errors.Is(err, sdk.ErrOperationFence) {
-		server.logger.Error("complete stored operation", "operation_id", id, "error", err)
-	}
-}
+	defer func() {
+		server.cancelMu.Lock()
+		delete(server.operationCancels, id)
+		server.cancelMu.Unlock()
+	}()
 
-func (server *server) renewOperationLease(
-	ctx context.Context,
-	id string,
-	token string,
-	cancelExecution context.CancelFunc,
-	done chan<- struct{},
-	lost chan<- error,
-) {
-	defer close(done)
-	interval := server.operationLease / 3
-	if interval < time.Millisecond {
-		interval = time.Millisecond
+	worker := operationworker.Runner{
+		Store:  server.operations,
+		Logger: server.logger,
+		Owner:  server.operationWorkerID,
+		Lease:  server.operationLease,
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case now := <-ticker.C:
-			_, err := server.operations.Renew(
-				ctx,
-				id,
-				token,
-				now.UTC(),
-				server.operationLease,
-			)
-			if err != nil {
-				select {
-				case lost <- err:
-				default:
-				}
-				cancelExecution()
-				return
-			}
-		}
-	}
+	worker.Run(
+		operationContext,
+		id,
+		server.validateResourceRevision,
+		server.executeLocal,
+	)
 }
 
 func (server *server) resourceRevision(
@@ -320,16 +201,16 @@ func (server *server) resourceRevision(
 	var spec any
 	switch kind {
 	case sdk.OperationKindProvider:
-		if provider, exists := server.registrar.providers[resource]; exists {
-			spec = provider.spec
+		if provider, exists := server.registrar.Providers[resource]; exists {
+			spec = provider.Spec
 		}
 	case sdk.OperationKindTool:
-		if tool, exists := server.registrar.tools[resource]; exists {
-			spec = tool.spec
+		if tool, exists := server.registrar.Tools[resource]; exists {
+			spec = tool.Spec
 		}
 	case sdk.OperationKindCapability:
-		if capability, exists := server.registrar.capabilities[resource]; exists {
-			spec = capability.spec
+		if capability, exists := server.registrar.Capabilities[resource]; exists {
+			spec = capability.Spec
 		}
 	}
 	return sdk.ResourceRevision(server.manifest, string(kind), resource, spec)
@@ -356,15 +237,10 @@ func (server *server) validateResourceRevision(
 func (server *server) executeLocal(
 	ctx context.Context,
 	record sdk.OperationRecord,
-) (output json.RawMessage, err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("plugin operation panic: %v\n%s", recovered, debug.Stack())
-		}
-	}()
+) (json.RawMessage, error) {
 	switch record.Kind {
 	case sdk.OperationKindProvider:
-		provider, ok := server.registrar.providers[record.Resource].value.(sdk.SyncProvider)
+		provider, ok := server.registrar.Providers[record.Resource].Value.(sdk.SyncProvider)
 		if !ok {
 			return nil, fmt.Errorf("provider %q is not synchronous", record.Resource)
 		}
@@ -378,7 +254,7 @@ func (server *server) executeLocal(
 		}
 		return json.Marshal(response)
 	case sdk.OperationKindTool:
-		tool, ok := server.registrar.tools[record.Resource].value.(sdk.SyncTool)
+		tool, ok := server.registrar.Tools[record.Resource].Value.(sdk.SyncTool)
 		if !ok {
 			return nil, fmt.Errorf("tool %q is not synchronous", record.Resource)
 		}
@@ -388,7 +264,7 @@ func (server *server) executeLocal(
 		}
 		return json.Marshal(result)
 	case sdk.OperationKindCapability:
-		capability, ok := server.registrar.capabilities[record.Resource].value.(sdk.SyncCapability)
+		capability, ok := server.registrar.Capabilities[record.Resource].Value.(sdk.SyncCapability)
 		if !ok {
 			return nil, fmt.Errorf("capability %q is not synchronous", record.Resource)
 		}

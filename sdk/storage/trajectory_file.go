@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lincyaw/ag/internal/filestate"
 	sdk "github.com/lincyaw/ag/sdk"
 )
 
@@ -21,7 +22,7 @@ type fileTrajectoryStore struct {
 }
 
 func NewFileTrajectoryStore(directory string) (sdk.TrajectoryStore, error) {
-	absolute, err := prepareDirectory("trajectory", directory)
+	absolute, err := filestate.PrepareDirectory("trajectory", directory)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +52,7 @@ func (store *fileTrajectoryStore) Create(
 	}
 	trajectory.Entries = []sdk.TrajectoryEntry{}
 
-	return withFileLock(store.lockPath, true, func() error {
+	return filestate.WithExclusiveLock(store.lockPath, func() error {
 		path := store.path(trajectory.ID)
 		if _, err := os.Stat(path); err == nil {
 			return fmt.Errorf("%w: %s", sdk.ErrTrajectoryExists, trajectory.ID)
@@ -100,7 +101,7 @@ func (store *fileTrajectoryStore) Append(
 		return "", err
 	}
 	var head string
-	err := withFileLock(store.lockPath, true, func() error {
+	err := filestate.WithExclusiveLock(store.lockPath, func() error {
 		stored, readErr := store.readStoredLocked(id)
 		if readErr != nil {
 			return readErr
@@ -168,7 +169,7 @@ func (store *fileTrajectoryStore) BeginExecution(
 	}
 	input = bound[0]
 	var metadata sdk.TrajectoryMetadata
-	err = withFileLock(store.lockPath, true, func() error {
+	err = filestate.WithExclusiveLock(store.lockPath, func() error {
 		stored, readErr := store.readStoredLocked(id)
 		if readErr != nil {
 			return readErr
@@ -227,7 +228,7 @@ func (store *fileTrajectoryStore) ClaimExecution(
 		now = time.Now().UTC()
 	}
 	var result sdk.TrajectoryExecution
-	err := withFileLock(store.lockPath, true, func() error {
+	err := filestate.WithExclusiveLock(store.lockPath, func() error {
 		stored, readErr := store.readStoredLocked(id)
 		if readErr != nil {
 			return readErr
@@ -274,7 +275,7 @@ func (store *fileTrajectoryStore) RenewExecution(
 		now = time.Now().UTC()
 	}
 	var result sdk.TrajectoryExecution
-	err := withFileLock(store.lockPath, true, func() error {
+	err := filestate.WithExclusiveLock(store.lockPath, func() error {
 		stored, readErr := store.readStoredLocked(id)
 		if readErr != nil {
 			return readErr
@@ -331,7 +332,7 @@ func (store *fileTrajectoryStore) CommitExecution(
 	commit.Entries = entries
 	now := time.Now().UTC()
 	var metadata sdk.TrajectoryMetadata
-	err = withFileLock(store.lockPath, true, func() error {
+	err = filestate.WithExclusiveLock(store.lockPath, func() error {
 		stored, readErr := store.readStoredLocked(commit.TrajectoryID)
 		if readErr != nil {
 			return readErr
@@ -403,7 +404,7 @@ func (store *fileTrajectoryStore) ListRecoverable(
 		now = time.Now().UTC()
 	}
 	var result []sdk.TrajectoryMetadata
-	err := withFileLock(store.lockPath, false, func() error {
+	err := filestate.WithSharedLock(store.lockPath, func() error {
 		paths, globErr := filepath.Glob(filepath.Join(store.directory, "*.json"))
 		if globErr != nil {
 			return fmt.Errorf("list recoverable trajectories: %w", globErr)
@@ -458,7 +459,7 @@ func (store *fileTrajectoryStore) LoadMetadata(
 		return sdk.TrajectoryMetadata{}, err
 	}
 	var metadata sdk.TrajectoryMetadata
-	err := withFileLock(store.lockPath, false, func() error {
+	err := filestate.WithSharedLock(store.lockPath, func() error {
 		stored, readErr := store.readStoredLocked(id)
 		if readErr != nil {
 			return readErr
@@ -504,7 +505,7 @@ func (store *fileTrajectoryStore) LoadEntry(
 		return sdk.TrajectoryEntry{}, err
 	}
 	var result sdk.TrajectoryEntry
-	err := withFileLock(store.lockPath, false, func() error {
+	err := filestate.WithSharedLock(store.lockPath, func() error {
 		trajectory, readErr := store.materializeLocked(id)
 		if readErr != nil {
 			return readErr
@@ -537,7 +538,7 @@ func (store *fileTrajectoryStore) LoadBranch(
 		return nil, err
 	}
 	var branch []sdk.TrajectoryEntry
-	err := withFileLock(store.lockPath, false, func() error {
+	err := filestate.WithSharedLock(store.lockPath, func() error {
 		trajectory, readErr := store.materializeLocked(id)
 		if readErr != nil {
 			return readErr
@@ -577,7 +578,7 @@ func (store *fileTrajectoryStore) Load(
 		return sdk.Trajectory{}, err
 	}
 	var trajectory sdk.Trajectory
-	err := withFileLock(store.lockPath, false, func() error {
+	err := filestate.WithSharedLock(store.lockPath, func() error {
 		var readErr error
 		trajectory, readErr = store.materializeLocked(id)
 		return readErr
@@ -592,7 +593,7 @@ func (store *fileTrajectoryStore) List(
 		return nil, err
 	}
 	var result []sdk.TrajectorySummary
-	err := withFileLock(store.lockPath, false, func() error {
+	err := filestate.WithSharedLock(store.lockPath, func() error {
 		paths, globErr := filepath.Glob(filepath.Join(store.directory, "*.json"))
 		if globErr != nil {
 			return fmt.Errorf("list trajectories: %w", globErr)
@@ -657,7 +658,7 @@ func (store *fileTrajectoryStore) Delete(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return withFileLock(store.lockPath, true, func() error {
+	return filestate.WithExclusiveLock(store.lockPath, func() error {
 		target, readErr := store.readStoredLocked(id)
 		if readErr != nil {
 			return readErr
@@ -699,7 +700,7 @@ func (store *fileTrajectoryStore) Delete(
 		if err != nil {
 			return fmt.Errorf("delete trajectory %q: %w", id, err)
 		}
-		return syncDirectory(store.directory)
+		return filestate.SyncDirectory(store.directory, "trajectory")
 	})
 }
 
@@ -863,11 +864,10 @@ func (store *fileTrajectoryStore) writeLocked(
 	ctx context.Context,
 	trajectory sdk.Trajectory,
 ) error {
-	return writeJSONAtomic(
+	return filestate.WriteJSON(
 		ctx,
 		store.directory,
 		store.path(trajectory.ID),
-		".trajectory-*.tmp",
 		fmt.Sprintf("trajectory %q", trajectory.ID),
 		trajectory,
 	)

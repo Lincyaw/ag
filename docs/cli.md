@@ -41,11 +41,13 @@ explicitly enabled.
 
 Human progress is separate from runtime logs. In text mode, `--progress auto`
 opens a transient inline Bubble Tea dashboard on stderr when stderr is a
-terminal. The dashboard shows the current phase, session, turn, provider, tool
-counts, generic tool argument summaries, and short result previews while the run
-is active, then clears before the final answer is written to stdout. It adapts
-to any tool by summarizing the JSON arguments and textual result; it does not
-require the CLI to know plugin-specific tool names.
+terminal. The dashboard shows the task, current phase, turn, tool progress, and
+high-level activity while the run is active, then clears before the final answer
+is written to stdout. The default Overview intentionally hides low-level
+provider details, message counts, checksums, and raw tool output. Timeline and
+Details retain those traces for inspection. The renderer adapts to any tool by
+summarizing its JSON arguments and textual result; it does not require the CLI
+to know plugin-specific tool names.
 
 When stdin is also a terminal, the dashboard is interactive: `tab` switches
 Overview / Timeline / Details, `j` / `k` or arrow keys move between events,

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lincyaw/ag/internal/filestate"
 	"github.com/lincyaw/ag/sdk"
 )
 
@@ -31,22 +32,12 @@ type fileSessionStore struct {
 }
 
 func NewFileSessionStore(directory string) (SessionStore, error) {
-	directory = strings.TrimSpace(directory)
-	if directory == "" {
-		return nil, errors.New("gateway session store directory is empty")
-	}
-	absolute, err := filepath.Abs(directory)
+	absolute, err := filestate.PrepareDirectory(
+		"gateway session store",
+		directory,
+	)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"resolve gateway session store directory: %w",
-			err,
-		)
-	}
-	if err := os.MkdirAll(absolute, 0o700); err != nil {
-		return nil, fmt.Errorf(
-			"create gateway session store directory: %w",
-			err,
-		)
+		return nil, err
 	}
 	store := &fileSessionStore{
 		directory: absolute,
@@ -288,53 +279,11 @@ func (store *fileSessionStore) writeLocked(
 	ctx context.Context,
 	state fileSessionState,
 ) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	raw, err := json.Marshal(state)
-	if err != nil {
-		return fmt.Errorf("encode gateway sessions: %w", err)
-	}
-	temporary, err := os.CreateTemp(store.directory, ".sessions-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create gateway session temporary file: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	removeTemporary := true
-	defer func() {
-		if removeTemporary {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("secure gateway session temporary file: %w", err)
-	}
-	if _, err := temporary.Write(raw); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("write gateway sessions: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("sync gateway sessions: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close gateway session temporary file: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryPath, store.statePath); err != nil {
-		return fmt.Errorf("publish gateway sessions: %w", err)
-	}
-	removeTemporary = false
-	directory, err := os.Open(store.directory)
-	if err != nil {
-		return fmt.Errorf("open gateway session directory: %w", err)
-	}
-	defer directory.Close()
-	if err := directory.Sync(); err != nil {
-		return fmt.Errorf("sync gateway session directory: %w", err)
-	}
-	return nil
+	return filestate.WriteJSON(
+		ctx,
+		store.directory,
+		store.statePath,
+		"gateway sessions",
+		state,
+	)
 }

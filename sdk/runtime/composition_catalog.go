@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/lincyaw/ag/internal/plugincontract"
 	"github.com/lincyaw/ag/sdk"
 )
 
@@ -86,7 +87,10 @@ func catalogFromSnapshot(snapshot *registrySnapshot) CatalogSnapshot {
 		result.Providers = append(result.Providers, provider.spec)
 	}
 	for _, tool := range snapshot.tools {
-		result.Tools = append(result.Tools, cloneToolSpec(tool.spec))
+		result.Tools = append(
+			result.Tools,
+			plugincontract.CloneToolSpec(tool.spec),
+		)
 	}
 	for _, agent := range snapshot.agents {
 		result.Agents = append(
@@ -107,7 +111,7 @@ func catalogFromSnapshot(snapshot *registrySnapshot) CatalogSnapshot {
 	for _, capability := range snapshot.capabilities {
 		result.Capabilities = append(
 			result.Capabilities,
-			cloneCapabilitySpec(capability.spec),
+			plugincontract.CloneCapabilitySpec(capability.spec),
 		)
 	}
 	for _, event := range snapshot.events {

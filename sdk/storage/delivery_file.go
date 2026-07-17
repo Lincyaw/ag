@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/lincyaw/ag/internal/filestate"
 	sdk "github.com/lincyaw/ag/sdk"
 )
 
@@ -35,7 +36,7 @@ func newFileDeliveryStore(
 	directory string,
 	filename string,
 ) (*fileDeliveryStore, error) {
-	absolute, err := prepareDirectory("delivery", directory)
+	absolute, err := filestate.PrepareDirectory("delivery", directory)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +115,7 @@ func (store *fileDeliveryStore) List(
 		return nil, err
 	}
 	var result []sdk.Delivery
-	err := withFileLock(store.lockPath, false, func() error {
+	err := filestate.WithSharedLock(store.lockPath, func() error {
 		memory, readErr := store.readLocked()
 		if readErr != nil {
 			return readErr
@@ -165,7 +166,7 @@ func (store *fileDeliveryStore) mutate(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return withFileLock(store.lockPath, true, func() error {
+	return filestate.WithExclusiveLock(store.lockPath, func() error {
 		memory, err := store.readLocked()
 		if err != nil {
 			return err
@@ -236,11 +237,10 @@ func (store *fileDeliveryStore) writeLocked(
 		state.Deliveries[id] = sdk.CloneDelivery(delivery)
 	}
 	memory.mu.Unlock()
-	return writeJSONAtomic(
+	return filestate.WriteJSON(
 		ctx,
 		store.directory,
 		store.path,
-		".deliveries-*.tmp",
 		"deliveries",
 		state,
 	)

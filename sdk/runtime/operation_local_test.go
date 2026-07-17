@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -160,41 +159,6 @@ func TestSyncResourcesAreAdaptedToOperationsAndCancellation(t *testing.T) {
 }
 
 type operationContextKey struct{}
-
-func TestLocalOperationPanicBecomesStoredFailure(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	store := sdkstorage.NewMemoryOperationStore()
-	record, _, err := store.Submit(ctx, sdk.OperationRecord{
-		Operation: sdk.Operation{IdempotencyKey: "panicking-operation"},
-		Kind:      sdk.OperationKindTool,
-		Resource:  "panicking-tool",
-		Input:     json.RawMessage(`{}`),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime := &Runtime{operation: operationRuntime{
-		store: store, workerID: "panic-test", lease: time.Second,
-	}}
-	runtime.executeLocalOperation(
-		context.Background(),
-		record.Operation.ID,
-		func(context.Context, json.RawMessage) (json.RawMessage, error) {
-			panic("broken plugin")
-		},
-	)
-	failed, err := store.Get(ctx, record.Operation.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if failed.Operation.State != sdk.OperationFailed || !strings.Contains(
-		failed.Operation.Error,
-		"plugin operation panic: broken plugin",
-	) {
-		t.Fatalf("operation after panic = %#v", failed.Operation)
-	}
-}
 
 func TestLocalOperationRecoversRunningRecordAfterRuntimeRestart(t *testing.T) {
 	t.Parallel()

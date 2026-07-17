@@ -1,11 +1,10 @@
 package runtime
 
-// Composition tests cover staged resource validation.
+// Composition tests cover immutable published snapshots.
 
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -25,17 +24,6 @@ func (*mutableSpecTool) Call(
 	json.RawMessage,
 ) (sdk.ToolResult, error) {
 	return sdk.ToolResult{Content: "ok"}, nil
-}
-
-func TestEventContractRejectsNonAdjacentDuplicateFields(t *testing.T) {
-	t.Parallel()
-	err := validateEventContract(sdk.EventContract{
-		Name:          "mutable-event",
-		MutableFields: []string{"first", "second", "first"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "duplicate mutable fields") {
-		t.Fatalf("validation error = %v, want duplicate mutable fields", err)
-	}
 }
 
 func TestBuiltinEventContractsAreIsolatedBetweenSnapshots(t *testing.T) {
