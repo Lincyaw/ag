@@ -3,9 +3,11 @@ package gateway
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/lincyaw/ag/sdk"
 )
@@ -133,6 +135,21 @@ func TestFileSessionStorePersistsPrivateState(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("session state mode = %o", info.Mode().Perm())
+	}
+}
+
+func TestSessionRevisionDoesNotWrap(t *testing.T) {
+	current := testSession("revision-exhausted")
+	current.Revision = math.MaxUint64
+
+	_, err := prepareSessionUpdate(
+		current,
+		current,
+		math.MaxUint64,
+		time.Now(),
+	)
+	if !errors.Is(err, ErrSessionConflict) {
+		t.Fatalf("revision overflow error = %v", err)
 	}
 }
 

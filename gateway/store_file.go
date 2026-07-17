@@ -170,24 +170,15 @@ func (store *fileSessionStore) Save(
 			session.ID,
 		)
 	}
-	if current.Revision != expectedRevision {
-		return Session{}, fmt.Errorf(
-			"%w: session %s has revision %d, expected %d",
-			ErrSessionConflict,
-			session.ID,
-			current.Revision,
-			expectedRevision,
-		)
+	session, err = prepareSessionUpdate(
+		current,
+		session,
+		expectedRevision,
+		store.clock(),
+	)
+	if err != nil {
+		return Session{}, err
 	}
-	if current.UserID != session.UserID {
-		return Session{}, fmt.Errorf(
-			"gateway session %s user ID is immutable",
-			session.ID,
-		)
-	}
-	session.Revision = current.Revision + 1
-	session.CreatedAt = current.CreatedAt
-	session.UpdatedAt = store.clock().UTC()
 	state.Sessions[session.ID] = cloneSession(session)
 	if err := store.writeLocked(ctx, state); err != nil {
 		return Session{}, err

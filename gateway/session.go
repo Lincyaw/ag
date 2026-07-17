@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"net/url"
 	"slices"
 	"strings"
@@ -196,6 +197,40 @@ func cloneManifest(manifest sdk.Manifest) sdk.Manifest {
 	manifest.Conflicts = slices.Clone(manifest.Conflicts)
 	manifest.Registers = slices.Clone(manifest.Registers)
 	return manifest
+}
+
+func prepareSessionUpdate(
+	current Session,
+	replacement Session,
+	expectedRevision uint64,
+	now time.Time,
+) (Session, error) {
+	if current.Revision != expectedRevision {
+		return Session{}, fmt.Errorf(
+			"%w: session %s has revision %d, expected %d",
+			ErrSessionConflict,
+			current.ID,
+			current.Revision,
+			expectedRevision,
+		)
+	}
+	if current.UserID != replacement.UserID {
+		return Session{}, fmt.Errorf(
+			"gateway session %s user ID is immutable",
+			current.ID,
+		)
+	}
+	if current.Revision == math.MaxUint64 {
+		return Session{}, fmt.Errorf(
+			"%w: session %s revision is exhausted",
+			ErrSessionConflict,
+			current.ID,
+		)
+	}
+	replacement.Revision = current.Revision + 1
+	replacement.CreatedAt = current.CreatedAt
+	replacement.UpdatedAt = now.UTC()
+	return replacement, nil
 }
 
 func validatePage(request sdk.PageRequest) (sdk.PageRequest, error) {
