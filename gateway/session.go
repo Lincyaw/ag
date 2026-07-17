@@ -1,0 +1,211 @@
+package gateway
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"maps"
+	"net/url"
+	"slices"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/lincyaw/ag/sdk"
+)
+
+var (
+	ErrSessionNotFound = errors.New("gateway session not found")
+	ErrSessionExists   = errors.New("gateway session already exists")
+	ErrSessionConflict = errors.New("gateway session revision conflict")
+	ErrStoreClosed     = errors.New("gateway session store closed")
+)
+
+type PluginBinding struct {
+	Namespace  string            `json:"namespace"`
+	Name       string            `json:"name"`
+	InstanceID string            `json:"instance_id"`
+	URI        string            `json:"uri"`
+	Manifest   sdk.Manifest      `json:"manifest"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	Epoch      uint64            `json:"epoch"`
+}
+
+type Session struct {
+	ID        string          `json:"id"`
+	UserID    string          `json:"user_id"`
+	Provider  string          `json:"provider,omitempty"`
+	System    string          `json:"system,omitempty"`
+	MaxTurns  int             `json:"max_turns"`
+	Revision  uint64          `json:"revision"`
+	Plugins   []PluginBinding `json:"plugins"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+}
+
+type SessionPage struct {
+	Items []Session `json:"items"`
+	Next  string    `json:"next,omitempty"`
+}
+
+type StoreCapabilities struct {
+	Durable          bool `json:"durable"`
+	MultiProcessSafe bool `json:"multi_process_safe"`
+}
+
+type SessionStore interface {
+	Create(context.Context, Session) (Session, error)
+	Get(context.Context, string) (Session, error)
+	List(context.Context, sdk.PageRequest) (SessionPage, error)
+	Save(context.Context, Session, uint64) (Session, error)
+	Delete(context.Context, string, uint64) error
+	Capabilities() StoreCapabilities
+	Close(context.Context) error
+}
+
+func normalizeSession(session Session) (Session, error) {
+	session.ID = strings.TrimSpace(session.ID)
+	session.UserID = strings.TrimSpace(session.UserID)
+	session.Provider = strings.TrimSpace(session.Provider)
+	if err := sdk.ValidateResourceName("gateway session", session.ID); err != nil {
+		return Session{}, err
+	}
+	if err := validateUserID(session.UserID); err != nil {
+		return Session{}, err
+	}
+	if session.Provider != "" {
+		if err := sdk.ValidateResourceName("provider", session.Provider); err != nil {
+			return Session{}, err
+		}
+	}
+	if session.MaxTurns <= 0 {
+		return Session{}, errors.New("gateway session max turns must be positive")
+	}
+	plugins := make([]PluginBinding, 0, len(session.Plugins))
+	seen := make(map[string]struct{}, len(session.Plugins))
+	for _, binding := range session.Plugins {
+		normalized, err := normalizeBinding(binding)
+		if err != nil {
+			return Session{}, err
+		}
+		if _, exists := seen[normalized.Name]; exists {
+			return Session{}, fmt.Errorf(
+				"gateway session contains plugin %q more than once",
+				normalized.Name,
+			)
+		}
+		seen[normalized.Name] = struct{}{}
+		plugins = append(plugins, normalized)
+	}
+	slices.SortFunc(plugins, func(left, right PluginBinding) int {
+		return strings.Compare(left.Name, right.Name)
+	})
+	session.Plugins = plugins
+	session.CreatedAt = session.CreatedAt.UTC()
+	session.UpdatedAt = session.UpdatedAt.UTC()
+	return session, nil
+}
+
+func normalizeBinding(binding PluginBinding) (PluginBinding, error) {
+	binding.Namespace = strings.TrimSpace(binding.Namespace)
+	binding.Name = strings.TrimSpace(binding.Name)
+	binding.InstanceID = strings.TrimSpace(binding.InstanceID)
+	binding.URI = strings.TrimSpace(binding.URI)
+	if err := sdk.ValidateResourceName(
+		"registry namespace",
+		binding.Namespace,
+	); err != nil {
+		return PluginBinding{}, err
+	}
+	if err := sdk.ValidateResourceName("plugin", binding.Name); err != nil {
+		return PluginBinding{}, err
+	}
+	if err := sdk.ValidateResourceName(
+		"plugin instance",
+		binding.InstanceID,
+	); err != nil {
+		return PluginBinding{}, err
+	}
+	if binding.Epoch == 0 {
+		return PluginBinding{}, errors.New("plugin binding epoch must be positive")
+	}
+	parsed, err := url.Parse(binding.URI)
+	if err != nil {
+		return PluginBinding{}, fmt.Errorf(
+			"parse plugin binding URI %q: %w",
+			binding.URI,
+			err,
+		)
+	}
+	if parsed.Scheme == "" ||
+		(parsed.Host == "" && parsed.Opaque == "" && parsed.Path == "") {
+		return PluginBinding{}, fmt.Errorf(
+			"plugin binding URI %q has no scheme or target",
+			binding.URI,
+		)
+	}
+	if err := binding.Manifest.Validate(); err != nil {
+		return PluginBinding{}, fmt.Errorf(
+			"validate plugin binding manifest: %w",
+			err,
+		)
+	}
+	if binding.Manifest.Name != binding.Name {
+		return PluginBinding{}, fmt.Errorf(
+			"plugin binding name %q does not match manifest name %q",
+			binding.Name,
+			binding.Manifest.Name,
+		)
+	}
+	binding.Manifest = cloneManifest(binding.Manifest)
+	binding.Labels = maps.Clone(binding.Labels)
+	return binding, nil
+}
+
+func validateUserID(value string) error {
+	if value == "" {
+		return errors.New("gateway session user ID is empty")
+	}
+	if len(value) > 256 {
+		return errors.New("gateway session user ID exceeds 256 bytes")
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return errors.New("gateway session user ID contains control characters")
+		}
+	}
+	return nil
+}
+
+func cloneSession(session Session) Session {
+	session.Plugins = slices.Clone(session.Plugins)
+	for index := range session.Plugins {
+		session.Plugins[index].Manifest = cloneManifest(
+			session.Plugins[index].Manifest,
+		)
+		session.Plugins[index].Labels = maps.Clone(
+			session.Plugins[index].Labels,
+		)
+	}
+	return session
+}
+
+func cloneManifest(manifest sdk.Manifest) sdk.Manifest {
+	manifest.Requires = slices.Clone(manifest.Requires)
+	manifest.Conflicts = slices.Clone(manifest.Conflicts)
+	manifest.Registers = slices.Clone(manifest.Registers)
+	return manifest
+}
+
+func validatePage(request sdk.PageRequest) (sdk.PageRequest, error) {
+	if request.Limit == 0 {
+		request.Limit = sdk.DefaultPageSize
+	}
+	if request.Limit < 1 || request.Limit > sdk.MaxPageSize {
+		return sdk.PageRequest{}, fmt.Errorf(
+			"gateway session page limit must be between 1 and %d",
+			sdk.MaxPageSize,
+		)
+	}
+	return request, nil
+}
