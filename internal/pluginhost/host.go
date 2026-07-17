@@ -205,6 +205,20 @@ func Serve(ctx context.Context, config Config) (returnErr error) {
 		}
 		uri = scheme + "://" + listener.Addr().String()
 	}
+	advertisedSource, err := pluginrpc.NewSource(
+		uri,
+		pluginrpc.ClientConfig{},
+	)
+	if err != nil {
+		return fmt.Errorf("validate plugin advertise URI: %w", err)
+	}
+	uri = advertisedSource.String()
+	if !strings.HasPrefix(uri, scheme+"://") {
+		return fmt.Errorf(
+			"plugin advertise URI must use %s:// for the configured server transport",
+			scheme,
+		)
+	}
 
 	serveDone = make(chan error, 1)
 	serverStarted = true
