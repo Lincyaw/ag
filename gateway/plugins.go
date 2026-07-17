@@ -154,25 +154,22 @@ func (manager *Manager) ResolvePlugins(
 		})
 		if err != nil {
 			return nil, fmt.Errorf(
-				"%w: validate %s/%s@%s: %v",
+				"%w: %s/%s@%s is unavailable",
 				ErrBindingStale,
 				binding.Namespace,
 				binding.Name,
 				binding.InstanceID,
-				err,
 			)
 		}
 		if instance.Epoch != binding.Epoch || instance.URI != binding.URI {
 			return nil, fmt.Errorf(
-				"%w: %s/%s@%s changed from epoch %d at %s to epoch %d at %s",
+				"%w: %s/%s@%s changed (bound epoch %d, current epoch %d)",
 				ErrBindingStale,
 				binding.Namespace,
 				binding.Name,
 				binding.InstanceID,
 				binding.Epoch,
-				binding.URI,
 				instance.Epoch,
-				instance.URI,
 			)
 		}
 		references = append(references, sdk.PluginReference{

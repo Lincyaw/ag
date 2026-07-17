@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,6 +108,19 @@ func TestManagerDiscoversAndFencesSessionPlugins(t *testing.T) {
 		attached,
 	); !errors.Is(err, ErrBindingStale) {
 		t.Fatalf("stale binding error = %v", err)
+	}
+	if _, err := directory.Register(
+		ctx,
+		testRegistration("file", "node-a"),
+		registry.LeaseOptions{TTL: time.Minute},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.ResolvePlugins(ctx, attached); !errors.Is(
+		err,
+		ErrBindingStale,
+	) || strings.Contains(err.Error(), "grpc://") {
+		t.Fatalf("replaced binding error = %v", err)
 	}
 	detached, err := manager.DetachPlugin(
 		ctx,
