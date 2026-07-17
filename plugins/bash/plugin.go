@@ -34,16 +34,16 @@ type Config struct {
 	Environment    []string
 }
 
-type Plugin struct {
+type plugin struct {
 	config Config
 }
 
-func New(config Config) *Plugin {
+func New(config Config) sdk.Plugin {
 	config.Environment = append([]string(nil), config.Environment...)
-	return &Plugin{config: config}
+	return &plugin{config: config}
 }
 
-func (Plugin) Manifest() sdk.Manifest {
+func (plugin) Manifest() sdk.Manifest {
 	return sdk.Manifest{
 		Name:        "bash",
 		Version:     "1.0.0",
@@ -53,7 +53,7 @@ func (Plugin) Manifest() sdk.Manifest {
 	}
 }
 
-func (plugin *Plugin) Install(_ context.Context, registrar sdk.Registrar) error {
+func (plugin *plugin) Install(_ context.Context, registrar sdk.Registrar) error {
 	runner, err := newRunner(plugin.config)
 	if err != nil {
 		return err

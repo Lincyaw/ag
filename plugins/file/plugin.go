@@ -34,13 +34,13 @@ type Config struct {
 	EnableWrite   bool
 }
 
-type Plugin struct {
+type plugin struct {
 	config Config
 }
 
-func New(config Config) *Plugin { return &Plugin{config: config} }
+func New(config Config) sdk.Plugin { return &plugin{config: config} }
 
-func (plugin *Plugin) Manifest() sdk.Manifest {
+func (plugin *plugin) Manifest() sdk.Manifest {
 	registers := []string{
 		sdk.ToolResource("read_file"),
 		sdk.ToolResource("list_files"),
@@ -62,7 +62,7 @@ func (plugin *Plugin) Manifest() sdk.Manifest {
 	}
 }
 
-func (plugin *Plugin) Install(
+func (plugin *plugin) Install(
 	_ context.Context,
 	registrar sdk.Registrar,
 ) error {

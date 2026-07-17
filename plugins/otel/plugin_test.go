@@ -194,10 +194,11 @@ func TestDuplicateStartEventsEndReplacedSpans(t *testing.T) {
 			t.Errorf("shutdown tracer provider: %v", err)
 		}
 	})
-	plugin, err := New(Config{Tracer: tracerProvider.Tracer("duplicate-test")})
+	installed, err := New(Config{Tracer: tracerProvider.Tracer("duplicate-test")})
 	if err != nil {
 		t.Fatal(err)
 	}
+	plugin := installed.(*plugin)
 	event := sdk.Event{ID: "event", SessionID: "session"}
 	for range 2 {
 		plugin.startRun(ctx, event)

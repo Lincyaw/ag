@@ -47,10 +47,10 @@ func TestBashToolExecutesInRootWithExplicitEnvironment(t *testing.T) {
 func TestPluginSnapshotsEnvironmentConfiguration(t *testing.T) {
 	t.Parallel()
 	environment := []string{"SNAPSHOT=original"}
-	plugin := New(Config{Root: t.TempDir(), Environment: environment})
+	installed := New(Config{Root: t.TempDir(), Environment: environment})
 	environment[0] = "SNAPSHOT=mutated"
 
-	runner, err := newRunner(plugin.config)
+	runner, err := newRunner(installed.(*plugin).config)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -24,7 +24,7 @@ type Config struct {
 	Meter  metric.Meter
 }
 
-type Plugin struct {
+type plugin struct {
 	logger            *slog.Logger
 	tracer            trace.Tracer
 	runs              metric.Int64Counter
@@ -38,7 +38,7 @@ type Plugin struct {
 	toolSpans         map[string]trace.Span
 }
 
-func New(config Config) (*Plugin, error) {
+func New(config Config) (sdk.Plugin, error) {
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
@@ -76,7 +76,7 @@ func New(config Config) (*Plugin, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create trajectory counter: %w", err)
 	}
-	return &Plugin{
+	return &plugin{
 		logger:            config.Logger,
 		tracer:            config.Tracer,
 		runs:              runs,
@@ -90,7 +90,7 @@ func New(config Config) (*Plugin, error) {
 	}, nil
 }
 
-func (plugin *Plugin) Manifest() sdk.Manifest {
+func (plugin *plugin) Manifest() sdk.Manifest {
 	return sdk.Manifest{
 		Name:        "otel",
 		Version:     "1.0.0",
@@ -100,7 +100,7 @@ func (plugin *Plugin) Manifest() sdk.Manifest {
 	}
 }
 
-func (plugin *Plugin) Install(
+func (plugin *plugin) Install(
 	_ context.Context,
 	registrar sdk.Registrar,
 ) error {
@@ -128,7 +128,7 @@ func (plugin *Plugin) Install(
 	})
 }
 
-func (plugin *Plugin) Close(context.Context) error {
+func (plugin *plugin) Close(context.Context) error {
 	plugin.mu.Lock()
 	defer plugin.mu.Unlock()
 	for _, spans := range []map[string]trace.Span{
@@ -146,7 +146,7 @@ func (plugin *Plugin) Close(context.Context) error {
 	return nil
 }
 
-func (plugin *Plugin) receive(ctx context.Context, delivery sdk.Delivery) error {
+func (plugin *plugin) receive(ctx context.Context, delivery sdk.Delivery) error {
 	event := delivery.Event
 	switch event.Name {
 	case sdk.EventBeforeAgentStart:
@@ -217,7 +217,7 @@ func (plugin *Plugin) receive(ctx context.Context, delivery sdk.Delivery) error 
 	return nil
 }
 
-func (plugin *Plugin) startRun(ctx context.Context, event sdk.Event) {
+func (plugin *plugin) startRun(ctx context.Context, event sdk.Event) {
 	plugin.mu.Lock()
 	defer plugin.mu.Unlock()
 	_, span := plugin.tracer.Start(
@@ -232,7 +232,7 @@ func (plugin *Plugin) startRun(ctx context.Context, event sdk.Event) {
 	plugin.runs.Add(ctx, 1)
 }
 
-func (plugin *Plugin) startTurn(ctx context.Context, event sdk.Event, payload sdk.TurnStartPayload) {
+func (plugin *plugin) startTurn(ctx context.Context, event sdk.Event, payload sdk.TurnStartPayload) {
 	plugin.mu.Lock()
 	defer plugin.mu.Unlock()
 	parent := plugin.parentContext(ctx, event.SessionID)
@@ -244,7 +244,7 @@ func (plugin *Plugin) startTurn(ctx context.Context, event sdk.Event, payload sd
 	)
 }
 
-func (plugin *Plugin) startProvider(ctx context.Context, event sdk.Event, payload sdk.BeforeProviderPayload) {
+func (plugin *plugin) startProvider(ctx context.Context, event sdk.Event, payload sdk.BeforeProviderPayload) {
 	plugin.mu.Lock()
 	defer plugin.mu.Unlock()
 	parent := plugin.parentContext(ctx, event.SessionID)
@@ -270,7 +270,7 @@ func (plugin *Plugin) startProvider(ctx context.Context, event sdk.Event, payloa
 	plugin.providerCalls.Add(ctx, 1, metric.WithAttributes(attribute.String("gen_ai.provider.name", payload.Provider)))
 }
 
-func (plugin *Plugin) endProvider(event sdk.Event, payload sdk.AfterProviderPayload) {
+func (plugin *plugin) endProvider(event sdk.Event, payload sdk.AfterProviderPayload) {
 	plugin.mu.Lock()
 	defer plugin.mu.Unlock()
 	key := turnKey(event.SessionID, payload.Turn)
@@ -296,7 +296,7 @@ func (plugin *Plugin) endProvider(event sdk.Event, payload sdk.AfterProviderPayl
 	delete(plugin.providerSpans, key)
 }
 
-func (plugin *Plugin) startTool(ctx context.Context, event sdk.Event, payload sdk.BeforeToolPayload) {
+func (plugin *plugin) startTool(ctx context.Context, event sdk.Event, payload sdk.BeforeToolPayload) {
 	plugin.mu.Lock()
 	defer plugin.mu.Unlock()
 	parent := plugin.parentContext(ctx, event.SessionID)
@@ -321,7 +321,7 @@ func (plugin *Plugin) startTool(ctx context.Context, event sdk.Event, payload sd
 	plugin.toolCalls.Add(ctx, 1, metric.WithAttributes(attribute.String("gen_ai.tool.name", payload.Call.Name)))
 }
 
-func (plugin *Plugin) markToolError(event sdk.Event, payload sdk.ToolErrorPayload) {
+func (plugin *plugin) markToolError(event sdk.Event, payload sdk.ToolErrorPayload) {
 	plugin.mu.Lock()
 	defer plugin.mu.Unlock()
 	if span := plugin.toolSpans[toolKey(event.SessionID, payload.Call.ID)]; span != nil {
@@ -331,7 +331,7 @@ func (plugin *Plugin) markToolError(event sdk.Event, payload sdk.ToolErrorPayloa
 	}
 }
 
-func (plugin *Plugin) endTool(event sdk.Event, payload sdk.AfterToolPayload) {
+func (plugin *plugin) endTool(event sdk.Event, payload sdk.AfterToolPayload) {
 	plugin.mu.Lock()
 	defer plugin.mu.Unlock()
 	key := toolKey(event.SessionID, payload.Call.ID)
@@ -347,7 +347,7 @@ func (plugin *Plugin) endTool(event sdk.Event, payload sdk.AfterToolPayload) {
 	delete(plugin.toolSpans, key)
 }
 
-func (plugin *Plugin) endRun(event sdk.Event, payload sdk.AgentEndPayload) {
+func (plugin *plugin) endRun(event sdk.Event, payload sdk.AgentEndPayload) {
 	plugin.mu.Lock()
 	defer plugin.mu.Unlock()
 	plugin.endSessionChildrenLocked(event.SessionID)
@@ -363,7 +363,7 @@ func (plugin *Plugin) endRun(event sdk.Event, payload sdk.AgentEndPayload) {
 	delete(plugin.runSpans, event.SessionID)
 }
 
-func (plugin *Plugin) endSessionChildrenLocked(sessionID string) {
+func (plugin *plugin) endSessionChildrenLocked(sessionID string) {
 	prefix := sessionID + "/"
 	for _, spans := range []map[string]trace.Span{plugin.toolSpans, plugin.providerSpans, plugin.turnSpans} {
 		for key, span := range spans {
@@ -376,14 +376,14 @@ func (plugin *Plugin) endSessionChildrenLocked(sessionID string) {
 	}
 }
 
-func (plugin *Plugin) parentContext(ctx context.Context, sessionID string) context.Context {
+func (plugin *plugin) parentContext(ctx context.Context, sessionID string) context.Context {
 	if run := plugin.runSpans[sessionID]; run != nil {
 		return trace.ContextWithSpan(ctx, run)
 	}
 	return ctx
 }
 
-func (plugin *Plugin) endSpan(spans map[string]trace.Span, key string) {
+func (plugin *plugin) endSpan(spans map[string]trace.Span, key string) {
 	plugin.mu.Lock()
 	defer plugin.mu.Unlock()
 	if span := spans[key]; span != nil {
