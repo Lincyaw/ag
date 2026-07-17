@@ -243,6 +243,13 @@ func (backend *runtimeExecutionBackend) Current(
 		Execution: *metadata.Execution,
 	}
 	if metadata.Execution.Terminal() {
+		if err := backend.waitForExecutionHost(
+			ctx,
+			session.ID,
+			metadata.Execution.ID,
+		); err != nil {
+			return Execution{}, err
+		}
 		value.Result, err = agentruntime.LoadExecutionResult(
 			ctx,
 			state.Trajectories(),
@@ -294,28 +301,49 @@ func (backend *runtimeExecutionBackend) Cancel(
 	if err != nil {
 		return Execution{}, err
 	}
-	backend.mu.Lock()
-	active := backend.active[session.ID]
-	var done <-chan struct{}
-	if active != nil && active.id == executionID {
-		active.cancel()
-		done = active.done
-	}
-	backend.mu.Unlock()
 	if metadata.Execution == nil {
 		return Execution{}, ErrExecutionNotFound
 	}
-	if done != nil {
-		select {
-		case <-ctx.Done():
-			return Execution{}, ctx.Err()
-		case <-done:
-		}
+	backend.mu.Lock()
+	active := backend.active[session.ID]
+	if active != nil && active.id == executionID {
+		active.cancel()
+	}
+	backend.mu.Unlock()
+	if err := backend.waitForExecutionHost(
+		ctx,
+		session.ID,
+		executionID,
+	); err != nil {
+		return Execution{}, err
 	}
 	return Execution{
 		SessionID: session.ID,
 		Execution: *metadata.Execution,
 	}, nil
+}
+
+func (backend *runtimeExecutionBackend) waitForExecutionHost(
+	ctx context.Context,
+	sessionID string,
+	executionID string,
+) error {
+	backend.mu.Lock()
+	active := backend.active[sessionID]
+	var done <-chan struct{}
+	if active != nil && active.id == executionID {
+		done = active.done
+	}
+	backend.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
 }
 
 func (backend *runtimeExecutionBackend) Close(ctx context.Context) error {
