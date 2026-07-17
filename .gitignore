@@ -6,3 +6,4 @@ coverage.txt
 .venv/
 __pycache__/
 examples/python-plugin/.generated/
+examples/python-plugin/.events.jsonl

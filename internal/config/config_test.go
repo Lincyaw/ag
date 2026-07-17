@@ -77,3 +77,24 @@ func TestExplicitMissingConfigFails(t *testing.T) {
 		t.Fatal("expected missing explicit config to fail")
 	}
 }
+
+func TestDefaultConfigPathUsesDotAGInHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENTM_CONFIG", "")
+
+	configFile, candidate, required, err := resolveConfigFile("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".ag", "config.toml")
+	if configFile != "" || candidate != want || required {
+		t.Fatalf(
+			"default config resolution = file %q candidate %q required %t; want empty, %q, false",
+			configFile,
+			candidate,
+			required,
+			want,
+		)
+	}
+}

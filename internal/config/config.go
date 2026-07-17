@@ -330,11 +330,11 @@ func resolveConfigFile(explicit string) (
 		return absolute, absolute, true, nil
 	}
 
-	configDir, dirErr := os.UserConfigDir()
+	home, dirErr := os.UserHomeDir()
 	if dirErr != nil {
-		return "", "", false, fmt.Errorf("resolve user config directory: %w", dirErr)
+		return "", "", false, fmt.Errorf("resolve user home directory: %w", dirErr)
 	}
-	base := filepath.Join(configDir, AppName, "config")
+	base := filepath.Join(home, "."+AppName, "config")
 	for _, extension := range []string{".toml", ".yaml", ".yml", ".json"} {
 		path := base + extension
 		if _, statErr := os.Stat(path); statErr == nil {

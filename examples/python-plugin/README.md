@@ -3,23 +3,15 @@
 This process implements `pluginrpc/v1/plugin.proto` directly. It does not
 import the Go SDK or any AgentM runtime package.
 
-Generate Python stubs and start it from this directory:
+Generate Python stubs and start it locally from this directory:
 
 ```bash
-mkdir -p .generated
-uv run python -m grpc_tools.protoc \
-  -I ../../pluginrpc/v1 \
-  --python_out .generated \
-  --grpc_python_out .generated \
-  ../../pluginrpc/v1/plugin.proto
-
-AGENTM_PYTHON_STUBS=.generated uv run python plugin.py \
-  --listen 127.0.0.1:9003 \
-  --events-file .events.jsonl
+./run-local.sh
 ```
 
-The process prints one ready JSON record on stdout. Mount the returned URI
-explicitly:
+The script keeps its virtual environment and generated protobuf stubs in this
+directory, then listens on `grpc://127.0.0.1:9003`. The process prints one
+ready JSON record on stdout. Mount the URI explicitly:
 
 ```bash
 bin/ag run \
