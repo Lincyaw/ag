@@ -241,6 +241,17 @@ func validatePluginURI(raw string) error {
 	return nil
 }
 
+func validateBackendURI(parsed *url.URL, backend string) error {
+	if parsed.Opaque != "" || parsed.User != nil || parsed.ForceQuery ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf(
+			"%s registry URI must not contain opaque data, credentials, query, or fragment",
+			backend,
+		)
+	}
+	return nil
+}
+
 func validateLabel(key, value string) error {
 	trimmedKey := strings.TrimSpace(key)
 	if key != trimmedKey {

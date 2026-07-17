@@ -118,6 +118,9 @@ func (memoryDriver) Open(
 	if parsed == nil {
 		return nil, errors.New("memory registry URI is nil")
 	}
+	if err := validateBackendURI(parsed, "memory"); err != nil {
+		return nil, err
+	}
 	if parsed.Host != "" && parsed.Host != "local" {
 		return nil, fmt.Errorf(
 			"memory registry URI host must be empty or local, got %q",
@@ -146,6 +149,9 @@ func (fileDriver) Open(
 	}
 	if parsed == nil {
 		return nil, errors.New("file registry URI is nil")
+	}
+	if err := validateBackendURI(parsed, "file"); err != nil {
+		return nil, err
 	}
 	path := parsed.Path
 	if parsed.Host != "" && parsed.Host != "localhost" {

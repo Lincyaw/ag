@@ -519,6 +519,18 @@ func TestDefaultBackendRegistryOpensMemoryAndFile(t *testing.T) {
 	if _, err := backends.Open(context.Background(), "unknown://registry"); err == nil {
 		t.Fatal("unknown backend scheme succeeded")
 	}
+	for _, raw := range []string{
+		"memory:opaque",
+		"memory://user@local",
+		"memory://local?ignored=true",
+		"memory://local#ignored",
+		fileURI + "?ignored=true",
+		fileURI + "#ignored",
+	} {
+		if _, err := backends.Open(context.Background(), raw); err == nil {
+			t.Fatalf("backend URI %q with unsupported components succeeded", raw)
+		}
+	}
 }
 
 type urlForTest struct{ path string }
