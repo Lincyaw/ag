@@ -16,6 +16,7 @@ import (
 )
 
 func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	workspace := t.TempDir()
 	state := t.TempDir()
 	if err := os.WriteFile(
@@ -127,6 +128,7 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 }
 
 func TestCLIConfigPrecedencePluginCatalogAndUsageExit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	configFile := filepath.Join(t.TempDir(), "config.toml")
 	state := filepath.Join(t.TempDir(), "state")
 	if err := os.WriteFile(configFile, []byte(fmt.Sprintf(`
