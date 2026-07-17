@@ -31,21 +31,40 @@ func TestFileAndBashPluginsRunThroughRemoteOperationProtocol(t *testing.T) {
 			"path":    "remote.txt",
 			"content": "written through rpc",
 		})
-		if write.IsError || !strings.Contains(write.Content, "wrote 19 bytes") {
+		if write.IsError || !strings.Contains(write.Content, "bytes: 19") {
 			t.Fatalf("remote write result = %#v", write)
 		}
 		read := callRemoteTool(t, client, "read_file", "file-read", map[string]any{
 			"path": "remote.txt",
 		})
-		if read.IsError || read.Content != "written through rpc" {
+		if read.IsError || !strings.Contains(read.Content, "1\twritten through rpc") {
 			t.Fatalf("remote read result = %#v", read)
+		}
+		revision := fileToolRevision(t, read.Content)
+		search := callRemoteTool(t, client, "search_files", "file-search", map[string]any{
+			"path": "remote.txt", "query": "through",
+		})
+		if search.IsError || !strings.Contains(
+			search.Content,
+			"remote.txt:1:9: written through rpc",
+		) {
+			t.Fatalf("remote search result = %#v", search)
+		}
+		edit := callRemoteTool(t, client, "edit_file", "file-edit", map[string]any{
+			"path":            "remote.txt",
+			"expected_sha256": revision,
+			"old_text":        "through",
+			"new_text":        "over",
+		})
+		if edit.IsError || !strings.Contains(edit.Content, "1\twritten over rpc") {
+			t.Fatalf("remote edit result = %#v", edit)
 		}
 		onDisk, err := os.ReadFile(filepath.Join(root, "remote.txt"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if string(onDisk) != read.Content {
-			t.Fatalf("disk = %q, rpc = %q", onDisk, read.Content)
+		if string(onDisk) != "written over rpc" {
+			t.Fatalf("disk after remote edit = %q", onDisk)
 		}
 	})
 
@@ -69,6 +88,20 @@ func TestFileAndBashPluginsRunThroughRemoteOperationProtocol(t *testing.T) {
 			}
 		}
 	})
+}
+
+func fileToolRevision(t *testing.T, content string) string {
+	t.Helper()
+	for _, line := range strings.Split(content, "\n") {
+		if revision, found := strings.CutPrefix(line, "sha256: "); found {
+			if len(revision) != 64 {
+				t.Fatalf("invalid file revision %q", revision)
+			}
+			return revision
+		}
+	}
+	t.Fatalf("file result has no revision: %q", content)
+	return ""
 }
 
 func startToolPlugin(t *testing.T, plugin sdk.Plugin) pluginv1.PluginServiceClient {

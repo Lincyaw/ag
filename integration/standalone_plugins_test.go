@@ -80,14 +80,31 @@ func TestStandaloneFileAndBashProcessesWithLeaseAndPolling(t *testing.T) {
 	write := callTool(t, fileClient, "write_file", "write-once", map[string]any{
 		"path": "standalone.txt", "content": "from standalone process",
 	})
-	if write.IsError || !strings.Contains(write.Content, "wrote 23 bytes") {
+	if write.IsError || !strings.Contains(write.Content, "bytes: 23") {
 		t.Fatalf("standalone write = %#v", write)
 	}
 	read := callTool(t, fileClient, "read_file", "read-once", map[string]any{
 		"path": "standalone.txt",
 	})
-	if read.IsError || read.Content != "from standalone process" {
+	if read.IsError || !strings.Contains(read.Content, "1\tfrom standalone process") {
 		t.Fatalf("standalone read = %#v", read)
+	}
+	revision := standaloneFileRevision(t, read.Content)
+	edit := callTool(t, fileClient, "edit_file", "edit-once", map[string]any{
+		"path":            "standalone.txt",
+		"expected_sha256": revision,
+		"old_text":        "standalone",
+		"new_text":        "remote",
+	})
+	if edit.IsError || !strings.Contains(edit.Content, "1\tfrom remote process") {
+		t.Fatalf("standalone edit = %#v", edit)
+	}
+	search := callTool(t, fileClient, "search_files", "search-once", map[string]any{
+		"path": "standalone.txt", "query": "remote",
+	})
+	if search.IsError ||
+		!strings.Contains(search.Content, "standalone.txt:1:6: from remote process") {
+		t.Fatalf("standalone search = %#v", search)
 	}
 	fileProcess.stop(t)
 	eventually(t, 2*time.Second, func() bool {
@@ -127,6 +144,20 @@ func TestStandaloneFileAndBashProcessesWithLeaseAndPolling(t *testing.T) {
 		}
 	}
 	bashProcess.stop(t)
+}
+
+func standaloneFileRevision(t *testing.T, content string) string {
+	t.Helper()
+	for _, line := range strings.Split(content, "\n") {
+		if revision, found := strings.CutPrefix(line, "sha256: "); found {
+			if len(revision) != 64 {
+				t.Fatalf("invalid file revision %q", revision)
+			}
+			return revision
+		}
+	}
+	t.Fatalf("file result has no revision: %q", content)
+	return ""
 }
 
 type childProcess struct {

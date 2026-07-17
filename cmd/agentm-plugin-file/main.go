@@ -24,7 +24,12 @@ func main() {
 			command.Flags().BoolVar(&config.EnableWrite, "write", false, "Enable atomic file writes.")
 			command.Flags().Int64Var(&config.MaxReadBytes, "max-read-bytes", 0, "Maximum bytes per read.")
 			command.Flags().Int64Var(&config.MaxWriteBytes, "max-write-bytes", 0, "Maximum bytes per write.")
-			command.Flags().IntVar(&config.MaxEntries, "max-entries", 0, "Maximum directory entries returned.")
+			command.Flags().IntVar(
+				&config.MaxEntries,
+				"max-entries",
+				0,
+				"Maximum list entries, read lines, searched files, or search matches.",
+			)
 		},
 		Plugin: func() (sdk.Plugin, error) { return fileplugin.New(config), nil },
 	}))

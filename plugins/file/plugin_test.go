@@ -56,7 +56,9 @@ func TestFileToolsConfinePathsAndEnforceBounds(t *testing.T) {
 	write := writeTool{filesystem: filesystem}
 
 	result, err := read.Call(ctx, []byte(`{"path":"hello.txt"}`))
-	if err != nil || result.Content != "hello" {
+	if err != nil || result.IsError ||
+		!strings.Contains(result.Content, "lines: 1-1 of 1") ||
+		!strings.Contains(result.Content, "1\thello") {
 		t.Fatalf("read = %#v, %v", result, err)
 	}
 	for name, arguments := range map[string]string{
@@ -69,22 +71,32 @@ func TestFileToolsConfinePathsAndEnforceBounds(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := read.Call(ctx, json.RawMessage(arguments)); err == nil {
-				t.Fatal("unsafe/invalid read unexpectedly succeeded")
+			result, err := read.Call(ctx, json.RawMessage(arguments))
+			if err != nil || !result.IsError {
+				t.Fatalf("unsafe/invalid read = %#v, %v", result, err)
 			}
 		})
 	}
-	if _, err := list.Call(ctx, []byte(`{"path":"outside-link"}`)); err == nil {
-		t.Fatal("listing an escaping directory symlink succeeded")
+	if result, err := list.Call(ctx, []byte(`{"path":"outside-link"}`)); err != nil || !result.IsError {
+		t.Fatalf("listing an escaping directory symlink = %#v, %v", result, err)
 	}
-	if _, err := write.Call(ctx, []byte(`{"path":"outside-link/new.txt","content":"bad"}`)); err == nil {
-		t.Fatal("writing through an escaping parent symlink succeeded")
+	if result, err := write.Call(
+		ctx,
+		[]byte(`{"path":"outside-link/new.txt","content":"bad"}`),
+	); err != nil || !result.IsError {
+		t.Fatalf("writing through an escaping parent symlink = %#v, %v", result, err)
 	}
-	if _, err := write.Call(ctx, []byte(`{"path":"secret-link","content":"bad"}`)); err == nil {
-		t.Fatal("replacing a symlink succeeded")
+	if result, err := write.Call(
+		ctx,
+		[]byte(`{"path":"secret-link","content":"bad"}`),
+	); err != nil || !result.IsError {
+		t.Fatalf("replacing a symlink = %#v, %v", result, err)
 	}
-	if _, err := write.Call(ctx, []byte(`{"path":"sub/new.txt","content":"123456789"}`)); err == nil {
-		t.Fatal("oversized write succeeded")
+	if result, err := write.Call(
+		ctx,
+		[]byte(`{"path":"sub/new.txt","content":"123456789"}`),
+	); err != nil || !result.IsError {
+		t.Fatalf("oversized write = %#v, %v", result, err)
 	}
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
@@ -110,6 +122,7 @@ func TestConcurrentWritesAreAtomicAndPluginManifestMatchesMode(t *testing.T) {
 	var contentsMu sync.Mutex
 	var wait sync.WaitGroup
 	errorsChannel := make(chan error, writers)
+	resultsChannel := make(chan sdk.ToolResult, writers)
 	for index := range writers {
 		content := strings.Repeat(string(rune('a'+index%26)), 4096) + string(rune('0'+index%10))
 		contentsMu.Lock()
@@ -119,22 +132,42 @@ func TestConcurrentWritesAreAtomicAndPluginManifestMatchesMode(t *testing.T) {
 		go func(content string) {
 			defer wait.Done()
 			raw, _ := json.Marshal(map[string]string{"path": "shared.txt", "content": content})
-			if _, err := write.Call(ctx, raw); err != nil {
+			result, err := write.Call(ctx, raw)
+			if err != nil {
 				errorsChannel <- err
+				return
 			}
+			resultsChannel <- result
 		}(content)
 	}
 	wait.Wait()
 	close(errorsChannel)
+	close(resultsChannel)
 	for err := range errorsChannel {
 		t.Errorf("concurrent write: %v", err)
 	}
+	successes := 0
+	conflicts := 0
+	for result := range resultsChannel {
+		if result.IsError {
+			conflicts++
+		} else {
+			successes++
+		}
+	}
+	if successes != 1 || conflicts != writers-1 {
+		t.Fatalf("concurrent writes: successes=%d conflicts=%d", successes, conflicts)
+	}
 	result, err := read.Call(ctx, []byte(`{"path":"shared.txt"}`))
+	if err != nil || result.IsError {
+		t.Fatalf("read final file = %#v, %v", result, err)
+	}
+	onDisk, err := os.ReadFile(filepath.Join(root, "shared.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := contents[result.Content]; !exists {
-		t.Fatalf("final file is a torn write: length=%d", len(result.Content))
+	if _, exists := contents[string(onDisk)]; !exists {
+		t.Fatalf("final file is a torn write: length=%d", len(onDisk))
 	}
 	temporary, err := filepath.Glob(filepath.Join(root, ".agentm-file-*.tmp"))
 	if err != nil || len(temporary) != 0 {
@@ -146,8 +179,8 @@ func TestConcurrentWritesAreAtomicAndPluginManifestMatchesMode(t *testing.T) {
 		enableWrite bool
 		toolCount   int
 	}{
-		{name: "read-only", toolCount: 2},
-		{name: "writable", enableWrite: true, toolCount: 3},
+		{name: "read-only", toolCount: 3},
+		{name: "writable", enableWrite: true, toolCount: 5},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{})
