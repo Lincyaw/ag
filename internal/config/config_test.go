@@ -123,3 +123,20 @@ func TestDefaultRegistryConfigurationUsesDotAG(t *testing.T) {
 		)
 	}
 }
+
+func TestDefaultGatewayConfigurationUsesDotAG(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENTM_CONFIG", "")
+	loaded, err := Load(LoadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Config.Gateway.Listen != "127.0.0.1:8080" ||
+		loaded.Config.Gateway.Directory != filepath.Join(home, ".ag", "gateway") ||
+		loaded.Config.Gateway.ReadHeaderTimeout != 5*time.Second ||
+		loaded.Config.Gateway.IdleTimeout != time.Minute ||
+		loaded.Config.Gateway.ShutdownTimeout != 10*time.Second {
+		t.Fatalf("gateway defaults = %#v", loaded.Config.Gateway)
+	}
+}

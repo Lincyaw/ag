@@ -274,6 +274,21 @@ func (application *app) writeConfig(loaded appconfig.Loaded) error {
 		); err != nil {
 			return err
 		}
+		if err := writeSection(writer, "Gateway service",
+			[2]string{"Listen", config.Gateway.Listen},
+			[2]string{"Directory", config.Gateway.Directory},
+			[2]string{
+				"Read header timeout",
+				config.Gateway.ReadHeaderTimeout.String(),
+			},
+			[2]string{"Idle timeout", config.Gateway.IdleTimeout.String()},
+			[2]string{
+				"Shutdown timeout",
+				config.Gateway.ShutdownTimeout.String(),
+			},
+		); err != nil {
+			return err
+		}
 		if err := writeSection(writer, "State",
 			[2]string{"Backend URI", emptyAs(config.State.BackendURI, "file")},
 			[2]string{"Directory", config.State.Directory},

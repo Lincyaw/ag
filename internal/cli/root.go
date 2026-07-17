@@ -116,6 +116,7 @@ func New(stdout, stderr io.Writer, version string) *cobra.Command {
 		application.configCommand(),
 		application.pluginCommand(),
 		application.registryCommand(),
+		application.gatewayCommand(),
 		application.trajectoryCommand(),
 		application.stateCommand(),
 		application.versionCommand(),

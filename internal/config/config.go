@@ -26,6 +26,7 @@ type Config struct {
 	Bash          Bash          `mapstructure:"bash" json:"bash" yaml:"bash"`
 	Plugins       Plugins       `mapstructure:"plugins" json:"plugins" yaml:"plugins"`
 	Registry      Registry      `mapstructure:"registry" json:"registry" yaml:"registry"`
+	Gateway       Gateway       `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
 	State         State         `mapstructure:"state" json:"state" yaml:"state"`
 	Observability Observability `mapstructure:"observability" json:"observability" yaml:"observability"`
 	Logging       Logging       `mapstructure:"logging" json:"logging" yaml:"logging"`
@@ -103,6 +104,29 @@ type Registry struct {
 	TLSCertFile     string `mapstructure:"tls_cert_file" json:"tls_cert_file,omitempty" yaml:"tls_cert_file,omitempty"`
 	TLSKeyFile      string `mapstructure:"tls_key_file" json:"tls_key_file,omitempty" yaml:"tls_key_file,omitempty"`
 	MaxMessageBytes int    `mapstructure:"max_message_bytes" json:"max_message_bytes" yaml:"max_message_bytes"`
+}
+
+type Gateway struct {
+	Listen            string        `mapstructure:"listen" json:"listen" yaml:"listen"`
+	Directory         string        `mapstructure:"directory" json:"directory" yaml:"directory"`
+	ReadHeaderTimeout time.Duration `mapstructure:"read_header_timeout" json:"read_header_timeout" yaml:"read_header_timeout"`
+	IdleTimeout       time.Duration `mapstructure:"idle_timeout" json:"idle_timeout" yaml:"idle_timeout"`
+	ShutdownTimeout   time.Duration `mapstructure:"shutdown_timeout" json:"shutdown_timeout" yaml:"shutdown_timeout"`
+}
+
+func (gateway Gateway) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Listen            string `json:"listen"`
+		Directory         string `json:"directory"`
+		ReadHeaderTimeout string `json:"read_header_timeout"`
+		IdleTimeout       string `json:"idle_timeout"`
+		ShutdownTimeout   string `json:"shutdown_timeout"`
+	}{
+		Listen: gateway.Listen, Directory: gateway.Directory,
+		ReadHeaderTimeout: gateway.ReadHeaderTimeout.String(),
+		IdleTimeout:       gateway.IdleTimeout.String(),
+		ShutdownTimeout:   gateway.ShutdownTimeout.String(),
+	})
 }
 
 type State struct {
@@ -225,6 +249,17 @@ func (c Config) Validate() error {
 	if c.Registry.MaxMessageBytes < 0 {
 		return errors.New("registry.max_message_bytes cannot be negative")
 	}
+	if strings.TrimSpace(c.Gateway.Listen) == "" {
+		return errors.New("gateway.listen is required")
+	}
+	if strings.TrimSpace(c.Gateway.Directory) == "" {
+		return errors.New("gateway.directory is required")
+	}
+	if c.Gateway.ReadHeaderTimeout <= 0 ||
+		c.Gateway.IdleTimeout <= 0 ||
+		c.Gateway.ShutdownTimeout <= 0 {
+		return errors.New("gateway timeouts must be positive")
+	}
 	switch strings.ToLower(strings.TrimSpace(c.Logging.Level)) {
 	case "debug", "info", "warn", "warning", "error":
 	default:
@@ -277,6 +312,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("registry.tls_cert_file", "")
 	v.SetDefault("registry.tls_key_file", "")
 	v.SetDefault("registry.max_message_bytes", 0)
+	v.SetDefault("gateway.listen", "127.0.0.1:8080")
+	v.SetDefault("gateway.directory", defaultGatewayDirectory())
+	v.SetDefault("gateway.read_header_timeout", "5s")
+	v.SetDefault("gateway.idle_timeout", "1m")
+	v.SetDefault("gateway.shutdown_timeout", "10s")
 	v.SetDefault("state.directory", defaultStateDirectory())
 	v.SetDefault("state.backend_uri", "")
 	v.SetDefault("state.namespace", "")
@@ -302,40 +342,45 @@ func configureEnvironment(v *viper.Viper) {
 
 func bindFlags(v *viper.Viper, flags *pflag.FlagSet) error {
 	bindings := map[string]string{
-		"agent.system":               "system",
-		"agent.provider":             "provider",
-		"agent.max_turns":            "max-turns",
-		"agent.timeout":              "timeout",
-		"openai.enabled":             "openai",
-		"openai.model":               "model",
-		"openai.base_url":            "base-url",
-		"openai.max_retries":         "max-retries",
-		"workspace.enabled":          "file",
-		"workspace.root":             "cwd",
-		"workspace.enable_write":     "write",
-		"workspace.max_read_bytes":   "max-read-bytes",
-		"workspace.max_write_bytes":  "max-write-bytes",
-		"workspace.max_entries":      "max-entries",
-		"bash.enabled":               "bash",
-		"bash.shell":                 "shell",
-		"bash.default_timeout":       "bash-timeout",
-		"bash.max_timeout":           "bash-max-timeout",
-		"bash.max_output_bytes":      "bash-max-output-bytes",
-		"plugins.remote":             "plugin",
-		"plugins.registry_uri":       "registry-uri",
-		"plugins.registry_namespace": "registry-namespace",
-		"registry.listen":            "listen",
-		"registry.advertise_uri":     "advertise-uri",
-		"registry.backend_uri":       "registry-backend",
-		"registry.tls_cert_file":     "tls-cert",
-		"registry.tls_key_file":      "tls-key",
-		"registry.max_message_bytes": "max-message-bytes",
-		"state.directory":            "state-dir",
-		"state.backend_uri":          "storage",
-		"state.namespace":            "state-namespace",
-		"observability.enabled":      "otel",
-		"logging.level":              "log-level",
-		"logging.format":             "log-format",
+		"agent.system":                "system",
+		"agent.provider":              "provider",
+		"agent.max_turns":             "max-turns",
+		"agent.timeout":               "timeout",
+		"openai.enabled":              "openai",
+		"openai.model":                "model",
+		"openai.base_url":             "base-url",
+		"openai.max_retries":          "max-retries",
+		"workspace.enabled":           "file",
+		"workspace.root":              "cwd",
+		"workspace.enable_write":      "write",
+		"workspace.max_read_bytes":    "max-read-bytes",
+		"workspace.max_write_bytes":   "max-write-bytes",
+		"workspace.max_entries":       "max-entries",
+		"bash.enabled":                "bash",
+		"bash.shell":                  "shell",
+		"bash.default_timeout":        "bash-timeout",
+		"bash.max_timeout":            "bash-max-timeout",
+		"bash.max_output_bytes":       "bash-max-output-bytes",
+		"plugins.remote":              "plugin",
+		"plugins.registry_uri":        "registry-uri",
+		"plugins.registry_namespace":  "registry-namespace",
+		"registry.listen":             "listen",
+		"registry.advertise_uri":      "advertise-uri",
+		"registry.backend_uri":        "registry-backend",
+		"registry.tls_cert_file":      "tls-cert",
+		"registry.tls_key_file":       "tls-key",
+		"registry.max_message_bytes":  "max-message-bytes",
+		"gateway.listen":              "gateway-listen",
+		"gateway.directory":           "gateway-dir",
+		"gateway.read_header_timeout": "read-header-timeout",
+		"gateway.idle_timeout":        "idle-timeout",
+		"gateway.shutdown_timeout":    "shutdown-timeout",
+		"state.directory":             "state-dir",
+		"state.backend_uri":           "storage",
+		"state.namespace":             "state-namespace",
+		"observability.enabled":       "otel",
+		"logging.level":               "log-level",
+		"logging.format":              "log-format",
 	}
 	for key, name := range bindings {
 		flag := flags.Lookup(name)
@@ -368,6 +413,14 @@ func defaultRegistryBackendURI() string {
 		Scheme: "file",
 		Path:   filepath.Join(directory, "registry"),
 	}).String()
+}
+
+func defaultGatewayDirectory() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".ag", "gateway")
+	}
+	return filepath.Join(home, ".ag", "gateway")
 }
 
 func resolveConfigFile(explicit string) (
