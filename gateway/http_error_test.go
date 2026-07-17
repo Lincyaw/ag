@@ -27,3 +27,29 @@ func TestWriteHTTPErrorHidesInternalDetails(t *testing.T) {
 		t.Fatalf("internal error message = %s", body)
 	}
 }
+
+func TestHTTPAuthenticationErrorHidesInternalDetails(t *testing.T) {
+	api := httpAPI{authenticate: func(*http.Request) (string, error) {
+		return "", errors.New("token secret rejected by private issuer")
+	}}
+	recorder := httptest.NewRecorder()
+
+	if _, ok := api.user(
+		recorder,
+		httptest.NewRequest(http.MethodGet, "/", nil),
+	); ok {
+		t.Fatal("authentication succeeded")
+	}
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, "secret") ||
+		strings.Contains(body, "private") {
+		t.Fatalf("authentication error details leaked: %s", body)
+	}
+	if !strings.Contains(body, authenticationErrorMessage) {
+		t.Fatalf("authentication error message = %s", body)
+	}
+}

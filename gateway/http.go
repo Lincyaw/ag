@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	UserHeader           = "X-AG-User-ID"
-	maxBodyBytes         = 1 << 20
-	internalErrorMessage = "internal server error"
+	UserHeader                 = "X-AG-User-ID"
+	maxBodyBytes               = 1 << 20
+	authenticationErrorMessage = "authentication failed"
+	internalErrorMessage       = "internal server error"
 )
 
 type Authenticator func(*http.Request) (string, error)
@@ -333,7 +334,12 @@ func (api *httpAPI) user(
 ) (string, bool) {
 	userID, err := api.authenticate(request)
 	if err != nil {
-		writeErrorCode(writer, http.StatusUnauthorized, "unauthenticated", err)
+		writeErrorCode(
+			writer,
+			http.StatusUnauthorized,
+			"unauthenticated",
+			errors.New(authenticationErrorMessage),
+		)
 		return "", false
 	}
 	return userID, true
