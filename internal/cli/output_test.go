@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 )
@@ -163,6 +164,63 @@ func TestJSONOnlyChangesRepresentation(t *testing.T) {
 	}
 	if path["path"] != "/tmp/config.toml" {
 		t.Fatalf("path = %#v", path)
+	}
+}
+
+func TestConfigOutputRedactsURISecretsWithoutMutation(t *testing.T) {
+	t.Parallel()
+	config := appconfig.Config{
+		OpenAI: appconfig.OpenAI{
+			BaseURL: "https://openai:openai-password@example.com/v1?token=openai-token-value",
+		},
+		Plugins: appconfig.Plugins{
+			Remote: []string{
+				"file=grpc://remote:remote-password@example.com/plugin",
+				"file@node-a",
+			},
+			RegistryURI: "grpc://registry:registry-password@example.com",
+		},
+		Registry: appconfig.Registry{
+			AdvertiseURI: "grpc://advertise:advertise-password@example.com",
+			BackendURI:   "etcd://example.com?client_secret=registry-secret-value",
+		},
+		State: appconfig.State{
+			BackendURI: "postgres://state:state-password@example.com/ag?namespace=tenant",
+		},
+	}
+	loaded := appconfig.Loaded{Config: config, File: "/tmp/config.toml"}
+	for _, output := range []string{outputText, outputJSON} {
+		t.Run(output, func(t *testing.T) {
+			var stdout bytes.Buffer
+			application := &app{stdout: &stdout, output: output}
+			if err := application.writeConfig(loaded); err != nil {
+				t.Fatal(err)
+			}
+			rendered := stdout.String()
+			for _, secret := range []string{
+				"openai-password",
+				"openai-token-value",
+				"remote-password",
+				"registry-password",
+				"advertise-password",
+				"registry-secret-value",
+				"state-password",
+			} {
+				if strings.Contains(rendered, secret) {
+					t.Fatalf("%s output leaked %q: %s", output, secret, rendered)
+				}
+			}
+			if !strings.Contains(rendered, "xxxxx") {
+				t.Fatalf("%s output did not redact URI credentials: %s", output, rendered)
+			}
+			if !strings.Contains(rendered, "file@node-a") {
+				t.Fatalf("%s output lost plugin selector: %s", output, rendered)
+			}
+		})
+	}
+	if config.Plugins.Remote[0] !=
+		"file=grpc://remote:remote-password@example.com/plugin" {
+		t.Fatalf("source config was mutated: %#v", config.Plugins.Remote)
 	}
 }
 

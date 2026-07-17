@@ -207,9 +207,9 @@ func (application *app) writeRun(sessionID string, result agentruntime.Result) e
 }
 
 func (application *app) writeConfig(loaded appconfig.Loaded) error {
-	value := configOutput{File: loaded.File, Config: loaded.Config}
+	config := configForDisplay(loaded.Config)
+	value := configOutput{File: loaded.File, Config: config}
 	return application.render(value, func(writer io.Writer) error {
-		config := loaded.Config
 		source := loaded.Path()
 		if loaded.File == "" {
 			source += " (defaults; file not present)"
@@ -302,6 +302,70 @@ func (application *app) writeConfig(loaded appconfig.Loaded) error {
 			[2]string{"Log format", config.Logging.Format},
 		)
 	})
+}
+
+func configForDisplay(config appconfig.Config) appconfig.Config {
+	config.OpenAI.BaseURL = uriForDisplay(config.OpenAI.BaseURL)
+	config.Plugins.Remote = slices.Clone(config.Plugins.Remote)
+	for index := range config.Plugins.Remote {
+		config.Plugins.Remote[index] = pluginReferenceForDisplay(
+			config.Plugins.Remote[index],
+		)
+	}
+	config.Plugins.RegistryURI = uriForDisplay(
+		config.Plugins.RegistryURI,
+	)
+	config.Registry.AdvertiseURI = uriForDisplay(
+		config.Registry.AdvertiseURI,
+	)
+	config.Registry.BackendURI = uriForDisplay(config.Registry.BackendURI)
+	config.State.BackendURI = uriForDisplay(config.State.BackendURI)
+	return config
+}
+
+func pluginReferenceForDisplay(raw string) string {
+	value := strings.TrimSpace(raw)
+	name, uri, found := strings.Cut(value, "=")
+	if !found {
+		return value
+	}
+	return name + "=" + uriForDisplay(uri)
+}
+
+func uriForDisplay(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" {
+		return "<invalid URI>"
+	}
+	query := parsed.Query()
+	for key, values := range query {
+		if !sensitiveQueryParameter(key) {
+			continue
+		}
+		for index := range values {
+			values[index] = "<redacted>"
+		}
+		query[key] = values
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.Redacted()
+}
+
+func sensitiveQueryParameter(key string) bool {
+	normalized := strings.NewReplacer("-", "", "_", "").Replace(
+		strings.ToLower(strings.TrimSpace(key)),
+	)
+	switch normalized {
+	case "password", "passwd", "pass", "token", "apikey", "secret",
+		"clientsecret", "accesstoken", "refreshtoken", "credential":
+		return true
+	default:
+		return false
+	}
 }
 
 func (application *app) writePath(path string) error {
