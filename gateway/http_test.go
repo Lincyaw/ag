@@ -42,12 +42,27 @@ func (backend *fakeExecutionBackend) Submit(
 	return execution, nil
 }
 
-func (backend *fakeExecutionBackend) Get(
+func (backend *fakeExecutionBackend) Current(
 	_ context.Context,
 	session Session,
 ) (Execution, error) {
 	execution, exists := backend.executions[session.ID]
 	if !exists {
+		return Execution{}, ErrExecutionNotFound
+	}
+	return execution, nil
+}
+
+func (backend *fakeExecutionBackend) Get(
+	ctx context.Context,
+	session Session,
+	executionID string,
+) (Execution, error) {
+	execution, err := backend.Current(ctx, session)
+	if err != nil {
+		return Execution{}, err
+	}
+	if execution.Execution.ID != executionID {
 		return Execution{}, ErrExecutionNotFound
 	}
 	return execution, nil
@@ -137,6 +152,17 @@ func TestHTTPGatewaySessionPluginMessageAndCancelFlow(t *testing.T) {
 	if execution.Execution.State != sdk.TrajectoryExecutionPending {
 		t.Fatalf("submitted execution = %#v", execution)
 	}
+	polled := serveJSON(
+		t,
+		handler,
+		http.MethodGet,
+		"/v1/sessions/web-session/executions/"+execution.Execution.ID,
+		"user-a",
+		nil,
+	)
+	if polled.Code != http.StatusOK {
+		t.Fatalf("poll status=%d body=%s", polled.Code, polled.Body.String())
+	}
 
 	busy := serveJSON(
 		t,
@@ -154,9 +180,9 @@ func TestHTTPGatewaySessionPluginMessageAndCancelFlow(t *testing.T) {
 		t,
 		handler,
 		http.MethodPost,
-		"/v1/sessions/web-session/execution:cancel",
+		"/v1/sessions/web-session/executions/"+execution.Execution.ID+"/cancel",
 		"user-a",
-		map[string]any{"execution_id": execution.Execution.ID},
+		nil,
 	)
 	if cancelled.Code != http.StatusOK {
 		t.Fatalf(

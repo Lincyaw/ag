@@ -25,7 +25,8 @@ type Execution struct {
 type ExecutionBackend interface {
 	CreateSession(context.Context, Session) error
 	Submit(context.Context, Session, string) (Execution, error)
-	Get(context.Context, Session) (Execution, error)
+	Current(context.Context, Session) (Execution, error)
+	Get(context.Context, Session, string) (Execution, error)
 	Cancel(context.Context, Session, string) (Execution, error)
 	Close(context.Context) error
 }
@@ -212,12 +213,20 @@ func (service *Service) GetExecution(
 	ctx context.Context,
 	userID string,
 	sessionID string,
+	executionID string,
 ) (Execution, error) {
 	session, err := service.manager.ownedSession(ctx, userID, sessionID)
 	if err != nil {
 		return Execution{}, err
 	}
-	return service.executions.Get(ctx, session)
+	executionID = strings.TrimSpace(executionID)
+	if executionID == "" {
+		return Execution{}, fmt.Errorf(
+			"%w: gateway execution ID is empty",
+			ErrInvalidRequest,
+		)
+	}
+	return service.executions.Get(ctx, session, executionID)
 }
 
 func (service *Service) CancelExecution(
@@ -259,7 +268,7 @@ func (service *Service) requireIdle(
 	ctx context.Context,
 	session Session,
 ) error {
-	execution, err := service.executions.Get(ctx, session)
+	execution, err := service.executions.Current(ctx, session)
 	if errors.Is(err, ErrExecutionNotFound) {
 		return nil
 	}

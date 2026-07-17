@@ -57,11 +57,11 @@ func NewHTTPHandler(
 		api.submitMessage,
 	)
 	mux.HandleFunc(
-		"GET /v1/sessions/{session}/execution",
+		"GET /v1/sessions/{session}/executions/{execution}",
 		api.getExecution,
 	)
 	mux.HandleFunc(
-		"POST /v1/sessions/{session}/execution:cancel",
+		"POST /v1/sessions/{session}/executions/{execution}/cancel",
 		api.cancelExecution,
 	)
 	return mux, nil
@@ -86,10 +86,6 @@ type attachPluginRequest struct {
 
 type submitMessageRequest struct {
 	Content string `json:"content"`
-}
-
-type cancelExecutionRequest struct {
-	ExecutionID string `json:"execution_id"`
 }
 
 type errorResponse struct {
@@ -300,6 +296,7 @@ func (api *httpAPI) getExecution(
 		request.Context(),
 		userID,
 		request.PathValue("session"),
+		request.PathValue("execution"),
 	)
 	if err != nil {
 		writeHTTPError(writer, err)
@@ -316,15 +313,11 @@ func (api *httpAPI) cancelExecution(
 	if !ok {
 		return
 	}
-	var input cancelExecutionRequest
-	if !decodeRequest(writer, request, &input) {
-		return
-	}
 	execution, err := api.service.CancelExecution(
 		request.Context(),
 		userID,
 		request.PathValue("session"),
-		input.ExecutionID,
+		request.PathValue("execution"),
 	)
 	if err != nil {
 		writeHTTPError(writer, err)
