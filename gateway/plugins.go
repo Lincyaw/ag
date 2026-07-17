@@ -20,16 +20,25 @@ var (
 
 type IdleGuard func(context.Context, Session) error
 
+type PluginCatalog interface {
+	Get(context.Context, registry.InstanceKey) (registry.PluginInstance, error)
+	List(
+		context.Context,
+		registry.DiscoveryQuery,
+		registry.PageRequest,
+	) (registry.DiscoveryPage, error)
+}
+
 type ManagerConfig struct {
 	Store            SessionStore
-	Directory        registry.Directory
+	Directory        PluginCatalog
 	DefaultNamespace string
 	RequireIdle      IdleGuard
 }
 
 type Manager struct {
 	store            SessionStore
-	directory        registry.Directory
+	directory        PluginCatalog
 	defaultNamespace string
 	requireIdle      IdleGuard
 }
