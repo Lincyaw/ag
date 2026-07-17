@@ -13,8 +13,9 @@ program that requires JSON must request it explicitly.
 
 ## Output boundary
 
-Business results are written to stdout. Logs, warnings, progress, and errors
-are written to stderr. Consequently, this is safe:
+Business results are written to stdout. Runtime logs are appended to
+`~/.ag/logs/ag.log` by default, while command errors are written to stderr.
+Consequently, this is safe:
 
 ```bash
 ag trajectory list -o json | jq '.[].id'
@@ -35,12 +36,17 @@ empty and stderr ends with this error document:
 }
 ```
 
-Runtime logs may precede the error on stderr; stderr is a diagnostic stream,
-not the success data channel.
+Runtime logs do not precede the error on stderr unless console logging was
+explicitly enabled.
 
 `ag registry serve -o json` is a long-running exception: it emits one complete
 ready document after the listener and backend are ready, then keeps stdout
-open until shutdown. Runtime logs remain on stderr.
+open until shutdown.
+
+Use `--log-file <path>` or `[logging].file` to change the append-only log
+destination. Use `--log-console` or `[logging].console = true` to additionally
+copy runtime logs to stderr for interactive debugging. Console logging never
+replaces the file destination.
 
 ## JSON result shapes
 
@@ -59,6 +65,7 @@ in minor releases; fields are not renamed or removed without a major release.
 | `ag trajectory list` | `TrajectorySummary[]` |
 | `ag trajectory show` | `Trajectory` |
 | `ag trajectory rollback` | `{"trajectory_id": string, "head": string, "checkpoint_id": string}` |
+| `ag invocation show` | `InvocationGraph` |
 | `ag state inspect` | `{"backend": string, "namespace": string, "capabilities": StorageCapabilities}` |
 | `ag state prune` | `{"operations": number, "deliveries": number, "trajectories": number}` |
 | `ag version` | `{"version": string}` |
@@ -84,6 +91,7 @@ Human-oriented defaults:
 ag run -p "Summarize this repository"
 ag trajectory list
 ag trajectory show <session-id>
+ag invocation show <root-invocation-id>
 ag config show
 ag plugin discover
 ag registry serve
@@ -95,6 +103,7 @@ Program-oriented equivalents:
 ag run -p "Summarize this repository" -o json
 ag trajectory list -o json
 ag trajectory show <session-id> -o json
+ag invocation show <root-invocation-id> -o json
 ag config show -o json
 ag plugin discover -o json
 ag registry serve -o json

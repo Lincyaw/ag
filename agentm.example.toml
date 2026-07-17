@@ -15,3 +15,5 @@ max_read_bytes = 65536
 [logging]
 level = "info"
 format = "json"
+# file defaults to ~/.ag/logs/ag.log
+console = false

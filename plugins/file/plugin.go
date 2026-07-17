@@ -338,14 +338,8 @@ func isSHA256Revision(value string) bool {
 	if len(value) != sha256.Size*2 {
 		return false
 	}
-	for _, character := range value {
-		if !(character >= '0' && character <= '9') &&
-			!(character >= 'a' && character <= 'f') &&
-			!(character >= 'A' && character <= 'F') {
-			return false
-		}
-	}
-	return true
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 
 func cleanDisplayPath(value string) string {

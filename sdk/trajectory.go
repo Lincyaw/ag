@@ -137,19 +137,24 @@ type TrajectoryPlugin struct {
 }
 
 type TrajectoryEnvironment struct {
-	SDKAPIVersion     int                `json:"sdk_api_version"`
-	RuntimeVersion    string             `json:"runtime_version,omitempty"`
-	CreatedGeneration uint64             `json:"created_generation,omitempty"`
-	RequestedProvider string             `json:"requested_provider,omitempty"`
-	SystemDigest      string             `json:"system_digest,omitempty"`
-	CompositionDigest string             `json:"composition_digest,omitempty"`
-	Plugins           []TrajectoryPlugin `json:"plugins,omitempty"`
-	Providers         []ProviderSpec     `json:"providers,omitempty"`
-	Tools             []ToolSpec         `json:"tools,omitempty"`
-	Hooks             []HookSpec         `json:"hooks,omitempty"`
-	Subscribers       []SubscriberSpec   `json:"subscribers,omitempty"`
-	Capabilities      []CapabilitySpec   `json:"capabilities,omitempty"`
-	Events            []EventContract    `json:"events,omitempty"`
+	SDKAPIVersion          int                `json:"sdk_api_version"`
+	RuntimeVersion         string             `json:"runtime_version,omitempty"`
+	CreatedGeneration      uint64             `json:"created_generation,omitempty"`
+	ParentSessionID        string             `json:"parent_session_id,omitempty"`
+	OriginInvocationID     string             `json:"origin_invocation_id,omitempty"`
+	OriginInvocationRootID string             `json:"origin_invocation_root_id,omitempty"`
+	OriginMode             AgentSessionMode   `json:"origin_mode,omitempty"`
+	RequestedProvider      string             `json:"requested_provider,omitempty"`
+	SystemDigest           string             `json:"system_digest,omitempty"`
+	CompositionDigest      string             `json:"composition_digest,omitempty"`
+	Plugins                []TrajectoryPlugin `json:"plugins,omitempty"`
+	Providers              []ProviderSpec     `json:"providers,omitempty"`
+	Tools                  []ToolSpec         `json:"tools,omitempty"`
+	Agents                 []AgentSpec        `json:"agents,omitempty"`
+	Hooks                  []HookSpec         `json:"hooks,omitempty"`
+	Subscribers            []SubscriberSpec   `json:"subscribers,omitempty"`
+	Capabilities           []CapabilitySpec   `json:"capabilities,omitempty"`
+	Events                 []EventContract    `json:"events,omitempty"`
 }
 
 type Trajectory struct {

@@ -1,3 +1,7 @@
+// Package runtime implements the agent-execution core over SDK ports. It owns
+// sessions, composition, orchestration, and durable execution coordination,
+// while applications select concrete storage, discovery, and transport
+// adapters.
 package runtime
 
 import (
@@ -59,6 +63,7 @@ type Runtime struct {
 	hooks              metric.Int64Counter
 	hookTimeout        time.Duration
 	storage            sdk.StateBackend
+	atomicState        sdk.AtomicStateBackend
 	closeStorage       bool
 	trajectories       sdk.TrajectoryStore
 	trajectoryLease    time.Duration
@@ -179,8 +184,11 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	if err := config.Storage.Health(context.Background()); err != nil {
 		return nil, fmt.Errorf("state backend health: %w", err)
 	}
+	var atomicState sdk.AtomicStateBackend
 	if config.Storage.Capabilities().AtomicState {
-		if _, ok := config.Storage.(sdk.AtomicStateBackend); !ok {
+		var ok bool
+		atomicState, ok = config.Storage.(sdk.AtomicStateBackend)
+		if !ok {
 			return nil, errors.New(
 				"state backend advertises atomic state without implementing AtomicStateBackend",
 			)
@@ -210,6 +218,7 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 		hooks:              hooks,
 		hookTimeout:        config.HookTimeout,
 		storage:            config.Storage,
+		atomicState:        atomicState,
 		closeStorage:       config.StorageOwnership == StorageOwned,
 		trajectories:       trajectories,
 		trajectoryLease:    config.TrajectoryLease,

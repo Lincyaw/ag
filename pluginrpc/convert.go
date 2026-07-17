@@ -325,6 +325,50 @@ func fromProtoMessage(message *pluginv1.Message) (sdk.Message, error) {
 	return result, nil
 }
 
+func toProtoInvocation(
+	invocation sdk.Invocation,
+) *pluginv1.Invocation {
+	if invocation.Empty() {
+		return nil
+	}
+	return &pluginv1.Invocation{
+		Id:              invocation.ID,
+		RootId:          invocation.RootID,
+		ParentId:        invocation.ParentID,
+		GroupId:         invocation.GroupID,
+		SessionId:       invocation.SessionID,
+		TargetSessionId: invocation.TargetSessionID,
+		ExecutionId:     invocation.ExecutionID,
+		Dependencies: append(
+			[]string(nil),
+			invocation.Dependencies...,
+		),
+		Ordinal: invocation.Ordinal,
+	}
+}
+
+func fromProtoInvocation(
+	invocation *pluginv1.Invocation,
+) sdk.Invocation {
+	if invocation == nil {
+		return sdk.Invocation{}
+	}
+	return sdk.Invocation{
+		ID:              invocation.GetId(),
+		RootID:          invocation.GetRootId(),
+		ParentID:        invocation.GetParentId(),
+		GroupID:         invocation.GetGroupId(),
+		SessionID:       invocation.GetSessionId(),
+		TargetSessionID: invocation.GetTargetSessionId(),
+		ExecutionID:     invocation.GetExecutionId(),
+		Dependencies: append(
+			[]string(nil),
+			invocation.GetDependencies()...,
+		),
+		Ordinal: invocation.GetOrdinal(),
+	}
+}
+
 func toProtoOperation(operation sdk.Operation) (*pluginv1.Operation, error) {
 	var output *structpb.Struct
 	var err error

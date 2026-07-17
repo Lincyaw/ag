@@ -20,11 +20,19 @@ an independent process.
   fenced leases and revision polling;
 - async-first provider, tool, and capability operations with
   `Submit / Poll / Cancel`, revision CAS, idempotency, and durable stores;
+- same-turn tool fanout with concurrent execution and stable result joins;
+- same-process declarative agents, fork/new child trajectories, recursive
+  invocation graphs, and structured fanout/DAG workflows;
 - short synchronous control hooks plus durable asynchronous event subscribers;
 - host outbox and remote-plugin inbox with leases, retries, deduplication, and
   per-trajectory ordering;
-- append-only trajectories with checkpoints, restore, branch inspection, and
-  rollback;
+- transactional trajectory executions with durable input, renewable worker
+  leases, crash/graceful-shutdown recovery, checkpoints, branch inspection,
+  and rollback;
+- a multi-user HTTP gateway with session-scoped plugin composition,
+  asynchronous submit/poll/cancel, and startup execution recovery;
+- DuckDB trajectory storage with immutable rows, native fixed-field indexes,
+  transactional execution fencing, and indexed analysis queries;
 - OpenTelemetry transport instrumentation plus an asynchronous semantic OTel
   subscriber plugin;
 - Cobra CLI/config contract with `flag > AGENTM_* > config file > default`
@@ -65,7 +73,9 @@ go build -o bin/agentm-plugin-bash ./cmd/agentm-plugin-bash
 
 The default mounts OpenAI, the read-only file plugin, and the asynchronous OTel
 subscriber. The official OpenAI SDK reads the API key from the environment;
-there is deliberately no API-key CLI flag.
+there is deliberately no API-key CLI flag. Runtime logs are appended to
+`~/.ag/logs/ag.log` by default; pass `--log-console` to additionally show them
+on stderr.
 
 ```bash
 OPENAI_API_KEY=... bin/ag run \
@@ -155,9 +165,16 @@ ag gateway serve
 ag trajectory list
 ag trajectory show <id> [--head <entry-id>]
 ag trajectory rollback <id> <checkpoint-id>
+ag invocation show <root-invocation-id>
 ag state inspect
 ag state prune --before <RFC3339-or-duration>
 ag version
+```
+
+Use a local DuckDB trajectory backend with:
+
+```text
+ag --storage 'duckdb:///absolute/path/agent-state.duckdb' run
 ```
 
 Business output is written to stdout. Diagnostics and structured logs are
@@ -209,5 +226,7 @@ processes, performs protobuf `Submit / Poll / Cancel` calls, verifies lease
 renewal and cleanup, and exercises CLI trajectory resume/rollback through a
 real OpenAI-compatible HTTP server.
 
-See [docs/pluggable-sdk.md](docs/pluggable-sdk.md) for the normative architecture
+Start with [docs/architecture.md](docs/architecture.md) for the domain map and
+application entry points. See
+[docs/pluggable-sdk.md](docs/pluggable-sdk.md) for the normative SDK contract
 and [decisions.md](decisions.md) for accepted design decisions.

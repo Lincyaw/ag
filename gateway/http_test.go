@@ -42,6 +42,13 @@ func (backend *fakeExecutionBackend) Submit(
 	return execution, nil
 }
 
+func (backend *fakeExecutionBackend) Recover(
+	ctx context.Context,
+	session Session,
+) (Execution, error) {
+	return backend.Current(ctx, session)
+}
+
 func (backend *fakeExecutionBackend) Current(
 	_ context.Context,
 	session Session,

@@ -140,8 +140,10 @@ type Observability struct {
 }
 
 type Logging struct {
-	Level  string `mapstructure:"level" json:"level" yaml:"level"`
-	Format string `mapstructure:"format" json:"format" yaml:"format"`
+	Level   string `mapstructure:"level" json:"level" yaml:"level"`
+	Format  string `mapstructure:"format" json:"format" yaml:"format"`
+	File    string `mapstructure:"file" json:"file" yaml:"file"`
+	Console bool   `mapstructure:"console" json:"console" yaml:"console"`
 }
 
 type LoadOptions struct {
@@ -272,6 +274,9 @@ func (c Config) Validate() error {
 	default:
 		return errors.New(`logging.format must be "json" or "text"`)
 	}
+	if strings.TrimSpace(c.Logging.File) == "" {
+		return errors.New("logging.file is required")
+	}
 	return nil
 }
 
@@ -323,6 +328,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("observability.enabled", true)
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.format", "json")
+	v.SetDefault("logging.file", defaultLogFile())
+	v.SetDefault("logging.console", false)
 }
 
 func configureEnvironment(v *viper.Viper) {
@@ -381,6 +388,8 @@ func bindFlags(v *viper.Viper, flags *pflag.FlagSet) error {
 		"observability.enabled":       "otel",
 		"logging.level":               "log-level",
 		"logging.format":              "log-format",
+		"logging.file":                "log-file",
+		"logging.console":             "log-console",
 	}
 	for key, name := range bindings {
 		flag := flags.Lookup(name)
@@ -400,6 +409,14 @@ func defaultStateDirectory() string {
 		return filepath.Join(".ag", "state")
 	}
 	return filepath.Join(directory, AppName, "state")
+}
+
+func defaultLogFile() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".ag", "logs", "ag.log")
+	}
+	return filepath.Join(home, ".ag", "logs", "ag.log")
 }
 
 func defaultRegistryBackendURI() string {

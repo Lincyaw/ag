@@ -72,6 +72,12 @@ func TestStandaloneFileAndBashProcessesWithLeaseAndPolling(t *testing.T) {
 	if fileProcess.ready.Name != "file" || !strings.HasPrefix(fileProcess.ready.URI, "grpc://") {
 		t.Fatalf("file ready = %#v", fileProcess.ready)
 	}
+	assertPluginLogContains(
+		t,
+		fileProcess,
+		"agentm-plugin-file",
+		"plugin RPC server ready",
+	)
 	eventually(t, 2*time.Second, func() bool {
 		page, err := registryClient.List(
 			context.Background(),
@@ -137,6 +143,12 @@ func TestStandaloneFileAndBashProcessesWithLeaseAndPolling(t *testing.T) {
 	if !strings.HasPrefix(bashProcess.ready.URI, "grpcs://") {
 		t.Fatalf("TLS bash ready = %#v", bashProcess.ready)
 	}
+	assertPluginLogContains(
+		t,
+		bashProcess,
+		"agentm-plugin-bash",
+		"plugin RPC server ready",
+	)
 	bashClient := connectPlugin(t, bashProcess.ready.URI, roots)
 	bashResult := callTool(t, bashClient, "bash", "bash-once", map[string]any{
 		"command": `printf 'standalone=%s\n' "$PWD"; printf 'rpc-stderr\n' >&2`,
@@ -174,10 +186,14 @@ type childProcess struct {
 	command *exec.Cmd
 	ready   pluginhost.Ready
 	stderr  *bytes.Buffer
+	home    string
 }
 
 func startPluginProcess(t *testing.T, binary string, arguments ...string) *childProcess {
-	return startPluginProcessEnv(t, nil, binary, arguments...)
+	home := t.TempDir()
+	process := startPluginProcessEnv(t, []string{"HOME=" + home}, binary, arguments...)
+	process.home = home
+	return process
 }
 
 func startPluginProcessEnv(
@@ -239,6 +255,23 @@ func (process *childProcess) stop(t *testing.T) {
 		_ = process.command.Process.Kill()
 		t.Fatalf("plugin did not stop\nstderr:\n%s", process.stderr.String())
 	}
+}
+
+func assertPluginLogContains(
+	t *testing.T,
+	process *childProcess,
+	commandName string,
+	needle string,
+) {
+	t.Helper()
+	if process.stderr.Len() != 0 {
+		t.Fatalf("plugin stderr is not quiet:\n%s", process.stderr.String())
+	}
+	logPath := filepath.Join(process.home, ".ag", "logs", commandName+".log")
+	eventually(t, time.Second, func() bool {
+		content, err := os.ReadFile(logPath)
+		return err == nil && strings.Contains(string(content), needle)
+	})
 }
 
 func startRegistry(

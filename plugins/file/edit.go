@@ -221,7 +221,9 @@ func applyEdit(
 			len(lines),
 		)
 	}
-	replacement := splitTextLines(normalizeNewlines(*arguments.NewText))
+	replacement := splitTextLines(
+		strings.ReplaceAll(*arguments.NewText, "\r\n", "\n"),
+	)
 	combined := make([]string, 0, len(lines)-(end-start+1)+len(replacement))
 	combined = append(combined, lines[:start-1]...)
 	combined = append(combined, replacement...)
@@ -232,16 +234,8 @@ func applyEdit(
 		lineEnding = "\r\n"
 	}
 	updated = strings.Join(combined, lineEnding)
-	if hasTrailingNewline(source) && updated != "" {
+	if strings.HasSuffix(source, "\n") && updated != "" {
 		updated += lineEnding
 	}
 	return updated, start, end - start + 1, nil
-}
-
-func normalizeNewlines(value string) string {
-	return strings.ReplaceAll(value, "\r\n", "\n")
-}
-
-func hasTrailingNewline(value string) bool {
-	return strings.HasSuffix(value, "\n")
 }

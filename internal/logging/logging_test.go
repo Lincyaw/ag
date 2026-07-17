@@ -4,7 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel/trace"
@@ -71,5 +75,58 @@ func TestWithHandlerFansOutAttributesAndGroups(t *testing.T) {
 		if !ok || operation["id"] != "operation-1" {
 			t.Fatalf("%s operation = %#v", name, record["operation"])
 		}
+	}
+}
+
+func TestOpenFilePersistsAndOptionallyCopiesLogs(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		copyConsole bool
+	}{
+		{name: "file only"},
+		{name: "file and console", copyConsole: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "nested", "ag.log")
+			var console bytes.Buffer
+			var consoleWriter io.Writer
+			if test.copyConsole {
+				consoleWriter = &console
+			}
+			logger, closer, err := OpenFile(
+				Config{Format: "text"},
+				path,
+				consoleWriter,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			logger.Info("persisted-log")
+			if err := closer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(raw), "persisted-log") {
+				t.Fatalf("log file = %q", raw)
+			}
+			if got := strings.Contains(console.String(), "persisted-log"); got != test.copyConsole {
+				t.Fatalf(
+					"console contains log = %t, want %t; output = %q",
+					got,
+					test.copyConsole,
+					console.String(),
+				)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0o600 {
+				t.Fatalf("log permissions = %o", info.Mode().Perm())
+			}
+		})
 	}
 }

@@ -1,10 +1,11 @@
 package operationmodel
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/lincyaw/ag/sdk"
@@ -20,9 +21,9 @@ func ValidateNewRecord(record sdk.OperationRecord) error {
 	switch record.Kind {
 	case sdk.OperationKindProvider,
 		sdk.OperationKindTool,
-		sdk.OperationKindCapability,
-		sdk.OperationKind("agent"),
-		sdk.OperationKind("workflow"):
+		sdk.OperationKindAgent,
+		sdk.OperationKindWorkflow,
+		sdk.OperationKindCapability:
 	default:
 		return fmt.Errorf("invalid operation kind %q", record.Kind)
 	}
@@ -34,6 +35,9 @@ func ValidateNewRecord(record sdk.OperationRecord) error {
 	}
 	if !json.Valid(record.Input) {
 		return errors.New("operation input is invalid JSON")
+	}
+	if err := sdk.ValidateInvocation(record.Invocation); err != nil {
+		return err
 	}
 	return nil
 }
@@ -73,14 +77,8 @@ func IdempotencyIndex(record sdk.OperationRecord) string {
 }
 
 func CloneRecord(record sdk.OperationRecord) sdk.OperationRecord {
-	raw, err := json.Marshal(record)
-	if err == nil {
-		var cloned sdk.OperationRecord
-		if err := json.Unmarshal(raw, &cloned); err == nil {
-			return cloned
-		}
-	}
 	record.Input = append(json.RawMessage(nil), record.Input...)
+	record.Invocation = sdk.CloneInvocation(record.Invocation)
 	record.Operation.Output = append(
 		json.RawMessage(nil),
 		record.Operation.Output...,
@@ -93,40 +91,21 @@ func CloneRecord(record sdk.OperationRecord) sdk.OperationRecord {
 }
 
 func SameSubmission(left, right sdk.OperationRecord) bool {
-	left.Operation = sdk.Operation{}
-	left.Execution = nil
-	right.Operation = sdk.Operation{}
-	right.Execution = nil
-	return reflect.DeepEqual(left, right)
-}
-
-// MarshalOptionalInvocation preserves the newer invocation field when the SDK
-// exposes it, while keeping storage implementations compatible with callers
-// built against the base OperationRecord contract.
-func MarshalOptionalInvocation(record sdk.OperationRecord) ([]byte, error) {
-	field := reflect.ValueOf(record).FieldByName("Invocation")
-	if !field.IsValid() {
-		return []byte(`{}`), nil
-	}
-	return json.Marshal(field.Interface())
-}
-
-func UnmarshalOptionalInvocation(
-	record *sdk.OperationRecord,
-	raw []byte,
-) error {
-	if record == nil || len(raw) == 0 {
-		return nil
-	}
-	value := reflect.ValueOf(record)
-	if value.Kind() != reflect.Pointer || value.IsNil() {
-		return errors.New("operation record is nil")
-	}
-	field := value.Elem().FieldByName("Invocation")
-	if !field.IsValid() || !field.CanAddr() {
-		return nil
-	}
-	return json.Unmarshal(raw, field.Addr().Interface())
+	return bytes.Equal(left.Input, right.Input) &&
+		left.Invocation.ID == right.Invocation.ID &&
+		left.Invocation.RootID == right.Invocation.RootID &&
+		left.Invocation.ParentID == right.Invocation.ParentID &&
+		left.Invocation.GroupID == right.Invocation.GroupID &&
+		left.Invocation.SessionID == right.Invocation.SessionID &&
+		left.Invocation.TargetSessionID ==
+			right.Invocation.TargetSessionID &&
+		left.Invocation.ExecutionID ==
+			right.Invocation.ExecutionID &&
+		left.Invocation.Ordinal == right.Invocation.Ordinal &&
+		slices.Equal(
+			left.Invocation.Dependencies,
+			right.Invocation.Dependencies,
+		)
 }
 
 func ValidateLoadedRecord(record sdk.OperationRecord) error {

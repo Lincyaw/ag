@@ -93,7 +93,7 @@ func New(stdout, stderr io.Writer, version string) *cobra.Command {
 	root.PersistentFlags().String(
 		"storage",
 		"",
-		"State backend URI (memory://, file://, or an application-registered scheme).",
+		"State backend URI (memory://, file://, duckdb://, or an application-registered scheme).",
 	)
 	root.PersistentFlags().String(
 		"state-namespace",
@@ -109,6 +109,12 @@ func New(stdout, stderr io.Writer, version string) *cobra.Command {
 	)
 	root.PersistentFlags().String("log-level", "", "debug, info, warn, or error.")
 	root.PersistentFlags().String("log-format", "", "json or text.")
+	root.PersistentFlags().String("log-file", "", "Append logs to this file.")
+	root.PersistentFlags().Bool(
+		"log-console",
+		false,
+		"Also write logs to stderr.",
+	)
 	root.PersistentFlags().Bool("otel", true, "Project lifecycle events into OpenTelemetry.")
 
 	root.AddCommand(
@@ -118,6 +124,7 @@ func New(stdout, stderr io.Writer, version string) *cobra.Command {
 		application.registryCommand(),
 		application.gatewayCommand(),
 		application.trajectoryCommand(),
+		application.invocationCommand(),
 		application.stateCommand(),
 		application.versionCommand(),
 	)

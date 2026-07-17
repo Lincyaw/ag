@@ -213,6 +213,23 @@ func TestEtcdPluginChangeUsesEventTimeSource(t *testing.T) {
 	}
 }
 
+func TestEtcdInstanceRecordExcludesLeaseCredentials(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal(etcdInstanceRecord{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"lease_id", "token", "ttl_seconds"} {
+		if _, exists := fields[name]; exists {
+			t.Fatalf("instance record contains lease field %q: %s", name, raw)
+		}
+	}
+}
+
 func TestEtcdDirectoryRealServer(t *testing.T) {
 	rawURI := strings.TrimSpace(os.Getenv("AG_TEST_ETCD_URI"))
 	if rawURI == "" {

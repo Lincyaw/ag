@@ -126,16 +126,11 @@ func (server *registryServer) ListRegistrations(
 		NextPageToken: page.Next,
 		Revision:      page.Revision,
 		Instances:     make([]*pluginv1.PluginInstance, 0, len(page.Items)),
-		Registrations: make([]*pluginv1.Registration, 0, len(page.Items)),
 	}
 	for _, instance := range page.Items {
 		response.Instances = append(
 			response.Instances,
 			toProtoInstance(instance),
-		)
-		response.Registrations = append(
-			response.Registrations,
-			toProtoRegistration(instance.PluginRegistration),
 		)
 	}
 	return response, nil
@@ -295,18 +290,6 @@ func (client *registryClient) List(
 		Next:     response.GetNextPageToken(),
 		Revision: response.GetRevision(),
 		Items:    make([]registry.PluginInstance, 0, len(response.GetInstances())),
-	}
-	if len(response.GetInstances()) == 0 {
-		for _, registration := range response.GetRegistrations() {
-			converted, convertErr := fromProtoRegistration(registration)
-			if convertErr != nil {
-				return registry.DiscoveryPage{}, convertErr
-			}
-			page.Items = append(page.Items, registry.PluginInstance{
-				PluginRegistration: converted,
-			})
-		}
-		return page, nil
 	}
 	for _, instance := range response.GetInstances() {
 		converted, convertErr := fromProtoInstance(instance)

@@ -5,12 +5,28 @@
 - **Protocol-first plugins** (L2: repository goal and AgentM reference). A
   plugin depends on the versioned wire contract, not on the Go SDK. In-process
   Go plugins are an optimization of the same logical contract.
+- **Registry discovery has one wire representation and explicit layers** (L2:
+  existing boundaries). Wire list pages expose `PluginInstance` only.
+  `registry.Directory` owns leases and replicas; a `PluginDriver` may project
+  directory results into generic references without owning registry state.
 - **Discovery is not execution** (L4, flagged). Plugins may self-register with
   a lease and become discoverable, but mounting remains an explicit
   composition-policy decision.
 - **Trajectory is the recovery source of truth** (L4, flagged). Durable,
   append-only trajectory entries drive restore and rollback. OpenTelemetry is
   a correlated projection and may never be the only recovery record.
+- **Trajectory persistence is an immutable graph, not a document** (L4,
+  flagged). Stores append fixed-envelope entries and move a head with CAS.
+  Metadata, entry, branch, and latest-kind reads are the recovery path;
+  whole-trajectory `Load` is a materialized compatibility view.
+- **Indexed trajectory fields are typed columns** (L4, flagged). Fields needed
+  for filtering and analysis live in `TrajectoryEntryFields`; kind-specific
+  detail may remain in a versioned payload. A database backend maps the typed
+  fields to native columns and indexes instead of extracting them from JSON.
+- **Forks use copy-on-write lineage** (L4, flagged). A schema-v2 fork initially
+  points its head at the selected source entry and owns no copied prefix.
+  Entries record their origin trajectory, origin-local ordinal, and graph
+  depth. A referenced source cannot be deleted before its forks.
 - **Rollback preserves history** (L2: AgentM session-tree precedent). Rolling
   back creates a new head whose parent is the selected committed entry; it
   never deletes entries and does not implicitly compensate external effects.
@@ -39,10 +55,54 @@
   Provider and tool adapters submit idempotent operations and expose Poll/Watch
   state. Local implementations may complete immediately, but remote execution
   must survive disconnects and process restarts without holding one RPC open.
+- **Plugin operation panics fail the operation** (L2: deployment-mode parity).
+  In-process and RPC workers recover plugin panics at the executor boundary so
+  one faulty provider, tool, or capability cannot terminate its host process.
 - **Inbox/outbox delivery is at-least-once** (L4, flagged). Every command and
   event has a stable delivery/idempotency key; queues deduplicate enqueue, but
   a receiver may run again if acknowledgement fails. Subscriber effects must
   be idempotent; the system does not claim exactly-once external effects.
+- **Trajectory execution is the durable orchestration cursor** (L4, flagged).
+  Beginning a prompt atomically appends its input and creates a pending
+  execution. Workers claim executions with renewable leases and fencing tokens;
+  entry/checkpoint appends and terminal execution state commit in one
+  trajectory-store transaction. Graceful shutdown returns claimed work to
+  pending immediately; crashes are recovered after lease expiry. After
+  composition is mounted, a stateless worker calls `RecoverExecutions` to claim
+  pending or expired work.
+- **Logical operation keys survive trajectory retries** (L4, flagged).
+  Provider/tool operation keys derive from execution ID plus logical step,
+  rather than from an attempt entry ID. Recovery may retain multiple immutable
+  attempt entries while resubmitting the same idempotent operation key.
+- **Invocation is the recursive execution primitive** (L2: user direction).
+  Provider, tool, agent, and workflow calls are durable invocation nodes.
+  Parent edges express causal ownership, dependency edges express DAG order,
+  group IDs express concurrently submitted siblings, and operation state owns
+  retry/cancellation. Trajectory remains the per-agent context and state
+  branch; it is not overloaded as the scheduler.
+- **Same-turn tool calls use structured concurrency** (L2: user direction).
+  The runtime prepares and submits every sibling, awaits them concurrently,
+  then commits hooks, trajectory results, and tool messages in original model
+  order. Completion timing cannot reorder the next provider request.
+- **Subagents are same-process declarative resources** (L2: user direction).
+  `AgentRegistrar` is an optional local registrar extension. An agent inherits
+  the current immutable provider/tool snapshot by default and may attenuate
+  tools through an allowlist and its turn budget may not exceed the parent's.
+  The wire contract preserves `nil` (inherit) versus empty (no tools). Agent
+  invocation is available to plugin code only through a context-scoped narrow
+  invoker; RPC host callbacks are not implied.
+- **New and fork are trajectory initialization policies** (L2: user
+  direction). Both execute through the same AgentInvocation path. Fork adds
+  copy-on-write content lineage; new starts empty. Child environment metadata
+  records parent session, origin invocation, and mode in either case.
+- **Swarm and workflow share one DAG scheduler** (L2: user direction).
+  A swarm is a dependency-free wave. Workflows add explicit predecessor edges
+  and stable joins; fanout/reduce is a fanout wave followed by a reducer.
+- **Operation retention follows execution liveness** (L4, flagged). Terminal
+  operation results cannot be pruned while a trajectory execution that may
+  reuse them is pending or running. A shared backend enforces this
+  conservatively; independently deployed plugins must retain results for at
+  least the trajectory recovery horizon.
 - **Runtime storage is explicit** (L4, flagged). `NewRuntime` requires one
   `StateBackend`; memory/file selection and driver registration belong to the
   application composition root. The runtime no longer accepts parallel
@@ -103,9 +163,15 @@
   in-memory `PageWindow` algorithm. Built-in memory/file stores share that
   helper privately; database and network backends should paginate natively.
 - **Named backends enter through the storage driver** (L4, flagged).
-  `NewMemoryStateBackend` and `NewFileStateBackend` remain default-namespace
-  constructors; named namespaces use validated `memory://` or `file://` URIs.
-  The CLI follows the same URI path as custom backend composition.
+  `NewMemoryStateBackend`, `NewFileStateBackend`, and
+  `NewDuckDBStateBackend` remain default-namespace constructors; named
+  namespaces use validated `memory://`, `file://`, or `duckdb://` URIs. The
+  CLI follows the same URI path as custom backend composition.
+- **DuckDB is the local analytical trajectory backend** (L4, flagged).
+  Trajectory metadata, execution cursors, and fixed entry fields use normalized
+  tables and ACID transactions. DuckDB is a single read-write-process backend,
+  so it does not advertise multi-process safety. Operations and deliveries
+  remain file sidecars and cross-store atomicity remains false.
 - **Lease management does not expose its writable registry** (L4, flagged).
   Composition roots retain the `PluginRegistry` they inject into a
   `LeaseRegistry`; lease consumers cannot bypass expiry and ownership rules
@@ -203,3 +269,47 @@
   convention). File stores reject decoded operation, delivery, and trajectory
   state that violates the in-memory domain invariants instead of importing
   corruption into a trusted store.
+- **Execution interruption preserves ownership semantics** (L2: runtime state
+  convention). Caller cancellation is a terminal cancelled execution; runtime
+  shutdown returns an interrupted execution to pending so another runtime may
+  recover it immediately.
+- **Trajectory identity is validated at the storage boundary** (L2: storage
+  boundary convention). Every store validates trajectory IDs consistently,
+  while common trajectory validation owns fork parent and parent-entry
+  identity for both newly created and persisted data.
+- **Durable execution control is part of the trajectory port** (L4, flagged).
+  Every `TrajectoryStore` fences cancellation durably alongside begin, claim,
+  renew, and commit. Backends may optionally expose analysis, but a gateway
+  never discovers missing execution control through a runtime type assertion.
+- **Runtime owns checkpoint payload interpretation** (L2: layer boundary).
+  Gateways load durable results through Runtime instead of mirroring the
+  private checkpoint JSON schema.
+- **Gateway terminal results have one durable source** (L2: state ownership).
+  Gateway workers retain only active execution handles. Terminal results are
+  decoded from trajectory checkpoints through Runtime; the gateway does not
+  keep an unbounded process-local shadow cache.
+- **Driver catalogs outlive opened resources** (L2: composition boundary).
+  Runtime builders register plugin URI drivers once, and state factories
+  capture storage drivers once. Concurrent sessions share resolution, while
+  each runtime connection and state backend remains independently owned.
+- **Etcd lease credentials have one durable owner** (L2: state ownership).
+  The lease index stores its token and renewal TTL; the instance record stores
+  discovery state, epoch, and removal intent. Etcd's native lease binding
+  associates both keys, so application JSON does not duplicate lease IDs or
+  secrets.
+- **Gateway recovery is part of the execution port** (L2: durable boundary).
+  Every execution backend implements startup recovery alongside submit, poll,
+  and cancel. The service does not silently disable recovery through an
+  optional capability assertion.
+- **Invocation roots are part of a child trajectory's recovery environment**
+  (L2: durable state ownership). Agent trajectories persist both their origin
+  invocation and its root. Recovery does not scan operation history whose
+  retention may be shorter than the trajectory it must resume.
+- **Declarative agents register specs, not behaviorless wrappers** (L2:
+  resource ownership). Agent resources carry policy only; staging clones one
+  `AgentSpec` and snapshots attach its plugin owner. Provider/tool interfaces
+  remain reserved for resources that execute behavior.
+- **Optional storage ports resolve at composition time** (L2: dependency
+  ownership). `NewRuntime` validates an advertised atomic-state capability once
+  and retains the resulting `AtomicStateBackend` port. Execution commits do not
+  repeatedly query backend metadata or rediscover the same interface.

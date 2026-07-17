@@ -25,14 +25,11 @@ type Execution struct {
 type ExecutionBackend interface {
 	CreateSession(context.Context, Session) error
 	Submit(context.Context, Session, string) (Execution, error)
+	Recover(context.Context, Session) (Execution, error)
 	Current(context.Context, Session) (Execution, error)
 	Get(context.Context, Session, string) (Execution, error)
 	Cancel(context.Context, Session, string) (Execution, error)
 	Close(context.Context) error
-}
-
-type ExecutionRecoveryBackend interface {
-	Recover(context.Context, Session) (Execution, error)
 }
 
 type ServiceConfig struct {
@@ -292,10 +289,6 @@ func (service *Service) CancelExecution(
 func (service *Service) RecoverSessions(
 	ctx context.Context,
 ) ([]Execution, error) {
-	recovery, ok := service.executions.(ExecutionRecoveryBackend)
-	if !ok {
-		return nil, nil
-	}
 	request := sdk.PageRequest{Limit: sdk.MaxPageSize}
 	var (
 		scheduled []Execution
@@ -334,7 +327,7 @@ func (service *Service) RecoverSessions(
 				))
 				continue
 			}
-			execution, err := recovery.Recover(ctx, session)
+			execution, err := service.executions.Recover(ctx, session)
 			if errors.Is(err, ErrExecutionNotFound) {
 				continue
 			}

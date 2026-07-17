@@ -2,10 +2,12 @@ package pluginhost
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -40,6 +42,8 @@ func Execute(args []string, config CommandConfig) int {
 func NewCommand(config CommandConfig) *cobra.Command {
 	var host Config
 	var logLevel, logFormat string
+	var logFile string
+	var logConsole bool
 	command := &cobra.Command{
 		Use:           config.Name,
 		Short:         config.Description,
@@ -51,9 +55,15 @@ func NewCommand(config CommandConfig) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			logger, err := logging.New(logging.Config{
-				Level: logLevel, Format: logFormat, Writer: config.Stderr,
-			})
+			var console io.Writer
+			if logConsole {
+				console = config.Stderr
+			}
+			logger, logCloser, err := logging.OpenFile(
+				logging.Config{Level: logLevel, Format: logFormat},
+				logFile,
+				console,
+			)
 			if err != nil {
 				return err
 			}
@@ -61,7 +71,7 @@ func NewCommand(config CommandConfig) *cobra.Command {
 				ServiceName: config.Name, ServiceVersion: config.Version, Logger: logger,
 			})
 			if err != nil {
-				return err
+				return errors.Join(err, logCloser.Close())
 			}
 			logger = logging.WithHandler(logger, observability.LogHandler)
 			defer func() {
@@ -70,6 +80,7 @@ func NewCommand(config CommandConfig) *cobra.Command {
 				if err := observability.Shutdown(ctx); err != nil {
 					logger.Error("shutdown OpenTelemetry", "error", err)
 				}
+				_ = logCloser.Close()
 			}()
 			host.Plugin = plugin
 			host.Logger = logger
@@ -106,13 +117,20 @@ func NewCommand(config CommandConfig) *cobra.Command {
 		&host.StorageURI,
 		"storage",
 		"",
-		"State backend URI (memory://, file://, or an application-registered scheme).",
+		"State backend URI (memory://, file://, duckdb://, or an application-registered scheme).",
 	)
 	command.Flags().StringVar(&host.TLSCertFile, "tls-cert", "", "TLS certificate PEM file.")
 	command.Flags().StringVar(&host.TLSKeyFile, "tls-key", "", "TLS private key PEM file.")
 	command.Flags().IntVar(&host.MaxMessageBytes, "max-message-bytes", 0, "Maximum gRPC message size.")
 	command.Flags().StringVar(&logLevel, "log-level", "info", "debug, info, warn, or error.")
 	command.Flags().StringVar(&logFormat, "log-format", "json", "json or text.")
+	command.Flags().StringVar(
+		&logFile,
+		"log-file",
+		defaultLogFile(config.Name),
+		"Append logs to this file.",
+	)
+	command.Flags().BoolVar(&logConsole, "log-console", false, "Also write logs to stderr.")
 	if config.AddFlags != nil {
 		config.AddFlags(command)
 	}
@@ -126,4 +144,12 @@ func NewCommand(config CommandConfig) *cobra.Command {
 		},
 	})
 	return command
+}
+
+func defaultLogFile(name string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".ag", "logs", name+".log")
+	}
+	return filepath.Join(home, ".ag", "logs", name+".log")
 }

@@ -83,6 +83,22 @@ type Registrar interface {
 	RegisterEvent(EventContract) error
 }
 
+// AgentRegistrar is an optional same-process registrar extension. RPC plugin
+// registrars intentionally do not implement it.
+type AgentRegistrar interface {
+	RegisterAgent(AgentSpec) error
+}
+
+func RegisterAgent(registrar Registrar, spec AgentSpec) error {
+	agents, ok := registrar.(AgentRegistrar)
+	if !ok {
+		return errors.New(
+			"agent registration requires a same-process runtime registrar",
+		)
+	}
+	return agents.RegisterAgent(spec)
+}
+
 type Plugin interface {
 	Manifest() Manifest
 	Install(context.Context, Registrar) error
@@ -120,6 +136,8 @@ type Source interface {
 func ProviderResource(name string) string { return "provider:" + name }
 
 func ToolResource(name string) string { return "tool:" + name }
+
+func AgentResource(name string) string { return "agent:" + name }
 
 func HookResource(name string) string { return "hook:" + name }
 

@@ -7,10 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -153,11 +154,7 @@ func buildEnvironment(root string, configured []string) ([]string, error) {
 		}
 		values[name] = value
 	}
-	names := make([]string, 0, len(values))
-	for name := range values {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(values))
 	result := make([]string, 0, len(names))
 	for _, name := range names {
 		result = append(result, name+"="+values[name])
@@ -220,25 +217,13 @@ func decodeArguments(raw json.RawMessage) (arguments, error) {
 	if err := decoder.Decode(&value); err != nil {
 		return value, fmt.Errorf("decode bash arguments: %w", err)
 	}
-	if err := ensureJSONEnd(decoder); err != nil {
-		return value, err
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return value, errors.New("bash arguments contain trailing JSON")
 	}
 	if strings.TrimSpace(value.Command) == "" {
 		return value, errors.New("command is empty")
 	}
 	return value, nil
-}
-
-func ensureJSONEnd(decoder *json.Decoder) error {
-	var trailing any
-	err := decoder.Decode(&trailing)
-	if errors.Is(err, io.EOF) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("decode trailing bash arguments: %w", err)
-	}
-	return errors.New("bash arguments contain multiple JSON values")
 }
 
 func (runner *runner) run(
@@ -318,7 +303,6 @@ type boundedBuffer struct {
 	mu        sync.Mutex
 	buffer    bytes.Buffer
 	limit     int64
-	written   int64
 	truncated bool
 }
 
@@ -330,14 +314,13 @@ func (buffer *boundedBuffer) Write(data []byte) (int, error) {
 	buffer.mu.Lock()
 	defer buffer.mu.Unlock()
 	originalLength := len(data)
-	remaining := buffer.limit - buffer.written
+	remaining := buffer.limit - int64(buffer.buffer.Len())
 	if remaining > 0 {
 		keep := int64(len(data))
 		if keep > remaining {
 			keep = remaining
 		}
 		_, _ = buffer.buffer.Write(data[:keep])
-		buffer.written += keep
 	}
 	if int64(originalLength) > remaining {
 		buffer.truncated = true

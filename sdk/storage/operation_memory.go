@@ -334,6 +334,23 @@ func (store *memoryOperationStore) List(
 	return result, nil
 }
 
+func (store *memoryOperationStore) ListByInvocationRoot(
+	ctx context.Context,
+	rootID string,
+) ([]sdk.OperationRecord, error) {
+	records, err := store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]sdk.OperationRecord, 0)
+	for _, record := range records {
+		if record.Invocation.RootID == rootID {
+			result = append(result, record)
+		}
+	}
+	return result, nil
+}
+
 func (store *memoryOperationStore) ListPage(
 	ctx context.Context,
 	request sdk.PageRequest,

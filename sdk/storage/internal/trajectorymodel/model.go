@@ -438,6 +438,10 @@ func CloneTrajectoryEnvironment(source sdk.TrajectoryEnvironment) sdk.Trajectory
 		result.Tools[index] = spec
 		result.Tools[index].Parameters = maps.Clone(spec.Parameters)
 	}
+	result.Agents = make([]sdk.AgentSpec, len(source.Agents))
+	for index, spec := range source.Agents {
+		result.Agents[index] = sdk.CloneAgentSpec(spec)
+	}
 	result.Hooks = append([]sdk.HookSpec(nil), source.Hooks...)
 	result.Subscribers = make([]sdk.SubscriberSpec, len(source.Subscribers))
 	for index, spec := range source.Subscribers {

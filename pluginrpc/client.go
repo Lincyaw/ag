@@ -450,6 +450,7 @@ func submitRemote(
 		Request: &pluginv1.OperationRequest{
 			IdempotencyKey: request.IdempotencyKey,
 			Input:          input,
+			Invocation:     toProtoInvocation(request.Invocation),
 		},
 	})
 	if err != nil {

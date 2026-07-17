@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-type discoveryTestDriver struct {
+type testPluginDriver struct {
 	scheme     string
 	references []PluginReference
 	calls      *[]string
@@ -15,9 +15,9 @@ type discoveryTestDriver struct {
 	resolve    func(PluginReference) Source
 }
 
-func (driver discoveryTestDriver) Scheme() string { return driver.scheme }
+func (driver testPluginDriver) Scheme() string { return driver.scheme }
 
-func (driver discoveryTestDriver) Resolve(
+func (driver testPluginDriver) Resolve(
 	_ context.Context,
 	reference PluginReference,
 ) (Source, error) {
@@ -27,7 +27,7 @@ func (driver discoveryTestDriver) Resolve(
 	return nil, nil
 }
 
-func (driver discoveryTestDriver) Discover(
+func (driver testPluginDriver) Discover(
 	_ context.Context,
 	query DiscoveryQuery,
 ) ([]PluginReference, error) {
@@ -40,32 +40,42 @@ func (driver discoveryTestDriver) Discover(
 	return driver.references, nil
 }
 
-type discoveryTestSource struct{}
+type testPluginSource struct{}
 
-func (discoveryTestSource) Open(context.Context) (Connection, error) {
+func (testPluginSource) Open(context.Context) (Connection, error) {
 	return nil, nil
 }
 
-func (discoveryTestSource) String() string { return "test" }
+func (testPluginSource) String() string { return "test" }
 
-func TestPluginDiscoveryPreservesAmbiguityAndOrdersDrivers(t *testing.T) {
+func TestPluginDiscoveryOrdersDriversAndIsolatesQueries(t *testing.T) {
 	t.Parallel()
+	labels := map[string]string{"environment": "production"}
 	var calls []string
+	var secondDriverLabel string
 	registry := NewPluginRegistry()
 	for _, driver := range []PluginDriver{
-		discoveryTestDriver{
+		testPluginDriver{
 			scheme: "zeta",
 			references: []PluginReference{{
-				Name: "shared", URI: "zeta://plugin", Description: "zeta source",
+				Name: "shared", URI: "zeta://plugin",
+				Labels: map[string]string{"environment": "production"},
 			}},
 			calls: &calls,
+			discover: func(query DiscoveryQuery) {
+				secondDriverLabel = query.Labels["environment"]
+			},
 		},
-		discoveryTestDriver{
+		testPluginDriver{
 			scheme: "alpha",
 			references: []PluginReference{{
-				Name: "shared", URI: "alpha://plugin", Description: "alpha source",
+				Name: "shared", URI: "alpha://plugin",
+				Labels: map[string]string{"environment": "production"},
 			}},
 			calls: &calls,
+			discover: func(query DiscoveryQuery) {
+				query.Labels["environment"] = "changed"
+			},
 		},
 	} {
 		if err := registry.RegisterDrivers(driver); err != nil {
@@ -74,38 +84,38 @@ func TestPluginDiscoveryPreservesAmbiguityAndOrdersDrivers(t *testing.T) {
 	}
 
 	got, err := registry.Discover(t.Context(), DiscoveryQuery{
-		Name: "shared", IncludeDrivers: true,
+		Name: "shared", Labels: labels, IncludeDrivers: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []PluginDescriptor{
-		{
-			Name: "shared", URI: "alpha://plugin",
-			Description: "alpha source", Scheme: "alpha",
-		},
-		{
-			Name: "shared", URI: "zeta://plugin",
-			Description: "zeta source", Scheme: "zeta",
-		},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("discovered = %#v, want %#v", got, want)
+	if len(got) != 2 ||
+		got[0].URI != "alpha://plugin" ||
+		got[1].URI != "zeta://plugin" {
+		t.Fatalf("discovered = %#v", got)
 	}
 	if !reflect.DeepEqual(calls, []string{"alpha", "zeta"}) {
 		t.Fatalf("driver call order = %v", calls)
+	}
+	if secondDriverLabel != "production" ||
+		labels["environment"] != "production" {
+		t.Fatalf(
+			"mutable query escaped boundary: second=%q caller=%#v",
+			secondDriverLabel,
+			labels,
+		)
 	}
 }
 
 func TestPluginRegistryRegistersDriversAtomically(t *testing.T) {
 	t.Parallel()
 	registry := NewPluginRegistry()
-	if err := registry.RegisterDrivers(discoveryTestDriver{scheme: "zeta"}); err != nil {
+	if err := registry.RegisterDrivers(testPluginDriver{scheme: "zeta"}); err != nil {
 		t.Fatal(err)
 	}
 	err := registry.RegisterDrivers(
-		discoveryTestDriver{scheme: "alpha"},
-		discoveryTestDriver{scheme: "zeta"},
+		testPluginDriver{scheme: "alpha"},
+		testPluginDriver{scheme: "zeta"},
 	)
 	if err == nil || !strings.Contains(err.Error(), "already registered") {
 		t.Fatalf("RegisterDrivers() error = %v", err)
@@ -116,7 +126,7 @@ func TestPluginRegistryRegistersDriversAtomically(t *testing.T) {
 	}
 }
 
-func TestPluginRegistryRejectsInvalidReferencesConsistently(t *testing.T) {
+func TestPluginRegistryRejectsInvalidReferences(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name      string
@@ -131,7 +141,7 @@ func TestPluginRegistryRejectsInvalidReferencesConsistently(t *testing.T) {
 		{
 			name: "source and URI",
 			reference: PluginReference{
-				Name: "plugin", URI: "test://plugin", Source: discoveryTestSource{},
+				Name: "plugin", URI: "test://plugin", Source: testPluginSource{},
 			},
 			want: "exactly one of Source or URI",
 		},
@@ -153,18 +163,17 @@ func TestPluginRegistryRejectsInvalidReferencesConsistently(t *testing.T) {
 			if registerErr == nil || !strings.Contains(registerErr.Error(), test.want) {
 				t.Fatalf("Register() error = %v, want containing %q", registerErr, test.want)
 			}
-
 			registry := NewPluginRegistry()
-			err := registry.RegisterDrivers(discoveryTestDriver{
+			if err := registry.RegisterDrivers(testPluginDriver{
 				scheme: "test", references: []PluginReference{test.reference},
-			})
-			if err != nil {
+			}); err != nil {
 				t.Fatal(err)
 			}
 			_, discoverErr := registry.Discover(t.Context(), DiscoveryQuery{
 				IncludeDrivers: true,
 			})
-			if discoverErr == nil || !strings.Contains(discoverErr.Error(), test.want) {
+			if discoverErr == nil ||
+				!strings.Contains(discoverErr.Error(), test.want) {
 				t.Fatalf(
 					"Discover() error = %v, want containing %q",
 					discoverErr,
@@ -199,91 +208,25 @@ func TestPluginRegistrySnapshotsNormalizedReference(t *testing.T) {
 	}
 }
 
-func TestPluginDiscoveryIsolatesMutableQueriesBetweenDrivers(t *testing.T) {
-	t.Parallel()
-	labels := map[string]string{"environment": "production"}
-	var secondDriverLabel string
-	registry := NewPluginRegistry()
-	for _, driver := range []PluginDriver{
-		discoveryTestDriver{
-			scheme: "alpha",
-			references: []PluginReference{{
-				Name: "alpha", URI: "alpha://plugin",
-				Labels: map[string]string{"environment": "production"},
-			}},
-			discover: func(query DiscoveryQuery) {
-				query.Labels["environment"] = "changed"
-			},
-		},
-		discoveryTestDriver{
-			scheme: "zeta",
-			references: []PluginReference{{
-				Name: "zeta", URI: "zeta://plugin",
-				Labels: map[string]string{"environment": "production"},
-			}},
-			discover: func(query DiscoveryQuery) {
-				secondDriverLabel = query.Labels["environment"]
-			},
-		},
-	} {
-		if err := registry.RegisterDrivers(driver); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	got, err := registry.Discover(t.Context(), DiscoveryQuery{
-		Labels: labels, IncludeDrivers: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("discovered = %#v, want both matching drivers", got)
-	}
-	if secondDriverLabel != "production" {
-		t.Fatalf("second driver label = %q, want isolated query", secondDriverLabel)
-	}
-	if labels["environment"] != "production" {
-		t.Fatalf("caller labels were mutated: %#v", labels)
-	}
-}
-
 func TestPluginRegistryFreezesDriverScheme(t *testing.T) {
 	t.Parallel()
-	var calls []string
-	alpha := &discoveryTestDriver{
+	driver := &testPluginDriver{
 		scheme: "alpha",
-		references: []PluginReference{{
-			Name: "alpha", URI: "alpha://plugin",
-		}},
-		discover: func(DiscoveryQuery) {
-			calls = append(calls, "alpha")
-		},
-	}
-	beta := &discoveryTestDriver{
-		scheme: "beta",
-		references: []PluginReference{{
-			Name: "beta", URI: "beta://plugin",
-		}},
-		discover: func(DiscoveryQuery) {
-			calls = append(calls, "beta")
+		resolve: func(PluginReference) Source {
+			return testPluginSource{}
 		},
 	}
 	registry := NewPluginRegistry()
-	for _, driver := range []PluginDriver{alpha, beta} {
-		if err := registry.RegisterDrivers(driver); err != nil {
-			t.Fatal(err)
-		}
-	}
-	alpha.scheme = "zeta"
-
-	if _, err := registry.Discover(t.Context(), DiscoveryQuery{
-		IncludeDrivers: true,
-	}); err != nil {
+	if err := registry.RegisterDrivers(driver); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(calls, []string{"alpha", "beta"}) {
-		t.Fatalf("driver call order = %v, want frozen registration order", calls)
+	driver.scheme = "zeta"
+	if _, err := registry.Resolve(t.Context(), "alpha://plugin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Resolve(t.Context(), "zeta://plugin"); err == nil ||
+		err.Error() != `no plugin driver registered for scheme "zeta"` {
+		t.Fatalf("mutated driver scheme was registered: %v", err)
 	}
 }
 
@@ -291,11 +234,11 @@ func TestPluginResolveIsolatesRegisteredLabels(t *testing.T) {
 	t.Parallel()
 	labels := map[string]string{"environment": "production"}
 	registry := NewPluginRegistry()
-	if err := registry.RegisterDrivers(discoveryTestDriver{
+	if err := registry.RegisterDrivers(testPluginDriver{
 		scheme: "test",
 		resolve: func(reference PluginReference) Source {
 			reference.Labels["environment"] = "changed"
-			return discoveryTestSource{}
+			return testPluginSource{}
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -309,13 +252,13 @@ func TestPluginResolveIsolatesRegisteredLabels(t *testing.T) {
 	if _, err := registry.Resolve(t.Context(), "plugin"); err != nil {
 		t.Fatal(err)
 	}
-	discovered, err := registry.Discover(t.Context(), DiscoveryQuery{})
+	listed, err := registry.Discover(t.Context(), DiscoveryQuery{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(discovered) != 1 ||
-		discovered[0].Labels["environment"] != "production" ||
+	if len(listed) != 1 ||
+		listed[0].Labels["environment"] != "production" ||
 		labels["environment"] != "production" {
-		t.Fatalf("registered labels changed through driver: %#v", discovered)
+		t.Fatalf("registered labels changed through driver: %#v", listed)
 	}
 }

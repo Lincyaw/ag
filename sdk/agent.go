@@ -2,116 +2,81 @@ package sdk
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 )
 
-type Role string
+// AgentSpec declares one same-process agent resource and its execution policy.
+type AgentSpec struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Provider    string `json:"provider,omitempty"`
+	System      string `json:"system,omitempty"`
+	MaxTurns    int    `json:"max_turns,omitempty"`
+	// Tools is an allowlist. Nil inherits every tool visible to the caller;
+	// a non-nil empty slice exposes no tools.
+	Tools []string `json:"tools"`
+}
+
+func CloneAgentSpec(spec AgentSpec) AgentSpec {
+	if spec.Tools != nil {
+		tools := make([]string, len(spec.Tools))
+		copy(tools, spec.Tools)
+		spec.Tools = tools
+	}
+	return spec
+}
+
+type AgentSessionMode string
 
 const (
-	RoleSystem    Role = "system"
-	RoleUser      Role = "user"
-	RoleAssistant Role = "assistant"
-	RoleTool      Role = "tool"
+	AgentSessionNew  AgentSessionMode = "new"
+	AgentSessionFork AgentSessionMode = "fork"
 )
 
-type ToolCall struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
+type AgentRequest struct {
+	Agent          string           `json:"agent"`
+	Prompt         string           `json:"prompt"`
+	SessionID      string           `json:"session_id,omitempty"`
+	Mode           AgentSessionMode `json:"mode,omitempty"`
+	IdempotencyKey string           `json:"idempotency_key,omitempty"`
+	Group          string           `json:"group,omitempty"`
+	Dependencies   []string         `json:"dependencies,omitempty"`
+	Ordinal        uint32           `json:"ordinal,omitempty"`
 }
 
-type Message struct {
-	Role       Role       `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+type AgentResult struct {
+	InvocationID string    `json:"invocation_id"`
+	SessionID    string    `json:"session_id"`
+	Output       string    `json:"output"`
+	Messages     []Message `json:"messages"`
+	Turns        int       `json:"turns"`
+	ToolCalls    int       `json:"tool_calls"`
+	Generation   uint64    `json:"generation"`
+	Cause        Cause     `json:"cause"`
 }
 
-type Usage struct {
-	InputTokens  int64 `json:"input_tokens"`
-	OutputTokens int64 `json:"output_tokens"`
+type AgentInvoker interface {
+	InvokeAgent(context.Context, AgentRequest) (AgentResult, error)
 }
 
-type ModelRequest struct {
-	Messages []Message  `json:"messages"`
-	Tools    []ToolSpec `json:"tools"`
+type agentInvokerContextKey struct{}
+
+func WithAgentInvoker(
+	ctx context.Context,
+	invoker AgentInvoker,
+) context.Context {
+	return context.WithValue(ctx, agentInvokerContextKey{}, invoker)
 }
 
-type ModelResponse struct {
-	Content      string     `json:"content,omitempty"`
-	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
-	Model        string     `json:"model,omitempty"`
-	FinishReason string     `json:"finish_reason,omitempty"`
-	Usage        Usage      `json:"usage"`
-}
-
-type ProviderSpec struct {
-	Name  string `json:"name"`
-	Model string `json:"model"`
-}
-
-type Provider interface {
-	Spec() ProviderSpec
-}
-
-type SyncProvider interface {
-	Provider
-	Complete(context.Context, ModelRequest) (ModelResponse, error)
-}
-
-type AsyncProvider interface {
-	Provider
-	SubmitCompletion(context.Context, OperationRequest) (Operation, error)
-	PollCompletion(context.Context, string, uint64) (Operation, error)
-	CancelCompletion(context.Context, string) (Operation, error)
-}
-
-type ToolSpec struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Parameters  map[string]any `json:"parameters"`
-}
-
-type ToolResult struct {
-	Content string `json:"content"`
-	IsError bool   `json:"is_error"`
-}
-
-type Tool interface {
-	Spec() ToolSpec
-}
-
-type SyncTool interface {
-	Tool
-	Call(context.Context, json.RawMessage) (ToolResult, error)
-}
-
-type AsyncTool interface {
-	Tool
-	SubmitCall(context.Context, OperationRequest) (Operation, error)
-	PollCall(context.Context, string, uint64) (Operation, error)
-	CancelCall(context.Context, string) (Operation, error)
-}
-
-type CapabilitySpec struct {
-	Name         string         `json:"name"`
-	Description  string         `json:"description"`
-	InputSchema  map[string]any `json:"input_schema"`
-	OutputSchema map[string]any `json:"output_schema"`
-}
-
-type Capability interface {
-	Spec() CapabilitySpec
-}
-
-type SyncCapability interface {
-	Capability
-	Invoke(context.Context, json.RawMessage) (json.RawMessage, error)
-}
-
-type AsyncCapability interface {
-	Capability
-	SubmitInvoke(context.Context, OperationRequest) (Operation, error)
-	PollInvoke(context.Context, string, uint64) (Operation, error)
-	CancelInvoke(context.Context, string) (Operation, error)
+func InvokeAgent(
+	ctx context.Context,
+	request AgentRequest,
+) (AgentResult, error) {
+	invoker, _ := ctx.Value(agentInvokerContextKey{}).(AgentInvoker)
+	if invoker == nil {
+		return AgentResult{}, errors.New(
+			"agent invocation is unavailable outside a structured runtime call",
+		)
+	}
+	return invoker.InvokeAgent(ctx, request)
 }

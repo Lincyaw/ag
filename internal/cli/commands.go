@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
 	appconfig "github.com/lincyaw/ag/internal/config"
-	"github.com/lincyaw/ag/internal/logging"
 	pluginregistry "github.com/lincyaw/ag/registry"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
@@ -43,7 +43,7 @@ func (application *app) runCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer running.close(application.stderr)
+			defer running.close()
 
 			sessionConfig := agentruntime.SessionConfig{
 				ID:       sessionID,
@@ -112,11 +112,15 @@ func (application *app) pluginCommand() *cobra.Command {
 		Short: "List explicitly configured plugins",
 		Args:  noArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			registry, _, err := application.configuredRegistry(command)
+			catalog, _, logFile, err := application.configuredRegistry(command)
 			if err != nil {
 				return err
 			}
-			descriptors, err := registry.Discover(command.Context(), sdk.DiscoveryQuery{})
+			defer logFile.Close()
+			descriptors, err := catalog.Discover(
+				command.Context(),
+				sdk.DiscoveryQuery{},
+			)
 			if err != nil {
 				return err
 			}
@@ -217,13 +221,15 @@ func (application *app) pluginCommand() *cobra.Command {
 		Short: "Describe one local or remote plugin",
 		Args:  exactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			registry, _, err := application.configuredRegistry(command)
+			catalog, plugins, logFile, err := application.configuredRegistry(command)
 			if err != nil {
 				return err
 			}
-			source, err := application.resolvePluginSelection(
-				command,
-				registry,
+			defer logFile.Close()
+			source, err := resolvePluginSelection(
+				command.Context(),
+				catalog,
+				plugins,
 				args[0],
 			)
 			if err != nil {
@@ -243,109 +249,65 @@ func (application *app) pluginCommand() *cobra.Command {
 
 func (application *app) configuredRegistry(
 	command *cobra.Command,
-) (*sdk.PluginRegistry, []string, error) {
+) (*sdk.PluginRegistry, appconfig.Plugins, io.Closer, error) {
 	loaded, err := application.load(command)
 	if err != nil {
-		return nil, nil, err
+		return nil, appconfig.Plugins{}, nil, err
 	}
-	logger, err := logging.New(logging.Config{
-		Level: loaded.Config.Logging.Level, Format: loaded.Config.Logging.Format,
-		Writer: application.stderr,
-	})
+	logger, logFile, err := openConfiguredLogger(
+		loaded.Config.Logging,
+		application.stderr,
+	)
 	if err != nil {
-		return nil, nil, err
+		return nil, appconfig.Plugins{}, nil, err
 	}
-	return buildRegistry(
+	catalog, _, err := buildRegistry(
 		command.Context(),
 		loaded.Config,
 		logger,
 		nil,
 		nil,
 	)
+	if err != nil {
+		return nil, appconfig.Plugins{}, nil, errors.Join(
+			err,
+			logFile.Close(),
+		)
+	}
+	return catalog, loaded.Config.Plugins, logFile, nil
 }
 
-func (application *app) resolvePluginSelection(
-	command *cobra.Command,
+func resolvePluginSelection(
+	ctx context.Context,
 	catalog *sdk.PluginRegistry,
+	config appconfig.Plugins,
 	nameOrURI string,
 ) (sdk.Source, error) {
-	source, err := resolvePlugin(
-		command.Context(),
-		catalog,
-		nameOrURI,
-	)
+	source, err := catalog.Resolve(ctx, nameOrURI)
 	if err == nil || strings.Contains(nameOrURI, "://") {
 		return source, err
 	}
-	loaded, loadErr := application.load(command)
-	if loadErr != nil {
-		return nil, loadErr
-	}
-	if strings.TrimSpace(loaded.Config.Plugins.RegistryURI) == "" {
+	if strings.TrimSpace(config.RegistryURI) == "" {
 		return nil, err
 	}
 	directory, openErr := openPluginDirectory(
-		command.Context(),
-		loaded.Config.Plugins,
+		ctx,
+		config,
 	)
 	if openErr != nil {
 		return nil, openErr
 	}
 	instance, selectErr := selectPluginInstance(
-		command.Context(),
+		ctx,
 		directory,
-		loaded.Config.Plugins.RegistryNamespace,
+		config.RegistryNamespace,
 		nameOrURI,
 	)
 	closeErr := directory.Close(context.Background())
 	if selectErr != nil || closeErr != nil {
 		return nil, errors.Join(selectErr, closeErr)
 	}
-	return catalog.Resolve(command.Context(), instance.URI)
-}
-
-func resolvePlugin(
-	ctx context.Context,
-	registry *sdk.PluginRegistry,
-	nameOrURI string,
-) (sdk.Source, error) {
-	source, err := registry.Resolve(ctx, nameOrURI)
-	if err == nil || strings.Contains(nameOrURI, "://") {
-		return source, err
-	}
-	descriptors, discoverErr := registry.Discover(ctx, sdk.DiscoveryQuery{
-		Name: nameOrURI, IncludeDrivers: true,
-	})
-	if discoverErr != nil {
-		return nil, discoverErr
-	}
-	if len(descriptors) == 0 {
-		return nil, err
-	}
-	if len(descriptors) > 1 {
-		matches := make([]string, 0, len(descriptors))
-		for _, descriptor := range descriptors {
-			matches = append(matches, descriptor.URI)
-		}
-		return nil, fmt.Errorf(
-			"plugin %q is ambiguous; matches: %s",
-			nameOrURI,
-			strings.Join(matches, ", "),
-		)
-	}
-	if descriptors[0].URI == "" {
-		return nil, fmt.Errorf(
-			"discovered plugin %q has no resolvable URI",
-			nameOrURI,
-		)
-	}
-	if registerErr := registry.Register(sdk.PluginReference{
-		Name: descriptors[0].Name, URI: descriptors[0].URI,
-		Description: descriptors[0].Description,
-	}); registerErr != nil {
-		return nil, registerErr
-	}
-	return registry.Resolve(ctx, nameOrURI)
+	return catalog.Resolve(ctx, instance.URI)
 }
 
 func (application *app) trajectoryCommand() *cobra.Command {
@@ -407,13 +369,14 @@ func (application *app) trajectoryCommand() *cobra.Command {
 			}
 			defer backend.Close(context.Background())
 			store := backend.Trajectories()
-			logger, err := logging.New(logging.Config{
-				Level: loaded.Config.Logging.Level, Format: loaded.Config.Logging.Format,
-				Writer: application.stderr,
-			})
+			logger, logFile, err := openConfiguredLogger(
+				loaded.Config.Logging,
+				application.stderr,
+			)
 			if err != nil {
 				return err
 			}
+			defer logFile.Close()
 			runtime, err := agentruntime.NewRuntime(
 				agentruntime.RuntimeConfig{
 					Logger:           logger,
@@ -452,6 +415,39 @@ func (application *app) stateBackend(
 	}
 	backend, err := openStateBackend(command.Context(), loaded.Config)
 	return backend, loaded, err
+}
+
+func (application *app) invocationCommand() *cobra.Command {
+	command := &cobra.Command{
+		Use:   "invocation",
+		Short: "Inspect durable provider, tool, agent, and workflow calls",
+	}
+	show := &cobra.Command{
+		Use:   "show <root-invocation-id>",
+		Short: "Show one causal invocation graph",
+		Args:  exactArgs(1),
+		RunE: func(
+			command *cobra.Command,
+			args []string,
+		) error {
+			backend, _, err := application.stateBackend(command)
+			if err != nil {
+				return err
+			}
+			defer backend.Close(context.Background())
+			graph, err := sdk.LoadInvocationGraph(
+				command.Context(),
+				backend.Operations(),
+				args[0],
+			)
+			if err != nil {
+				return err
+			}
+			return application.writeInvocationGraph(graph)
+		},
+	}
+	command.AddCommand(show)
+	return command
 }
 
 func (application *app) stateCommand() *cobra.Command {

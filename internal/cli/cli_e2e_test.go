@@ -186,7 +186,8 @@ enabled = false
 }
 
 func TestCLIDefaultHumanOutputAndExplicitJSONContract(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	t.Setenv("OPENAI_API_KEY", "cli-test-key")
 	server := httptest.NewServer(http.HandlerFunc(func(
 		writer http.ResponseWriter,
@@ -220,6 +221,16 @@ func TestCLIDefaultHumanOutputAndExplicitJSONContract(t *testing.T) {
 	if json.Valid([]byte(human.stdout)) {
 		t.Fatalf("default output unexpectedly became JSON: %q", human.stdout)
 	}
+	if human.stderr != "" {
+		t.Fatalf("default runtime logs leaked to stderr: %q", human.stderr)
+	}
+	logs, err := os.ReadFile(filepath.Join(home, ".ag", "logs", "ag.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logs), `"msg":"plugin mounted"`) {
+		t.Fatalf("default log file missing runtime records: %q", logs)
+	}
 
 	config := executeCLI(t, "--otel=false", "config", "show")
 	for _, expected := range []string{
@@ -238,6 +249,21 @@ func TestCLIDefaultHumanOutputAndExplicitJSONContract(t *testing.T) {
 	decodeJSON(t, version.stdout, &versionOutput)
 	if versionOutput["version"] != "test-version" {
 		t.Fatalf("version JSON = %#v", versionOutput)
+	}
+
+	logFile := filepath.Join(t.TempDir(), "custom.log")
+	logConfig := executeCLI(t,
+		"--log-file", logFile,
+		"--log-console",
+		"config", "show", "-o", "json",
+	)
+	var effective map[string]any
+	decodeJSON(t, logConfig.stdout, &effective)
+	effectiveConfig := effective["config"].(map[string]any)
+	effectiveLogging := effectiveConfig["logging"].(map[string]any)
+	if effectiveLogging["file"] != logFile ||
+		effectiveLogging["console"] != true {
+		t.Fatalf("effective logging config = %#v", effectiveLogging)
 	}
 
 	var stdout, stderr bytes.Buffer

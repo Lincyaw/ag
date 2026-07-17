@@ -48,16 +48,12 @@ type etcdDirectory struct {
 
 type etcdInstanceRecord struct {
 	PluginInstance
-	LeaseID    string     `json:"lease_id"`
-	Token      string     `json:"token"`
-	TTLSeconds int64      `json:"ttl_seconds"`
-	Removal    ChangeKind `json:"removal,omitempty"`
+	Removal ChangeKind `json:"removal,omitempty"`
 }
 
 type etcdLeaseIndex struct {
 	Key        InstanceKey `json:"key"`
 	Token      string      `json:"token"`
-	Epoch      uint64      `json:"epoch"`
 	TTLSeconds int64       `json:"ttl_seconds"`
 }
 
@@ -179,13 +175,9 @@ func (directory *etcdDirectory) Register(
 				ExpiresAt:          expiresAt,
 				Epoch:              epoch,
 			},
-			LeaseID:    leaseID,
-			Token:      token,
-			TTLSeconds: ttlSeconds,
 		}
 		index := etcdLeaseIndex{
-			Key: key, Token: token, Epoch: epoch,
-			TTLSeconds: ttlSeconds,
+			Key: key, Token: token, TTLSeconds: ttlSeconds,
 		}
 		recordJSON, err := json.Marshal(record)
 		if err != nil {
@@ -351,7 +343,7 @@ func (directory *etcdDirectory) Renew(
 		return PluginLease{
 			ID: credential.ID, Token: credential.Token,
 			Key: index.Key, ExpiresAt: record.ExpiresAt,
-			Epoch: index.Epoch,
+			Epoch: record.Epoch,
 		}, nil
 	}
 	return directory.replaceLease(
@@ -777,8 +769,6 @@ func (directory *etcdDirectory) replaceLease(
 	}
 	newLeaseID := strconv.FormatInt(int64(grant.ID), 10)
 	now := directory.clock().UTC()
-	record.LeaseID = newLeaseID
-	record.TTLSeconds = ttlSeconds
 	record.UpdatedAt = now
 	record.ExpiresAt = now.Add(
 		time.Duration(grant.TTL) * time.Second,
@@ -851,7 +841,7 @@ func (directory *etcdDirectory) replaceLease(
 	return PluginLease{
 		ID: newLeaseID, Token: credential.Token,
 		Key: index.Key, ExpiresAt: record.ExpiresAt,
-		Epoch: index.Epoch,
+		Epoch: record.Epoch,
 	}, nil
 }
 
@@ -893,6 +883,14 @@ func (directory *etcdDirectory) loadLease(
 		return etcdLeaseIndex{}, 0, etcdInstanceRecord{}, 0,
 			fmt.Errorf("%w: %s", ErrLeaseFenced, credential.ID)
 	}
+	leaseID, err := parseEtcdLeaseID(credential.ID)
+	if err != nil {
+		return etcdLeaseIndex{}, 0, etcdInstanceRecord{}, 0, err
+	}
+	if clientv3.LeaseID(indexResponse.Kvs[0].Lease) != leaseID {
+		return etcdLeaseIndex{}, 0, etcdInstanceRecord{}, 0,
+			fmt.Errorf("%w: %s", ErrLeaseFenced, credential.ID)
+	}
 	instanceResponse, err := directory.client.Get(
 		ctx,
 		directory.instancePath(index.Key),
@@ -913,9 +911,7 @@ func (directory *etcdDirectory) loadLease(
 		return etcdLeaseIndex{}, 0, etcdInstanceRecord{}, 0,
 			fmt.Errorf("decode etcd leased plugin instance: %w", err)
 	}
-	if record.LeaseID != credential.ID ||
-		record.Epoch != index.Epoch ||
-		!validLeaseToken(record.Token, credential.Token) {
+	if clientv3.LeaseID(instanceResponse.Kvs[0].Lease) != leaseID {
 		return etcdLeaseIndex{}, 0, etcdInstanceRecord{}, 0,
 			fmt.Errorf("%w: %s", ErrLeaseFenced, credential.ID)
 	}

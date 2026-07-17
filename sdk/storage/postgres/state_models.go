@@ -10,8 +10,6 @@ var (
 	validateOperationTransition = operationmodel.ValidateTransition
 	cloneOperationRecord        = operationmodel.CloneRecord
 	sameOperationSubmission     = operationmodel.SameSubmission
-	marshalOptionalInvocation   = operationmodel.MarshalOptionalInvocation
-	unmarshalOptionalInvocation = operationmodel.UnmarshalOptionalInvocation
 
 	validateNewDelivery    = deliverymodel.ValidateNew
 	sameDeliveryIdentity   = deliverymodel.SameIdentity

@@ -3,9 +3,11 @@ package logging
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"go.opentelemetry.io/otel/trace"
@@ -88,6 +90,37 @@ func New(config Config) (*slog.Logger, error) {
 		return nil, errors.New(`log format must be "json" or "text"`)
 	}
 	return slog.New(traceHandler{Handler: handler}), nil
+}
+
+func OpenFile(
+	config Config,
+	path string,
+	console io.Writer,
+) (*slog.Logger, io.Closer, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, nil, errors.New("log file path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, nil, fmt.Errorf("create log directory: %w", err)
+	}
+	file, err := os.OpenFile(
+		path,
+		os.O_APPEND|os.O_CREATE|os.O_WRONLY,
+		0o600,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open log file: %w", err)
+	}
+	config.Writer = file
+	if console != nil {
+		config.Writer = io.MultiWriter(file, console)
+	}
+	logger, err := New(config)
+	if err != nil {
+		return nil, nil, errors.Join(err, file.Close())
+	}
+	return logger, file, nil
 }
 
 func parseLevel(raw string) (slog.Level, error) {

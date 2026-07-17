@@ -32,6 +32,7 @@ func (server *server) submitStored(
 		Resource:         resource,
 		ResourceRevision: server.resourceRevision(kind, resource),
 		Input:            request.Input,
+		Invocation:       sdk.CloneInvocation(request.Invocation),
 	})
 	if err != nil {
 		return sdk.Operation{}, err
@@ -196,6 +197,10 @@ func (server *server) executeStored(parent context.Context, id string) {
 		)
 		return
 	}
+	operationContext = sdk.WithInvocation(
+		operationContext,
+		record.Invocation,
+	)
 	token := record.Execution.Token
 	server.cancelMu.Lock()
 	server.operationCancels[id] = cancel

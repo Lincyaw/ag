@@ -165,9 +165,22 @@ message Effect {
   Action action = 3;
 }
 
+message Invocation {
+  string id = 1;
+  string root_id = 2;
+  string parent_id = 3;
+  string group_id = 4;
+  string session_id = 5;
+  string target_session_id = 6;
+  string execution_id = 7;
+  repeated string dependencies = 8;
+  uint32 ordinal = 9;
+}
+
 message OperationRequest {
   string idempotency_key = 1;
   google.protobuf.Struct input = 2;
+  Invocation invocation = 3;
 }
 
 message SubmitOperationRequest {
@@ -322,8 +335,8 @@ message ListRegistrationsRequest {
 }
 
 message ListRegistrationsResponse {
-  // Deprecated compatibility projection. New clients should use instances.
-  repeated Registration registrations = 1;
+  reserved 1;
+  reserved "registrations";
   string next_page_token = 2;
   uint64 revision = 3;
   repeated PluginInstance instances = 4;

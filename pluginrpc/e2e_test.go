@@ -26,9 +26,15 @@ func (provider *e2eProvider) Spec() sdk.ProviderSpec {
 }
 
 func (provider *e2eProvider) Complete(
-	_ context.Context,
+	ctx context.Context,
 	request sdk.ModelRequest,
 ) (sdk.ModelResponse, error) {
+	if invocation, ok := sdk.InvocationFromContext(ctx); !ok ||
+		invocation.ID == "" {
+		return sdk.ModelResponse{}, errors.New(
+			"remote provider received no invocation context",
+		)
+	}
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	provider.calls++
@@ -93,9 +99,15 @@ func (e2eCapability) Invoke(
 }
 
 func (e2eTool) Call(
-	_ context.Context,
+	ctx context.Context,
 	arguments json.RawMessage,
 ) (sdk.ToolResult, error) {
+	if invocation, ok := sdk.InvocationFromContext(ctx); !ok ||
+		invocation.ID == "" {
+		return sdk.ToolResult{}, errors.New(
+			"remote tool received no invocation context",
+		)
+	}
 	var input struct {
 		Value string `json:"value"`
 	}
@@ -170,9 +182,10 @@ func TestRemotePluginRealTCPRunsSessionHookToolAndSubscriber(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	plugin := newE2EPlugin()
+	remoteOperations := sdkstorage.NewMemoryOperationStore()
 	serverAdapter, err := NewServer(ctx, ServerConfig{
 		Plugin:       plugin,
-		Operations:   sdkstorage.NewMemoryOperationStore(),
+		Operations:   remoteOperations,
 		Inbox:        sdkstorage.NewMemoryDeliveryStore(),
 		InboxPoll:    time.Millisecond,
 		InboxWorkers: 2,
@@ -265,6 +278,35 @@ func TestRemotePluginRealTCPRunsSessionHookToolAndSubscriber(t *testing.T) {
 	}
 	if result.Output != "remote-finished" || result.Turns != 2 || result.ToolCalls != 1 {
 		t.Fatalf("remote result = %#v", result)
+	}
+	records, err := remoteOperations.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("remote operation records = %#v", records)
+	}
+	rootID := records[0].Invocation.RootID
+	for _, record := range records {
+		if record.Invocation.ID == "" ||
+			record.Invocation.RootID != rootID ||
+			record.Invocation.SessionID != session.ID() {
+			t.Fatalf(
+				"remote invocation lineage = %#v",
+				record.Invocation,
+			)
+		}
+	}
+	graph, err := sdk.LoadInvocationGraph(
+		ctx,
+		remoteOperations,
+		rootID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.Operations) != 3 {
+		t.Fatalf("remote invocation graph = %#v", graph)
 	}
 	capabilityOutput, err := runtime.InvokeCapability(ctx, "remote-state", []byte(`{"value":"shared"}`))
 	if err != nil {

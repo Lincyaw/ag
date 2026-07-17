@@ -489,7 +489,4 @@ func closeExecutionHost(
 	return result
 }
 
-var (
-	_ ExecutionBackend         = (*runtimeExecutionBackend)(nil)
-	_ ExecutionRecoveryBackend = (*runtimeExecutionBackend)(nil)
-)
+var _ ExecutionBackend = (*runtimeExecutionBackend)(nil)

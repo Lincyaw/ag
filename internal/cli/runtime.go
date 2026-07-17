@@ -30,6 +30,8 @@ import (
 type runningRuntime struct {
 	runtime   *agentruntime.Runtime
 	telemetry *telemetry.Runtime
+	logger    *slog.Logger
+	logFile   io.Closer
 }
 
 func startRuntime(
@@ -38,9 +40,7 @@ func startRuntime(
 	stderr io.Writer,
 	version string,
 ) (*runningRuntime, error) {
-	logger, err := logging.New(logging.Config{
-		Level: config.Logging.Level, Format: config.Logging.Format, Writer: stderr,
-	})
+	logger, logFile, err := openConfiguredLogger(config.Logging, stderr)
 	if err != nil {
 		return nil, fmt.Errorf("configure logging: %w", err)
 	}
@@ -48,13 +48,20 @@ func startRuntime(
 		ServiceName: "ag", ServiceVersion: version, Logger: logger,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("configure OpenTelemetry: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("configure OpenTelemetry: %w", err),
+			logFile.Close(),
+		)
 	}
 	logger = logging.WithHandler(logger, observability.LogHandler)
 	cleanupTelemetry := func(cause error) (*runningRuntime, error) {
 		closeCtx, cancel := closeContext()
 		defer cancel()
-		return nil, errors.Join(cause, observability.Shutdown(closeCtx))
+		return nil, errors.Join(
+			cause,
+			observability.Shutdown(closeCtx),
+			logFile.Close(),
+		)
 	}
 	storage, err := openStateBackend(ctx, config)
 	if err != nil {
@@ -73,7 +80,10 @@ func startRuntime(
 		cancel()
 		return cleanupTelemetry(errors.Join(err, closeErr))
 	}
-	running := &runningRuntime{runtime: runtime, telemetry: observability}
+	running := &runningRuntime{
+		runtime: runtime, telemetry: observability,
+		logger: logger, logFile: logFile,
+	}
 	registry, names, err := buildRegistry(
 		ctx,
 		config,
@@ -82,17 +92,17 @@ func startRuntime(
 		observability.Meter,
 	)
 	if err != nil {
-		running.close(stderr)
+		running.close()
 		return nil, err
 	}
 	for _, name := range names {
 		source, resolveErr := registry.Resolve(ctx, name)
 		if resolveErr != nil {
-			running.close(stderr)
+			running.close()
 			return nil, fmt.Errorf("resolve plugin %q: %w", name, resolveErr)
 		}
 		if _, err := runtime.Mount(ctx, source); err != nil {
-			running.close(stderr)
+			running.close()
 			return nil, fmt.Errorf("mount plugin %q: %w", name, err)
 		}
 	}
@@ -133,7 +143,7 @@ func openStateBackend(
 	return sdkstorage.NewDefaultStorageRegistry().Open(ctx, rawURI)
 }
 
-func (running *runningRuntime) close(stderr io.Writer) {
+func (running *runningRuntime) close() {
 	if running == nil {
 		return
 	}
@@ -151,8 +161,11 @@ func (running *runningRuntime) close(stderr io.Writer) {
 		err = errors.Join(err, running.telemetry.Shutdown(ctx))
 		cancel()
 	}
-	if err != nil {
-		fmt.Fprintf(stderr, "ag: shutdown: %v\n", err)
+	if err != nil && running.logger != nil {
+		running.logger.Error("runtime shutdown failed", "error", err)
+	}
+	if running.logFile != nil {
+		_ = running.logFile.Close()
 	}
 }
 

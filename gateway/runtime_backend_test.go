@@ -106,7 +106,7 @@ func TestRuntimeExecutionBackendRecoversPendingExecution(t *testing.T) {
 		root,
 		&gatewayTestProvider{},
 	)
-	recovered, err := backend.(ExecutionRecoveryBackend).Recover(
+	recovered, err := backend.Recover(
 		t.Context(),
 		session,
 	)
@@ -192,7 +192,7 @@ func TestRuntimeExecutionBackendClosePreservesExecutionForRecovery(
 		root,
 		&gatewayTestProvider{},
 	)
-	if _, err := recoveredBackend.(ExecutionRecoveryBackend).Recover(
+	if _, err := recoveredBackend.Recover(
 		t.Context(),
 		session,
 	); err != nil {

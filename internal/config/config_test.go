@@ -140,3 +140,20 @@ func TestDefaultGatewayConfigurationUsesDotAG(t *testing.T) {
 		t.Fatalf("gateway defaults = %#v", loaded.Config.Gateway)
 	}
 }
+
+func TestDefaultLoggingUsesFileWithoutConsole(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENTM_CONFIG", "")
+	loaded, err := Load(LoadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Config.Logging.File !=
+		filepath.Join(home, ".ag", "logs", "ag.log") {
+		t.Fatalf("log file = %q", loaded.Config.Logging.File)
+	}
+	if loaded.Config.Logging.Console {
+		t.Fatal("console logging is enabled by default")
+	}
+}

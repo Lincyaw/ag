@@ -1,3 +1,5 @@
+// Package storage provides reference infrastructure adapters for the durable
+// state ports defined by sdk. Agent execution policy remains in sdk/runtime.
 package storage
 
 import (

@@ -75,14 +75,16 @@ func (application *app) serveRegistry(
 	ctx context.Context,
 	config appconfig.Config,
 ) (returnErr error) {
-	logger, err := logging.New(logging.Config{
-		Level:  config.Logging.Level,
-		Format: config.Logging.Format,
-		Writer: application.stderr,
-	})
+	logger, logFile, err := openConfiguredLogger(
+		config.Logging,
+		application.stderr,
+	)
 	if err != nil {
 		return fmt.Errorf("configure logging: %w", err)
 	}
+	defer func() {
+		returnErr = errors.Join(returnErr, logFile.Close())
+	}()
 	observability, err := telemetry.Setup(ctx, telemetry.Config{
 		ServiceName:    "ag-registry",
 		ServiceVersion: application.version,

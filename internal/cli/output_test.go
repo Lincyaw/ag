@@ -80,6 +80,34 @@ func TestHumanResourceRenderersExposeUsefulOperationalFields(t *testing.T) {
 			},
 		},
 		{
+			name: "invocation graph",
+			render: func(application *app) error {
+				return application.writeInvocationGraph(
+					sdk.InvocationGraph{
+						RootID: "root-1",
+						Operations: []sdk.OperationRecord{{
+							Operation: sdk.Operation{
+								State: sdk.OperationSucceeded,
+							},
+							Kind:     sdk.OperationKindAgent,
+							Resource: "researcher",
+							Invocation: sdk.Invocation{
+								ID:              "agent-1",
+								ParentID:        "tool-1",
+								GroupID:         "group-1",
+								SessionID:       "root-session",
+								TargetSessionID: "child-session",
+							},
+						}},
+					},
+				)
+			},
+			expected: []string{
+				"Invocation root:", "root-1", "researcher",
+				"tool-1", "child-session",
+			},
+		},
+		{
 			name: "rollback",
 			render: func(application *app) error {
 				return application.writeRollback(rollbackOutput{

@@ -69,3 +69,35 @@ func TestManifestAPIRangeRoundTripsThroughProtocol(t *testing.T) {
 		t.Fatalf("manifest round trip = %#v, want %#v", roundTripped, manifest)
 	}
 }
+
+func TestInvocationRoundTripsThroughProtocol(t *testing.T) {
+	t.Parallel()
+	invocation := sdk.Invocation{
+		ID:              "agent-call",
+		RootID:          "root-call",
+		ParentID:        "tool-call",
+		GroupID:         "agent-group",
+		SessionID:       "root-session",
+		TargetSessionID: "child-session",
+		ExecutionID:     "root-execution",
+		Dependencies:    []string{"previous-agent"},
+		Ordinal:         2,
+	}
+	roundTripped := fromProtoInvocation(
+		toProtoInvocation(invocation),
+	)
+	if !reflect.DeepEqual(roundTripped, invocation) {
+		t.Fatalf(
+			"invocation round trip = %#v, want %#v",
+			roundTripped,
+			invocation,
+		)
+	}
+	roundTripped.Dependencies[0] = "mutated"
+	if invocation.Dependencies[0] != "previous-agent" {
+		t.Fatal("invocation conversion aliased dependencies")
+	}
+	if converted := toProtoInvocation(sdk.Invocation{}); converted != nil {
+		t.Fatalf("zero invocation converted to %#v", converted)
+	}
+}

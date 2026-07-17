@@ -18,7 +18,8 @@ The kernel owns only mechanisms that cannot be moved into a plugin:
 - immutable registry snapshots and generation publication;
 - transactional plugin mount and ownership-based unmount;
 - deterministic hook dispatch;
-- the provider/tool agent loop;
+- the recursive provider/tool/agent invocation loop;
+- structured sibling concurrency and workflow dependency scheduling;
 - context cancellation and lifecycle;
 - durable trajectory commit, restore, fork, and rollback mechanisms;
 - complete lifecycle events needed by optional observability projections.
@@ -54,12 +55,18 @@ standalone plugins -> versioned plugin protocol
 The package layout makes those dependency layers visible:
 
 ```text
-sdk/*.go           data contracts and ports only
-sdk/runtime/       execution, sessions, dispatch, and recovery
-sdk/storage/       memory/file implementations and storage URI drivers
-pluginrpc/         protobuf transport adapters
-plugins/           optional plugin implementations
+sdk/*.go                         shared domain language and ports
+sdk/runtime/                     public agent-execution facade
+sdk/runtime/internal/durability/ checkpoint and restore domain rules
+sdk/storage/                     durability infrastructure adapters
+registry/                        plugin discovery bounded context
+gateway/                         user-session bounded context
+pluginrpc/                       protobuf transport adapters
+plugins/                         optional resource implementations
 ```
+
+See [architecture.md](architecture.md) for the context map, application entry
+points, and dependency rules.
 
 Presenters compose `sdk/runtime` with SDK ports. Plugins implement the
 versioned protocol. In-process Go plugins may use public SDK interfaces as a
@@ -91,8 +98,8 @@ type StorageDriver interface {
 ```
 
 Applications can register `postgres://`, `s3://`, network, or other drivers
-with `StorageRegistry` without changing the runtime. `memory://` and `file://`
-are reference drivers in `sdk/storage`.
+with `StorageRegistry` without changing the runtime. `memory://`, `file://`,
+and `duckdb://` are built-in drivers in `sdk/storage`.
 
 Storage is a bootstrap extension rather than an ordinary runtime plugin. The
 runtime needs its source of truth before it can recover operations, load a
@@ -111,6 +118,20 @@ replacement, restrictive permissions, namespace partitions, pagination, and
 retention cleanup. It still rewrites whole JSON state files and does not provide
 one transaction across trajectory, operation, and delivery state; large or
 distributed deployments should provide a database/object/network backend.
+
+The built-in DuckDB backend stores trajectory metadata, execution cursors, and
+immutable entries in normalized tables. `BeginExecution` and
+`CommitExecution` are ACID SQL transactions, while execution, operation,
+provider, tool, correlation, kind, and time fields are native indexed columns.
+`TrajectoryAnalyzer.AnalyzeEntries` exposes bounded fixed-field extraction
+without parsing payload JSON. Operations and named delivery queues currently
+remain durable file-backed sidecars, so the backend reports
+`AtomicState=false`.
+
+DuckDB is intended for one read-write agent host process with concurrent
+in-process readers. It reports `MultiProcessSafe=false`: multiple independent
+writer processes must not open the same native DuckDB file. A distributed
+deployment still needs a network database or service-backed storage driver.
 
 `NewRuntime` requires a `StateBackend`; selecting memory, file, or an external
 driver is an application composition decision. A successful construction
@@ -203,6 +224,7 @@ Contribution resource IDs are stable strings:
 ```text
 provider:<name>
 tool:<name>
+agent:<name>        # same-process extension
 hook:<name>
 capability:<name>
 event:<name>
@@ -217,6 +239,7 @@ The initial contribution kinds are:
 
 - `Provider`: model completion;
 - `Tool`: JSON-schema-described operation;
+- `Agent`: a declarative same-process child-agent environment;
 - `Hook`: synchronous policy effect required by the current boundary;
 - `Subscriber`: passive asynchronous event consumer;
 - `Capability`: generic JSON request/response operation;
@@ -224,6 +247,14 @@ The initial contribution kinds are:
 
 Provider and Tool are specialized capabilities because the agent loop needs
 their typed contracts directly.
+
+`AgentRegistrar` is an optional local registrar extension rather than part of
+the cross-process `Registrar` contract. A Go plugin registers an agent with
+`sdk.RegisterAgent(registrar, spec)`. This succeeds for an in-process
+runtime staging registrar and fails explicitly for an RPC registrar. Agent
+callbacks are intentionally same-process in API v1; providers and tools used by
+that agent may still be local or RPC resources already mounted in the inherited
+snapshot.
 
 ## Transactional mount and unmount
 
@@ -351,14 +382,15 @@ an asynchronous resource backed by `OperationStore`; the loop never invokes
 those methods directly. Native async plugins retain their own Submit/Poll/Cancel
 implementation. Short control hooks are the only synchronous plugin path.
 
-The host records the provider/tool request and terminal result in trajectory;
-the operation idempotency key is the request trajectory entry ID. Intermediate
-operation state lives in `OperationStore`, so a restarted local or standalone
-worker can re-run a non-terminal operation when it is submitted again. The v1
-CLI polls while a run is active. A detached run worker and a streaming `Watch`
-optimization may later resume a suspended trajectory without changing this
-operation contract. Cancellation is best-effort once an external side effect
-has started.
+The host records the provider/tool request and terminal result in trajectory.
+The operation idempotency key is derived from the trajectory execution ID and
+logical step (provider turn or tool call), so it remains stable when recovery
+creates a new immutable attempt entry. Intermediate operation state lives in
+`OperationStore`, so a restarted local or standalone worker can re-run a
+non-terminal operation when it is submitted again. Poll remains the portable
+baseline; a streaming `Watch` optimization may reduce latency without changing
+this contract. Cancellation is best-effort once an external side effect has
+started.
 
 Workers claim operations with a time-bounded lease and unique fencing token,
 renew the lease while working, and must present the token to complete. A worker
@@ -373,6 +405,72 @@ plugin version cannot inherit an incompatible old result. Receivers may execute
 a command more than once after a crash unless the concrete effect is idempotent
 or uses a plugin-owned transaction. The SDK therefore guarantees at-least-once
 execution, not exactly-once effects.
+
+## Invocation graph and structured concurrency
+
+Every provider, tool, agent, workflow, and capability operation may carry an
+`Invocation` envelope:
+
+```go
+type Invocation struct {
+    ID              string
+    RootID          string
+    ParentID        string
+    GroupID         string
+    SessionID       string
+    TargetSessionID string
+    ExecutionID     string
+    Dependencies    []string
+    Ordinal         uint32
+}
+```
+
+`ID` is stable across retries. `ParentID` is causal ownership,
+`Dependencies` are explicit DAG edges, and `GroupID` identifies siblings
+submitted as one structured-concurrency group. `SessionID`/`ExecutionID`
+identify the trajectory execution that issued the call; an agent invocation
+also records its child in `TargetSessionID`. The envelope is persisted in
+`OperationRecord`, propagated through `OperationRequest`, and available to
+in-process plugin code through `sdk.InvocationFromContext`. The existing RPC
+operation request carries the same optional envelope so a remote provider/tool
+store does not lose graph lineage; this is metadata propagation, not an agent
+host callback.
+
+When one model response contains multiple tool calls, the runtime prepares all
+calls against the same immutable snapshot, submits every sibling, awaits them
+concurrently, and finalizes hooks, trajectory entries, tool messages, and
+returned results in the model's original order. Tool execution therefore does
+not serialize independent calls, while nondeterministic completion timing does
+not change the next model request. Caller cancellation is propagated to every
+outstanding sibling. A tool failure is a model-visible result and does not by
+itself erase successful sibling results.
+
+An in-process tool may call `sdk.InvokeAgent(ctx, request)`. Registered
+`AgentSpec` values are declarative: provider and tool visibility inherit from
+the caller by default, while explicit provider/tool choices must exist in the
+inherited snapshot and a tool allowlist can only narrow it. `MaxTurns` also
+inherits by default and may only be reduced. In the serialized contract,
+`tools: null` means inheritance while `tools: []` explicitly exposes no tools.
+`AgentSessionNew` starts an empty child context;
+`AgentSessionFork` creates a copy-on-write trajectory at the issuing tool-call
+entry and seeds the child with the parent messages. Both modes record
+`parent_session_id`, `origin_invocation_id`, and `origin_mode` in the child
+trajectory environment.
+
+`sdk.ExecuteWorkflow` schedules a declarative DAG of agent nodes. All ready
+nodes in a wave run concurrently; a dependent wave starts only after its
+predecessors join. Agent operations are children of the workflow invocation,
+carry predecessor invocation IDs as dependency edges, and join into stable
+declaration order. `IncludeDependencyOutputs` explicitly appends predecessor
+outputs to a reducer prompt. Failure or cancellation cancels the outstanding
+wave. A swarm is the zero-dependency fanout case; fanout/reduce is the same
+model with a dependent reducer node.
+
+`sdk.LoadInvocationGraph` reconstructs the durable causal graph by root ID.
+Trajectory stores remain responsible for per-agent state and copy-on-write
+history; operation stores remain responsible for invocation lifecycle,
+idempotency, leases, and recovery. These are linked records, not competing
+representations of the same state.
 
 ## Inbox and outbox
 
@@ -409,10 +507,14 @@ state. It is distinct from telemetry.
 ```go
 type TrajectoryEntry struct {
     ID             string
+    TrajectoryID   string
     ParentID       string
-    Kind           string
+    Ordinal        uint64
+    Depth          uint64
+    Kind           TrajectoryKind
     Timestamp      time.Time
     Generation     uint64
+    Fields         TrajectoryEntryFields
     PayloadVersion uint32
     Payload        json.RawMessage
 }
@@ -420,6 +522,15 @@ type TrajectoryEntry struct {
 type TrajectoryStore interface {
     Create(...)
     Append(... expectedHead ...)
+    BeginExecution(... expectedHead ...)
+    ClaimExecution(... owner, now, ttl ...)
+    RenewExecution(... executionID, token, now, ttl ...)
+    CommitExecution(... expectedHead, token, entries, state ...)
+    ListRecoverable(... now ...)
+    LoadMetadata(...)
+    LoadEntry(...)
+    LoadBranch(...)
+    FindLatest(...)
     Load(...)
     List(...)
     ListPage(...)
@@ -427,14 +538,63 @@ type TrajectoryStore interface {
 }
 ```
 
-Entries form a tree through `ParentID`; each trajectory has one active head.
-Append uses compare-and-swap on the expected head so two writers cannot
-silently overwrite each other.
+Entries are immutable and form a graph through `ParentID`; each trajectory has
+one active head and one cached checkpoint reference. Append inserts only new
+entries and uses compare-and-swap on the expected head so two writers cannot
+silently overwrite each other. The store assigns each entry its origin
+trajectory, origin-local ordinal, and graph depth.
+
+`TrajectoryEntryFields` is a fixed typed projection for fields used by indexes
+and analysis: execution ID, stable operation key, turn, correlation ID,
+provider, model, tool name/call ID, finish reason, token counts, error flag,
+action kind, and cause code. Stores should map these to native columns and
+indexes. `Payload` contains kind-specific detail; it is not the storage unit
+for the trajectory itself, and analysis should not need to parse it for the
+fixed fields above.
+
+A schema-v2 fork starts with its head pointing at the selected source entry.
+The fork owns no copied entries until its first append; that append names the
+source entry as its parent. Source entries remain immutable and shared.
+Deleting a trajectory that still has a live fork is rejected. `Load` remains a
+compatibility operation that materializes the inherited prefix plus locally
+owned history; runtime recovery uses metadata, entry, branch, and latest-kind
+point reads instead.
 
 Every user message, provider response, tool result, policy decision, and
 terminal cause is recorded. A clean turn ends with a committed checkpoint.
-Restore materializes only the branch ending at the latest selected committed
-checkpoint; incomplete tail entries remain observable but are not replayed.
+Restore loads the cached committed checkpoint directly; incomplete tail entries
+remain observable but are not replayed. Legacy schema-v1 stores may derive the
+checkpoint by walking the active branch when loading metadata.
+
+Starting a prompt is a short store transaction: it appends the user-message
+entry and creates a pending `TrajectoryExecution` together. A worker claims the
+execution with a renewable lease and fencing token. While claimed, unfenced
+`Append` calls are rejected; the worker uses `CommitExecution` to atomically
+append entries, advance head/checkpoint pointers, and optionally transition the
+execution to a terminal state.
+
+After a process crash, pending executions and running executions with expired
+leases appear in `ListRecoverable`. Once the same plugin composition is
+mounted, `Runtime.RecoverExecutions` claims them. It resumes after the latest
+checkpoint belonging to that execution, or restarts the incomplete first turn
+from its durable input entry. Stable operation keys prevent a new attempt entry
+from accidentally becoming a new provider/tool command.
+
+During graceful runtime shutdown, the execution context is cancelled and the
+claimed execution is fenced back to `pending` before plugin and storage
+cleanup completes. A replacement runtime can therefore recover it immediately,
+without waiting for the old lease to expire. A hard process termination cannot
+perform that handoff and instead uses the expired-lease path.
+
+This transaction covers trajectory state, not external side effects or the
+separate delivery store. Provider/tool effects and subscriber delivery remain
+at-least-once. A backend that advertises `AtomicState` may additionally couple
+trajectory and outbox projection; the built-in file backend does not.
+
+Operation results must outlive every non-terminal trajectory execution that
+can reference them. The bundled state backend rejects operation pruning while
+one of its trajectories is pending or running. Independently deployed plugins
+must configure their operation retention horizon to satisfy the same invariant.
 
 Rollback never deletes history. It appends a rollback entry whose parent is
 the selected committed entry and moves the active head atomically. Fork creates
@@ -447,16 +607,18 @@ owning plugin; the kernel never pretends those effects were undone.
 Trajectory and entry payloads carry explicit schema versions. A trajectory also
 captures the runtime version, SDK API version, requested provider, system and
 composition digests, mounted plugin versions, and resource specifications.
+Child trajectories additionally capture their parent session, origin
+invocation, and new/fork mode without overloading copy-on-write `ParentID`.
 `ResumeExact` (the default) restores checkpoint state and rejects a changed
 composition; `ResumeCurrent` deliberately reuses recorded messages with the
 current configuration. Legacy trajectories without an environment snapshot
 remain readable but cannot provide the exact-composition guarantee.
 
 `TrajectoryStore` is the runtime dependency and is fully pluggable. The SDK
-ships memory and file implementations under `sdk/storage`; database, object
-store, and network implementations satisfy the same interface. CLI trajectory
-commands open a `StateBackend` and use `backend.Trajectories()` rather than
-constructing a file store.
+ships memory, file, and DuckDB implementations under `sdk/storage`; other
+database, object-store, and network implementations satisfy the same
+interface. CLI trajectory commands open a `StateBackend` and use
+`backend.Trajectories()` rather than constructing a concrete store.
 
 The loop emits complete events carrying trajectory, entry, turn, plugin, and
 generation identifiers. An OpenTelemetry plugin subscribes to those events and
@@ -543,6 +705,7 @@ ag plugin inspect <name-or-uri>
 ag trajectory list
 ag trajectory show <id> [--head <entry-id>]
 ag trajectory rollback <id> <checkpoint-id>
+ag invocation show <root-invocation-id>
 ag state inspect
 ag state prune --before <RFC3339-or-duration>
 ag version
@@ -597,7 +760,6 @@ acceptance criterion.
 - plugin-originated asynchronous event streams;
 - remote-to-host capability callbacks;
 - TUI and gateway protocols;
-- multi-agent orchestration.
 
 These may be added through new drivers, capabilities, or protocol versions
 without changing the core plugin ownership and event-effect model.

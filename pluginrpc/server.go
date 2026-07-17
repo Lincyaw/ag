@@ -251,6 +251,12 @@ func (server *server) SubmitOperation(
 	sdkRequest := sdk.OperationRequest{
 		IdempotencyKey: operationRequest.GetIdempotencyKey(),
 		Input:          input,
+		Invocation: fromProtoInvocation(
+			operationRequest.GetInvocation(),
+		),
+	}
+	if err := sdk.ValidateInvocation(sdkRequest.Invocation); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	resource, err := server.operationResource(kind, request.GetResource())
 	if err != nil {

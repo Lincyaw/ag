@@ -80,9 +80,9 @@ func scanPostgresOperation(scanner interface {
 	record.Operation.Output = append(json.RawMessage(nil), output...)
 	record.Input = append(json.RawMessage(nil), record.Input...)
 	if len(invocationJSON) != 0 {
-		if err := unmarshalOptionalInvocation(
-			&record,
+		if err := json.Unmarshal(
 			invocationJSON,
+			&record.Invocation,
 		); err != nil {
 			return sdk.OperationRecord{}, fmt.Errorf(
 				"decode PostgreSQL operation invocation: %w",
@@ -145,7 +145,7 @@ func (store *OperationStore) Submit(
 	record.Operation.Output = nil
 	record.Operation.Error = ""
 	record.Execution = nil
-	invocationJSON, err := marshalOptionalInvocation(record)
+	invocationJSON, err := json.Marshal(record.Invocation)
 	if err != nil {
 		return sdk.OperationRecord{}, false, fmt.Errorf(
 			"encode operation invocation: %w",
@@ -661,6 +661,38 @@ func (store *OperationStore) List(
 		result = append(result, record)
 	}
 	return result, rows.Err()
+}
+
+func (store *OperationStore) ListByInvocationRoot(
+	ctx context.Context,
+	rootID string,
+) ([]sdk.OperationRecord, error) {
+	rows, err := store.pool.Query(
+		ctx,
+		`SELECT `+operationColumns+`
+		 FROM ag_operations
+		 WHERE namespace = $1
+		   AND invocation ->> 'root_id' = $2
+		 ORDER BY submitted_at, id`,
+		store.namespace,
+		rootID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]sdk.OperationRecord, 0)
+	for rows.Next() {
+		record, scanErr := scanPostgresOperation(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result = append(result, cloneOperationRecord(record))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (store *OperationStore) ListPage(

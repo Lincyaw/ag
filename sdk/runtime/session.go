@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/lincyaw/ag/sdk"
+	"github.com/lincyaw/ag/sdk/runtime/internal/durability"
 )
 
 type SessionConfig struct {
@@ -37,6 +38,9 @@ type Session struct {
 	executionToken   string
 	messages         []sdk.Message
 	head             string
+	pinnedSnapshot   *registrySnapshot
+	invocationRoot   string
+	invocationParent string
 }
 
 type Result struct {
@@ -94,7 +98,7 @@ func (runtime *Runtime) ResumeSession(
 			metadata.Execution.ID,
 		)
 	}
-	checkpointEntry, checkpoint, err := latestTrajectoryCheckpoint(
+	checkpointEntry, checkpoint, err := durability.LatestCheckpoint(
 		ctx,
 		runtime.trajectories,
 		metadata,
@@ -130,7 +134,7 @@ func (runtime *Runtime) ResumeSession(
 		}
 	}
 	head := metadata.Head
-	restored, err := trajectoryHeadRestoresCheckpoint(
+	restored, err := durability.HeadRestoresCheckpoint(
 		ctx,
 		runtime.trajectories,
 		metadata.ID,
@@ -155,7 +159,7 @@ func (runtime *Runtime) ResumeSession(
 	session := &Session{
 		runtime:  runtime,
 		config:   config,
-		messages: cloneMessages(checkpointMessages(checkpoint)),
+		messages: durability.Messages(checkpoint),
 		head:     head,
 	}
 	runtime.emitTrajectoryEvent(ctx, sdk.EventTrajectoryRestore, sdk.TrajectoryEventPayload{
@@ -197,6 +201,15 @@ func validateSessionConfig(runtime *Runtime, config *SessionConfig) error {
 
 func (session *Session) ID() string {
 	return session.config.ID
+}
+
+func (session *Session) acquireSnapshot() (*snapshotLease, error) {
+	if session.pinnedSnapshot != nil {
+		return session.runtime.acquireRegistrySnapshot(
+			session.pinnedSnapshot,
+		)
+	}
+	return session.runtime.acquireSnapshot()
 }
 
 func (session *Session) Messages() []sdk.Message {

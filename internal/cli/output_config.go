@@ -109,6 +109,8 @@ func (application *app) writeConfig(loaded appconfig.Loaded) error {
 			[2]string{"OpenTelemetry", yesNo(config.Observability.Enabled)},
 			[2]string{"Log level", config.Logging.Level},
 			[2]string{"Log format", config.Logging.Format},
+			[2]string{"Log file", config.Logging.File},
+			[2]string{"Log console", yesNo(config.Logging.Console)},
 		)
 	})
 }

@@ -133,6 +133,29 @@ func TestRegistryServeCommandPublishesReadyDirectory(t *testing.T) {
 		cancel()
 		t.Fatalf("discovered = %#v", discovered)
 	}
+	selectionCatalog := sdk.NewPluginRegistry()
+	if err := pluginrpc.RegisterDrivers(
+		selectionCatalog,
+		pluginrpc.ClientConfig{},
+	); err != nil {
+		_ = client.Close(context.Background())
+		cancel()
+		t.Fatal(err)
+	}
+	selected, err := resolvePluginSelection(
+		context.Background(),
+		selectionCatalog,
+		appconfig.Plugins{
+			RegistryURI:       ready.URI,
+			RegistryNamespace: registry.DefaultNamespace,
+		},
+		"cli-registry-test@node-a",
+	)
+	if err != nil || selected.String() != "grpc://127.0.0.1:9999" {
+		_ = client.Close(context.Background())
+		cancel()
+		t.Fatalf("selected source = %v, %v", selected, err)
+	}
 	catalog, names, err := buildRegistry(
 		context.Background(),
 		appconfig.Config{
