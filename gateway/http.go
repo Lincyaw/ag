@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	UserHeader   = "X-AG-User-ID"
-	maxBodyBytes = 1 << 20
+	UserHeader           = "X-AG-User-ID"
+	maxBodyBytes         = 1 << 20
+	internalErrorMessage = "internal server error"
 )
 
 type Authenticator func(*http.Request) (string, error)
@@ -416,7 +417,7 @@ func writeHTTPError(writer http.ResponseWriter, err error) {
 			writer,
 			http.StatusInternalServerError,
 			"internal",
-			err,
+			errors.New(internalErrorMessage),
 		)
 	}
 }
