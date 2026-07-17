@@ -24,6 +24,19 @@ func (registrar *providerRegistrar) RegisterProvider(
 	return nil
 }
 
+func TestPluginNormalizesModel(t *testing.T) {
+	registrar := &providerRegistrar{}
+	if err := New(Config{Model: " test-model "}).Install(
+		t.Context(),
+		registrar,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if registrar.provider.Spec().Model != "test-model" {
+		t.Fatalf("provider spec = %#v", registrar.provider.Spec())
+	}
+}
+
 func TestPluginRespectsZeroMaxRetries(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(

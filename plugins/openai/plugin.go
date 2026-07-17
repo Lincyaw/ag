@@ -42,7 +42,8 @@ func (plugin) Manifest() agentsdk.Manifest {
 }
 
 func (p plugin) Install(_ context.Context, registrar agentsdk.Registrar) error {
-	if strings.TrimSpace(p.config.Model) == "" {
+	p.config.Model = strings.TrimSpace(p.config.Model)
+	if p.config.Model == "" {
 		return errors.New("OpenAI model is empty")
 	}
 	if p.config.MaxRetries < 0 {
