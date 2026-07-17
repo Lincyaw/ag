@@ -341,6 +341,10 @@ func (api *httpAPI) user(
 	request *http.Request,
 ) (string, bool) {
 	userID, err := api.authenticate(request)
+	userID = strings.TrimSpace(userID)
+	if err == nil {
+		err = validateUserID(userID)
+	}
 	if err != nil {
 		writeErrorCode(
 			writer,

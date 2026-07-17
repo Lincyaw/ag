@@ -53,3 +53,35 @@ func TestHTTPAuthenticationErrorHidesInternalDetails(t *testing.T) {
 		t.Fatalf("authentication error message = %s", body)
 	}
 }
+
+func TestHTTPAuthenticationValidatesCustomIdentity(t *testing.T) {
+	api := httpAPI{authenticate: func(*http.Request) (string, error) {
+		return " \t ", nil
+	}}
+	recorder := httptest.NewRecorder()
+
+	if _, ok := api.user(
+		recorder,
+		httptest.NewRequest(http.MethodGet, "/", nil),
+	); ok {
+		t.Fatal("invalid custom identity authenticated")
+	}
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+}
+
+func TestHTTPAuthenticationNormalizesCustomIdentity(t *testing.T) {
+	api := httpAPI{authenticate: func(*http.Request) (string, error) {
+		return " user-a ", nil
+	}}
+	recorder := httptest.NewRecorder()
+
+	userID, ok := api.user(
+		recorder,
+		httptest.NewRequest(http.MethodGet, "/", nil),
+	)
+	if !ok || userID != "user-a" {
+		t.Fatalf("userID = %q, ok = %v", userID, ok)
+	}
+}
