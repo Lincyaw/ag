@@ -90,6 +90,9 @@ func (manager *Manager) AttachPlugin(
 	if err != nil {
 		return Session{}, err
 	}
+	if err := validateExpectedRevision(expectedRevision); err != nil {
+		return Session{}, err
+	}
 	if err := manager.checkIdle(ctx, session); err != nil {
 		return Session{}, err
 	}
@@ -125,6 +128,9 @@ func (manager *Manager) DetachPlugin(
 ) (Session, error) {
 	session, err := manager.ownedSession(ctx, userID, sessionID)
 	if err != nil {
+		return Session{}, err
+	}
+	if err := validateExpectedRevision(expectedRevision); err != nil {
 		return Session{}, err
 	}
 	if err := manager.checkIdle(ctx, session); err != nil {
@@ -215,6 +221,16 @@ func (manager *Manager) checkIdle(ctx context.Context, session Session) error {
 			"change gateway session %s composition: %w",
 			session.ID,
 			err,
+		)
+	}
+	return nil
+}
+
+func validateExpectedRevision(revision uint64) error {
+	if revision == 0 {
+		return fmt.Errorf(
+			"%w: expected session revision must be positive",
+			ErrInvalidRequest,
 		)
 	}
 	return nil

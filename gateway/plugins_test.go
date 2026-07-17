@@ -92,6 +92,15 @@ func TestManagerDiscoversAndFencesSessionPlugins(t *testing.T) {
 	); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("foreign attach error = %v", err)
 	}
+	if _, err := manager.DetachPlugin(
+		ctx,
+		"user-a",
+		attached.ID,
+		"file",
+		0,
+	); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("zero revision detach error = %v", err)
+	}
 	references, err := manager.ResolvePlugins(ctx, attached)
 	if err != nil || len(references) != 1 ||
 		references[0].URI != "grpc://127.0.0.1:9001" {
@@ -166,6 +175,15 @@ func TestManagerRejectsCompositionChangeWhileBusy(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := manager.AttachPlugin(
+		ctx,
+		"user-a",
+		session.ID,
+		"file@node-a",
+		0,
+	); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("zero revision attach error = %v", err)
 	}
 	if _, err := manager.AttachPlugin(
 		ctx,
