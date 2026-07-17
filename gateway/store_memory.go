@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -87,22 +86,7 @@ func (store *memorySessionStore) List(
 	if store.closed {
 		return SessionPage{}, ErrStoreClosed
 	}
-	ids := make([]string, 0, len(store.sessions))
-	for id := range store.sessions {
-		if id > request.After {
-			ids = append(ids, id)
-		}
-	}
-	slices.Sort(ids)
-	limit := min(request.Limit, len(ids))
-	page := SessionPage{Items: make([]Session, 0, limit)}
-	for _, id := range ids[:limit] {
-		page.Items = append(page.Items, cloneSession(store.sessions[id]))
-	}
-	if len(ids) > request.Limit {
-		page.Next = ids[request.Limit-1]
-	}
-	return page, nil
+	return listSessions(store.sessions, request), nil
 }
 
 func (store *memorySessionStore) Save(

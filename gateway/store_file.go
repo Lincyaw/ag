@@ -138,8 +138,7 @@ func (store *fileSessionStore) List(
 	if err != nil {
 		return SessionPage{}, err
 	}
-	memory := &memorySessionStore{sessions: state.Sessions}
-	return memory.List(ctx, request)
+	return listSessions(state.Sessions, request), nil
 }
 
 func (store *fileSessionStore) Save(
