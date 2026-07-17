@@ -72,13 +72,18 @@ go build -o bin/agentm-plugin-bash ./cmd/agentm-plugin-bash
 ## Run locally
 
 The default mounts OpenAI, the read-only file plugin, and the asynchronous OTel
-subscriber. The official OpenAI SDK reads the API key from the environment;
-there is deliberately no API-key CLI flag. Runtime logs are appended to
-`~/.ag/logs/ag.log` by default; pass `--log-console` to additionally show them
-on stderr.
+subscriber. Store the API key in `~/.ag/config.toml` under `[openai]` for local
+development; `OPENAI_API_KEY` remains a compatibility fallback. There is
+deliberately no API-key CLI flag. Runtime logs are appended to `~/.ag/logs/ag.log`
+by default; pass `--log-console` to additionally show them on stderr.
+
+```toml
+[openai]
+api_key = "..."
+```
 
 ```bash
-OPENAI_API_KEY=... bin/ag run \
+bin/ag run \
   --cwd . \
   --model gpt-5-mini \
   --session example \

@@ -39,13 +39,35 @@ type cliErrorDetail struct {
 	Suggestion string `json:"suggestion,omitempty"`
 }
 
-func (application *app) validateOutput() error {
+func (application *app) validateGlobalFlags() error {
 	switch application.output {
 	case outputText, outputJSON:
-		return nil
 	default:
 		return usageError{fmt.Errorf(
 			`--output must be %q or %q`, outputText, outputJSON,
+		)}
+	}
+	switch application.progress {
+	case progressAuto, progressAlways, progressPlain, progressTUI, progressNever:
+	default:
+		return usageError{fmt.Errorf(
+			`--progress must be %q, %q, %q, %q, or %q`,
+			progressAuto,
+			progressTUI,
+			progressPlain,
+			progressAlways,
+			progressNever,
+		)}
+	}
+	switch application.color {
+	case colorAuto, colorAlways, colorNever:
+		return nil
+	default:
+		return usageError{fmt.Errorf(
+			`--color must be %q, %q, or %q`,
+			colorAuto,
+			colorAlways,
+			colorNever,
 		)}
 	}
 }
@@ -129,10 +151,18 @@ func writeCLIError(
 	switch {
 	case errors.As(err, &usage):
 		detail.Type = "usage"
-		detail.Suggestion = "Run 'ag --help' or 'ag <command> --help' for valid arguments."
-	case errors.Is(err, context.Canceled):
+		detail.Suggestion = suggestionForError(err)
+		if detail.Suggestion == "" {
+			detail.Suggestion = "Run 'ag --help' or 'ag <command> --help' for valid arguments."
+		}
+	case errors.Is(err, errUserCanceled), errors.Is(err, context.Canceled):
 		detail.Type = "cancelled"
-		detail.Suggestion = "Run the command again when ready."
+		detail.Suggestion = suggestionForError(err)
+		if detail.Suggestion == "" {
+			detail.Suggestion = "Run the command again when ready."
+		}
+	default:
+		detail.Suggestion = suggestionForError(err)
 	}
 	return writeJSON(writer, cliErrorOutput{Error: detail})
 }

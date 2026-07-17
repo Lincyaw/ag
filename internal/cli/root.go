@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -23,11 +22,15 @@ const (
 )
 
 type app struct {
-	version    string
-	stdout     io.Writer
-	stderr     io.Writer
-	configFile string
-	output     string
+	version     string
+	stdout      io.Writer
+	stderr      io.Writer
+	configFile  string
+	output      string
+	progress    string
+	color       string
+	showVersion bool
+	dumpSchema  bool
 }
 
 type usageError struct{ error }
@@ -42,18 +45,23 @@ func Run(args []string, stdout, stderr io.Writer, version string) int {
 	command := New(stdout, stderr, version)
 	command.SetArgs(args)
 	if err := command.ExecuteContext(signalContext); err != nil {
+		if errors.Is(err, errEarlyExit) {
+			return exitOK
+		}
 		var usage usageError
 		exitCode := exitRuntime
 		switch {
 		case errors.As(err, &usage):
 			exitCode = exitUsage
+		case errors.Is(err, errUserCanceled):
+			exitCode = exitCanceled
 		case errors.Is(err, context.Canceled):
 			exitCode = exitCanceled
 		}
 		if requestedOutput(args, selectedOutput(command), command) == outputJSON {
 			_ = writeCLIError(stderr, command, err, exitCode)
 		} else {
-			fmt.Fprintf(stderr, "ag: %v\n", err)
+			writeTextError(stderr, err)
 		}
 		return exitCode
 	}
@@ -71,8 +79,11 @@ func New(stdout, stderr io.Writer, version string) *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		Args:          noArgs,
-		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
-			return application.validateOutput()
+		PersistentPreRunE: func(command *cobra.Command, _ []string) error {
+			if err := application.validateGlobalFlags(); err != nil {
+				return err
+			}
+			return application.earlyExit(command.Root())
 		},
 		RunE: func(command *cobra.Command, _ []string) error {
 			return command.Help()
@@ -107,6 +118,30 @@ func New(stdout, stderr io.Writer, version string) *cobra.Command {
 		outputText,
 		"Output format: text or json.",
 	)
+	root.PersistentFlags().StringVar(
+		&application.progress,
+		"progress",
+		progressAuto,
+		"Progress display: auto, tui, plain, always, or never.",
+	)
+	root.PersistentFlags().StringVar(
+		&application.color,
+		"color",
+		colorAuto,
+		"Color display: auto, always, or never.",
+	)
+	root.PersistentFlags().BoolVar(
+		&application.showVersion,
+		"version",
+		false,
+		"Print version and exit.",
+	)
+	root.PersistentFlags().BoolVar(
+		&application.dumpSchema,
+		"dump-schema",
+		false,
+		"Print the command schema as JSON and exit.",
+	)
 	root.PersistentFlags().String("log-level", "", "debug, info, warn, or error.")
 	root.PersistentFlags().String("log-format", "", "json or text.")
 	root.PersistentFlags().String("log-file", "", "Append logs to this file.")
@@ -129,6 +164,22 @@ func New(stdout, stderr io.Writer, version string) *cobra.Command {
 		application.versionCommand(),
 	)
 	return root
+}
+
+func (application *app) earlyExit(root *cobra.Command) error {
+	if application.showVersion {
+		if err := application.writeVersion(); err != nil {
+			return err
+		}
+		return errEarlyExit
+	}
+	if application.dumpSchema {
+		if err := application.writeSchema(root); err != nil {
+			return err
+		}
+		return errEarlyExit
+	}
+	return nil
 }
 
 func (application *app) load(command *cobra.Command) (appconfig.Loaded, error) {

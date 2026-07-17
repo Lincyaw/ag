@@ -39,6 +39,25 @@ empty and stderr ends with this error document:
 Runtime logs do not precede the error on stderr unless console logging was
 explicitly enabled.
 
+Human progress is separate from runtime logs. In text mode, `--progress auto`
+opens a transient inline Bubble Tea dashboard on stderr when stderr is a
+terminal. The dashboard shows the current phase, session, turn, provider, tool
+counts, generic tool argument summaries, and short result previews while the run
+is active, then clears before the final answer is written to stdout. It adapts
+to any tool by summarizing the JSON arguments and textual result; it does not
+require the CLI to know plugin-specific tool names.
+
+When stdin is also a terminal, the dashboard is interactive: `tab` switches
+Overview / Timeline / Details, `j` / `k` or arrow keys move between events,
+`f` toggles following the newest event, `?` shows key help, `q` hides the
+dashboard without stopping the run, and `ctrl+c` cancels the run.
+
+Use `--progress plain` for append-only progress lines, `--progress always` to
+force progress even when stderr is not a terminal, `--progress tui` to prefer
+the inline terminal panel, or `--progress never` for fully quiet text output.
+`--color auto` colors human progress only on a terminal; use `--color always`
+or `--color never` to override that. JSON mode never emits progress records.
+
 `ag registry serve -o json` is a long-running exception: it emits one complete
 ready document after the listener and backend are ready, then keeps stdout
 open until shutdown.
@@ -47,6 +66,11 @@ Use `--log-file <path>` or `[logging].file` to change the append-only log
 destination. Use `--log-console` or `[logging].console = true` to additionally
 copy runtime logs to stderr for interactive debugging. Console logging never
 replaces the file destination.
+
+OpenAI-compatible credentials are read from `[openai].api_key` in the config
+file, with `OPENAI_API_KEY` and `AGENTM_OPENAI_API_KEY` kept as compatibility
+aliases. There is no API-key CLI flag. `ag config show` reports only whether the
+key is set; it never prints the key value.
 
 ## JSON result shapes
 
@@ -65,10 +89,13 @@ in minor releases; fields are not renamed or removed without a major release.
 | `ag trajectory list` | `TrajectorySummary[]` |
 | `ag trajectory show` | `Trajectory` |
 | `ag trajectory rollback` | `{"trajectory_id": string, "head": string, "checkpoint_id": string}` |
+| `ag trajectory rollback --dry-run` | `{"trajectory_id": string, "current_head": string, "checkpoint_id": string, "dry_run": true}` |
 | `ag invocation show` | `InvocationGraph` |
 | `ag state inspect` | `{"backend": string, "namespace": string, "capabilities": StorageCapabilities}` |
 | `ag state prune` | `{"operations": number, "deliveries": number, "trajectories": number}` |
+| `ag state prune --dry-run` | `{"cutoff": string, "dry_run": true}` |
 | `ag version` | `{"version": string}` |
+| `ag --dump-schema` | `CommandSchema` |
 
 `trajectory show` intentionally keeps complete entry payloads in JSON. The
 default text renderer summarizes high-value fields such as turn, provider,
@@ -95,6 +122,7 @@ ag invocation show <root-invocation-id>
 ag config show
 ag plugin discover
 ag registry serve
+ag state prune --before 720h --dry-run
 ```
 
 Program-oriented equivalents:
@@ -107,9 +135,11 @@ ag invocation show <root-invocation-id> -o json
 ag config show -o json
 ag plugin discover -o json
 ag registry serve -o json
+ag --dump-schema
 ```
 
 `-o` is a global flag, so it may appear before or after the subcommand.
+`ag --version` is equivalent to `ag version`; both honor `-o json`.
 
 Plugin selection is explicit:
 

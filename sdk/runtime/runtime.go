@@ -30,12 +30,16 @@ const (
 )
 
 type RuntimeConfig struct {
-	RuntimeVersion      string
-	Logger              *slog.Logger
-	Tracer              trace.Tracer
-	Meter               metric.Meter
-	Storage             sdk.StateBackend
-	StorageOwnership    StorageOwnership
+	RuntimeVersion   string
+	Logger           *slog.Logger
+	Tracer           trace.Tracer
+	Meter            metric.Meter
+	Storage          sdk.StateBackend
+	StorageOwnership StorageOwnership
+	// EventObserver receives a cloned copy of each dispatched event after
+	// hooks and subscriber enqueueing. It is for host-side UI/diagnostics and
+	// does not participate in the runtime composition contract.
+	EventObserver       func(context.Context, sdk.Event)
 	DeliveryWorkers     int
 	DeliveryLease       time.Duration
 	DeliveryPoll        time.Duration
@@ -62,6 +66,7 @@ type Runtime struct {
 	events             metric.Int64Counter
 	hooks              metric.Int64Counter
 	hookTimeout        time.Duration
+	eventObserver      func(context.Context, sdk.Event)
 	storage            sdk.StateBackend
 	atomicState        sdk.AtomicStateBackend
 	closeStorage       bool
@@ -217,6 +222,7 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 		events:             events,
 		hooks:              hooks,
 		hookTimeout:        config.HookTimeout,
+		eventObserver:      config.EventObserver,
 		storage:            config.Storage,
 		atomicState:        atomicState,
 		closeStorage:       config.StorageOwnership == StorageOwned,

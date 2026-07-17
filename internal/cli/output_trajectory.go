@@ -16,6 +16,13 @@ type rollbackOutput struct {
 	CheckpointID string `json:"checkpoint_id"`
 }
 
+type rollbackPreviewOutput struct {
+	TrajectoryID string `json:"trajectory_id"`
+	CurrentHead  string `json:"current_head"`
+	CheckpointID string `json:"checkpoint_id"`
+	DryRun       bool   `json:"dry_run"`
+}
+
 func (application *app) writeTrajectoryList(
 	trajectories []sdk.TrajectorySummary,
 ) error {
@@ -85,6 +92,23 @@ func (application *app) writeRollback(value rollbackOutput) error {
 		table := newTable(writer)
 		fmt.Fprintf(table, "Checkpoint:\t%s\n", tableCell(value.CheckpointID))
 		fmt.Fprintf(table, "New head:\t%s\n", tableCell(value.Head))
+		return table.Flush()
+	})
+}
+
+func (application *app) writeRollbackPreview(value rollbackPreviewOutput) error {
+	return application.render(value, func(writer io.Writer) error {
+		if _, err := fmt.Fprintf(
+			writer,
+			"Would roll back trajectory %s\n\n",
+			tableCell(value.TrajectoryID),
+		); err != nil {
+			return err
+		}
+		table := newTable(writer)
+		fmt.Fprintf(table, "Checkpoint:\t%s\n", tableCell(value.CheckpointID))
+		fmt.Fprintf(table, "Current head:\t%s\n", tableCell(emptyAs(value.CurrentHead, "-")))
+		fmt.Fprintf(table, "Dry run:\tyes\n")
 		return table.Flush()
 	})
 }

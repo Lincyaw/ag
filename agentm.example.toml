@@ -5,6 +5,8 @@ timeout = "5m"
 
 [openai]
 model = "gpt-5-mini"
+# Prefer ~/.ag/config.toml for local development; keep this unset in shared files.
+api_key = ""
 base_url = ""
 max_retries = 2
 

@@ -54,6 +54,7 @@ func (agent Agent) MarshalJSON() ([]byte, error) {
 type OpenAI struct {
 	Enabled    bool   `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
 	Model      string `mapstructure:"model" json:"model" yaml:"model"`
+	APIKey     string `mapstructure:"api_key" json:"api_key" yaml:"api_key"`
 	BaseURL    string `mapstructure:"base_url" json:"base_url" yaml:"base_url"`
 	MaxRetries int    `mapstructure:"max_retries" json:"max_retries" yaml:"max_retries"`
 }
@@ -294,6 +295,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.timeout", "5m")
 	v.SetDefault("openai.enabled", true)
 	v.SetDefault("openai.model", "gpt-5-mini")
+	v.SetDefault("openai.api_key", "")
 	v.SetDefault("openai.base_url", "")
 	v.SetDefault("openai.max_retries", 2)
 	v.SetDefault("workspace.root", ".")
@@ -337,9 +339,13 @@ func configureEnvironment(v *viper.Viper) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	v.AutomaticEnv()
 
-	// The official OpenAI names remain valid compatibility aliases. API keys are
-	// deliberately absent: the official SDK reads OPENAI_API_KEY directly.
+	// The official OpenAI names remain valid compatibility aliases.
 	_ = v.BindEnv("openai.model", "AGENTM_OPENAI_MODEL", "OPENAI_MODEL")
+	_ = v.BindEnv(
+		"openai.api_key",
+		"AGENTM_OPENAI_API_KEY",
+		"OPENAI_API_KEY",
+	)
 	_ = v.BindEnv(
 		"openai.base_url",
 		"AGENTM_OPENAI_BASE_URL",

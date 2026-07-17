@@ -42,6 +42,7 @@ func (application *app) writeConfig(loaded appconfig.Loaded) error {
 		if err := writeSection(writer, "OpenAI",
 			[2]string{"Enabled", yesNo(config.OpenAI.Enabled)},
 			[2]string{"Model", config.OpenAI.Model},
+			[2]string{"API key", config.OpenAI.APIKey},
 			[2]string{"Base URL", emptyAs(config.OpenAI.BaseURL, "provider default")},
 			[2]string{"Max retries", fmt.Sprint(config.OpenAI.MaxRetries)},
 		); err != nil {
@@ -116,6 +117,7 @@ func (application *app) writeConfig(loaded appconfig.Loaded) error {
 }
 
 func configForDisplay(config appconfig.Config) appconfig.Config {
+	config.OpenAI.APIKey = secretForDisplay(config.OpenAI.APIKey)
 	config.OpenAI.BaseURL = uriForDisplay(config.OpenAI.BaseURL)
 	config.Plugins.Remote = slices.Clone(config.Plugins.Remote)
 	for index := range config.Plugins.Remote {
@@ -132,6 +134,13 @@ func configForDisplay(config appconfig.Config) appconfig.Config {
 	config.Registry.BackendURI = uriForDisplay(config.Registry.BackendURI)
 	config.State.BackendURI = uriForDisplay(config.State.BackendURI)
 	return config
+}
+
+func secretForDisplay(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return "<unset>"
+	}
+	return "<set>"
 }
 
 func pluginReferenceForDisplay(raw string) string {

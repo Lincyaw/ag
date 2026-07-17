@@ -39,6 +39,7 @@ func startRuntime(
 	config appconfig.Config,
 	stderr io.Writer,
 	version string,
+	eventObserver func(context.Context, sdk.Event),
 ) (*runningRuntime, error) {
 	logger, logFile, err := openConfiguredLogger(config.Logging, stderr)
 	if err != nil {
@@ -73,6 +74,7 @@ func startRuntime(
 		Tracer:         observability.Tracer,
 		Meter:          observability.Meter,
 		Storage:        storage,
+		EventObserver:  eventObserver,
 	})
 	if err != nil {
 		closeCtx, cancel := closeContext()
@@ -210,7 +212,8 @@ func buildRegistry(
 	}
 	if config.OpenAI.Enabled {
 		if err := registerLocal(openai.New(openai.Config{
-			Model: config.OpenAI.Model, BaseURL: config.OpenAI.BaseURL,
+			Model: config.OpenAI.Model, APIKey: config.OpenAI.APIKey,
+			BaseURL:    config.OpenAI.BaseURL,
 			MaxRetries: config.OpenAI.MaxRetries,
 		})); err != nil {
 			return nil, nil, err

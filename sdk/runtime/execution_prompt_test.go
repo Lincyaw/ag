@@ -31,6 +31,71 @@ func (invalidResponseProvider) Complete(
 	}, nil
 }
 
+type observerProvider struct{}
+
+func (observerProvider) Spec() sdk.ProviderSpec {
+	return sdk.ProviderSpec{Name: "observer-provider", Model: "test"}
+}
+
+func (observerProvider) Complete(
+	context.Context,
+	sdk.ModelRequest,
+) (sdk.ModelResponse, error) {
+	return sdk.ModelResponse{Content: "observer result"}, nil
+}
+
+func TestEventObserverDoesNotAffectExecution(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	observed := 0
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: newTestStateBackend(),
+		EventObserver: func(context.Context, sdk.Event) {
+			observed++
+			panic("observer failure")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "observer-provider",
+			Version:     "1.0.0",
+			Description: "provider for observer tests",
+			APIVersion:  sdk.APIVersion,
+			Registers:   []string{sdk.ProviderResource("observer-provider")},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return registrar.RegisterProvider(observerProvider{})
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "observer-session",
+		Provider: "observer-provider",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := session.Prompt(ctx, "run despite observer panic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "observer result" || observed == 0 {
+		t.Fatalf("result = %#v observed = %d", result, observed)
+	}
+}
+
 func TestPromptBlockCommitsWithoutCallingProvider(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

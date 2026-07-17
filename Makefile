@@ -4,7 +4,7 @@ GO ?= go
 BUILD_DIR ?= $(CURDIR)/bin
 AG_BINARY ?= $(BUILD_DIR)/ag
 AG_HOME ?= $(HOME)/.ag
-AG_EXEC ?= $(AG_HOME)/bin/ag-core
+AG_EXEC ?= $(HOME)/.local/bin/ag
 
 .DEFAULT_GOAL := install
 

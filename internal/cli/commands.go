@@ -39,7 +39,22 @@ func (application *app) runCommand() *cobra.Command {
 			}
 			ctx, cancel := commandContext(command, loaded.Config.Agent.Timeout)
 			defer cancel()
-			running, err := startRuntime(ctx, loaded.Config, application.stderr, application.version)
+			var observe func(context.Context, sdk.Event)
+			progress := application.progressReporter()
+			if progress != nil {
+				if err := progress.start(cancel); err != nil {
+					return fmt.Errorf("start progress display: %w", err)
+				}
+				defer func() { _ = progress.stop() }()
+				observe = progress.observe
+			}
+			running, err := startRuntime(
+				ctx,
+				loaded.Config,
+				application.stderr,
+				application.version,
+				observe,
+			)
 			if err != nil {
 				return err
 			}
@@ -63,6 +78,9 @@ func (application *app) runCommand() *cobra.Command {
 			result, err := session.Prompt(ctx, prompt)
 			if err != nil {
 				return fmt.Errorf("run session %s: %w", session.ID(), err)
+			}
+			if progress != nil {
+				_ = progress.stop()
 			}
 			return application.writeRun(session.ID(), result)
 		},
@@ -358,6 +376,9 @@ func (application *app) trajectoryCommand() *cobra.Command {
 		},
 	}
 	show.Flags().StringVar(&branchHead, "head", "", "Show only the branch ending at this entry.")
+	var rollbackDryRun bool
+	var rollbackYes bool
+	var rollbackForce bool
 	rollback := &cobra.Command{
 		Use:   "rollback <trajectory-id> <checkpoint-id>",
 		Short: "Move the active branch to a prior checkpoint",
@@ -369,6 +390,35 @@ func (application *app) trajectoryCommand() *cobra.Command {
 			}
 			defer backend.Close(context.Background())
 			store := backend.Trajectories()
+			trajectory, err := store.Load(command.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if !trajectoryHasCheckpoint(trajectory, args[1]) {
+				return fmt.Errorf("checkpoint not found: %s", args[1])
+			}
+			if rollbackDryRun {
+				return application.writeRollbackPreview(rollbackPreviewOutput{
+					TrajectoryID: trajectory.ID,
+					CurrentHead:  trajectory.Head,
+					CheckpointID: args[1],
+					DryRun:       true,
+				})
+			}
+			ok, err := application.confirm(
+				fmt.Sprintf(
+					"Roll back trajectory %s to checkpoint %s?",
+					tableCell(args[0]),
+					tableCell(args[1]),
+				),
+				rollbackYes || rollbackForce,
+			)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return errUserCanceled
+			}
 			logger, logFile, err := openConfiguredLogger(
 				loaded.Config.Logging,
 				application.stderr,
@@ -391,7 +441,7 @@ func (application *app) trajectoryCommand() *cobra.Command {
 			if err := runtime.RollbackTrajectory(command.Context(), args[0], args[1]); err != nil {
 				return err
 			}
-			trajectory, err := store.Load(command.Context(), args[0])
+			trajectory, err = store.Load(command.Context(), args[0])
 			if err != nil {
 				return err
 			}
@@ -402,6 +452,24 @@ func (application *app) trajectoryCommand() *cobra.Command {
 			})
 		},
 	}
+	rollback.Flags().BoolVar(
+		&rollbackDryRun,
+		"dry-run",
+		false,
+		"Show the rollback target without changing the trajectory.",
+	)
+	rollback.Flags().BoolVar(
+		&rollbackYes,
+		"yes",
+		false,
+		"Skip interactive confirmation.",
+	)
+	rollback.Flags().BoolVar(
+		&rollbackForce,
+		"force",
+		false,
+		"Alias for --yes.",
+	)
 	command.AddCommand(list, show, rollback)
 	return command
 }
@@ -443,6 +511,9 @@ func (application *app) invocationCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if len(graph.Operations) == 0 {
+				return fmt.Errorf("invocation root not found: %s", args[0])
+			}
 			return application.writeInvocationGraph(graph)
 		},
 	}
@@ -473,6 +544,9 @@ func (application *app) stateCommand() *cobra.Command {
 		},
 	}
 	var before string
+	var pruneDryRun bool
+	var pruneYes bool
+	var pruneForce bool
 	prune := &cobra.Command{
 		Use:   "prune",
 		Short: "Delete terminal state older than a cutoff",
@@ -481,6 +555,25 @@ func (application *app) stateCommand() *cobra.Command {
 			cutoff, err := parseRetentionCutoff(before, time.Now().UTC())
 			if err != nil {
 				return usageError{err}
+			}
+			if pruneDryRun {
+				return application.writePrunePreview(prunePreviewOutput{
+					Cutoff: cutoff.Format(time.RFC3339),
+					DryRun: true,
+				})
+			}
+			ok, err := application.confirm(
+				fmt.Sprintf(
+					"Delete terminal state older than %s?",
+					cutoff.Format(time.RFC3339),
+				),
+				pruneYes || pruneForce,
+			)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return errUserCanceled
 			}
 			backend, _, err := application.stateBackend(command)
 			if err != nil {
@@ -504,8 +597,35 @@ func (application *app) stateCommand() *cobra.Command {
 		"",
 		"RFC3339 timestamp or age duration such as 720h (required).",
 	)
+	prune.Flags().BoolVar(
+		&pruneDryRun,
+		"dry-run",
+		false,
+		"Show the pruning cutoff without deleting state.",
+	)
+	prune.Flags().BoolVar(
+		&pruneYes,
+		"yes",
+		false,
+		"Skip interactive confirmation.",
+	)
+	prune.Flags().BoolVar(
+		&pruneForce,
+		"force",
+		false,
+		"Alias for --yes.",
+	)
 	command.AddCommand(inspect, prune)
 	return command
+}
+
+func trajectoryHasCheckpoint(trajectory sdk.Trajectory, checkpointID string) bool {
+	for _, entry := range trajectory.Entries {
+		if entry.ID == checkpointID && entry.Kind == sdk.TrajectoryKindCheckpoint {
+			return true
+		}
+	}
+	return false
 }
 
 func parseRetentionCutoff(value string, now time.Time) (time.Time, error) {

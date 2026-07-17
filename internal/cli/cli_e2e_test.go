@@ -73,6 +73,19 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 		t.Fatalf("checkpoint IDs = %v", checkpoints)
 	}
 
+	preview := executeCLI(t,
+		"--state-dir", state,
+		"trajectory", "rollback", "cli-e2e", checkpoints[0],
+		"--dry-run", "-o", "json",
+	)
+	var rollbackPreview rollbackPreviewOutput
+	decodeJSON(t, preview.stdout, &rollbackPreview)
+	if !rollbackPreview.DryRun ||
+		rollbackPreview.TrajectoryID != "cli-e2e" ||
+		rollbackPreview.CheckpointID != checkpoints[0] {
+		t.Fatalf("rollback preview = %#v", rollbackPreview)
+	}
+
 	second := executeCLI(t,
 		"--state-dir", state,
 		"--otel=false",
@@ -188,17 +201,28 @@ enabled = false
 func TestCLIDefaultHumanOutputAndExplicitJSONContract(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("OPENAI_API_KEY", "cli-test-key")
+	t.Setenv("OPENAI_API_KEY", "")
+	configFile := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configFile, []byte(`
+[openai]
+api_key = "cli-config-key"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(
 		writer http.ResponseWriter,
-		_ *http.Request,
+		request *http.Request,
 	) {
+		if got := request.Header.Get("Authorization"); got != "Bearer cli-config-key" {
+			t.Errorf("authorization header = %q", got)
+		}
 		writer.Header().Set("Content-Type", "application/json")
 		writeChatResponse(t, writer, "human-readable answer", "stop", nil)
 	}))
 	defer server.Close()
 
 	human := executeCLI(t,
+		"--config", configFile,
 		"--otel=false",
 		"run",
 		"--session", "human-session",
@@ -249,6 +273,37 @@ func TestCLIDefaultHumanOutputAndExplicitJSONContract(t *testing.T) {
 	decodeJSON(t, version.stdout, &versionOutput)
 	if versionOutput["version"] != "test-version" {
 		t.Fatalf("version JSON = %#v", versionOutput)
+	}
+
+	rootVersion := executeCLI(t, "--version", "-o", "json")
+	versionOutput = map[string]string{}
+	decodeJSON(t, rootVersion.stdout, &versionOutput)
+	if versionOutput["version"] != "test-version" {
+		t.Fatalf("root version JSON = %#v", versionOutput)
+	}
+
+	schema := executeCLI(t, "--dump-schema")
+	var commandTree commandSchema
+	decodeJSON(t, schema.stdout, &commandTree)
+	if commandTree.Name != "ag" || len(commandTree.Commands) == 0 {
+		t.Fatalf("schema = %#v", commandTree)
+	}
+	subcommandSchema := executeCLI(t, "run", "--dump-schema")
+	commandTree = commandSchema{}
+	decodeJSON(t, subcommandSchema.stdout, &commandTree)
+	if commandTree.Name != "ag" {
+		t.Fatalf("subcommand schema = %#v", commandTree)
+	}
+
+	prunePreview := executeCLI(t,
+		"--state-dir", t.TempDir(),
+		"state", "prune", "--before", "720h",
+		"--dry-run", "-o", "json",
+	)
+	var prune prunePreviewOutput
+	decodeJSON(t, prunePreview.stdout, &prune)
+	if !prune.DryRun || prune.Cutoff == "" {
+		t.Fatalf("prune preview = %#v", prune)
 	}
 
 	logFile := filepath.Join(t.TempDir(), "custom.log")

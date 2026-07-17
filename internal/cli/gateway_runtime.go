@@ -86,7 +86,8 @@ func gatewayRuntimeBuilder(
 		}
 		if config.OpenAI.Enabled {
 			if err := mountLocal(openai.New(openai.Config{
-				Model: config.OpenAI.Model, BaseURL: config.OpenAI.BaseURL,
+				Model: config.OpenAI.Model, APIKey: config.OpenAI.APIKey,
+				BaseURL:    config.OpenAI.BaseURL,
 				MaxRetries: config.OpenAI.MaxRetries,
 			})); err != nil {
 				return fail(err)

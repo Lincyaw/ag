@@ -19,6 +19,7 @@ timeout = "90s"
 
 [openai]
 model = "file-model"
+api_key = "file-key"
 
 [workspace]
 root = "."
@@ -29,6 +30,7 @@ level = "debug"
 		t.Fatal(err)
 	}
 	t.Setenv("AGENTM_OPENAI_MODEL", "env-model")
+	t.Setenv("OPENAI_API_KEY", "")
 
 	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
 	flags.String("model", "flag-default", "")
@@ -44,6 +46,9 @@ level = "debug"
 	if loaded.Config.OpenAI.Model != "env-model" {
 		t.Fatalf("model = %q", loaded.Config.OpenAI.Model)
 	}
+	if loaded.Config.OpenAI.APIKey != "file-key" {
+		t.Fatalf("api key = %q", loaded.Config.OpenAI.APIKey)
+	}
 	if loaded.Config.Agent.MaxTurns != 11 {
 		t.Fatalf("max turns = %d", loaded.Config.Agent.MaxTurns)
 	}
@@ -52,6 +57,25 @@ level = "debug"
 	}
 	if loaded.Config.Logging.Format != "json" {
 		t.Fatalf("default log format = %q", loaded.Config.Logging.Format)
+	}
+}
+
+func TestOpenAIAPIKeyEnvironmentAlias(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(`
+[openai]
+api_key = "file-key"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENAI_API_KEY", "env-key")
+
+	loaded, err := Load(LoadOptions{ConfigFile: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Config.OpenAI.APIKey != "env-key" {
+		t.Fatalf("api key = %q", loaded.Config.OpenAI.APIKey)
 	}
 }
 

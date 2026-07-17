@@ -2,11 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
@@ -199,6 +201,7 @@ func TestConfigOutputRedactsURISecretsWithoutMutation(t *testing.T) {
 	t.Parallel()
 	config := appconfig.Config{
 		OpenAI: appconfig.OpenAI{
+			APIKey:  "openai-api-key-value",
 			BaseURL: "https://openai:openai-password@example.com/v1?token=openai-token-value",
 		},
 		Plugins: appconfig.Plugins{
@@ -226,6 +229,7 @@ func TestConfigOutputRedactsURISecretsWithoutMutation(t *testing.T) {
 			}
 			rendered := stdout.String()
 			for _, secret := range []string{
+				"openai-api-key-value",
 				"openai-password",
 				"openai-token-value",
 				"remote-password",
@@ -241,6 +245,9 @@ func TestConfigOutputRedactsURISecretsWithoutMutation(t *testing.T) {
 			if !strings.Contains(rendered, "xxxxx") {
 				t.Fatalf("%s output did not redact URI credentials: %s", output, rendered)
 			}
+			if !strings.Contains(rendered, "<set>") {
+				t.Fatalf("%s output did not summarize configured API key: %s", output, rendered)
+			}
 			if !strings.Contains(rendered, "file@node-a") {
 				t.Fatalf("%s output lost plugin selector: %s", output, rendered)
 			}
@@ -249,6 +256,9 @@ func TestConfigOutputRedactsURISecretsWithoutMutation(t *testing.T) {
 	if config.Plugins.Remote[0] !=
 		"file=grpc://remote:remote-password@example.com/plugin" {
 		t.Fatalf("source config was mutated: %#v", config.Plugins.Remote)
+	}
+	if config.OpenAI.APIKey != "openai-api-key-value" {
+		t.Fatalf("source API key was mutated: %q", config.OpenAI.APIKey)
 	}
 }
 
@@ -322,4 +332,173 @@ func TestHumanRunSummaryEscapesUntrustedFields(t *testing.T) {
 	if strings.ContainsRune(stdout.String(), '\x1b') {
 		t.Fatalf("human output contains terminal escape: %q", stdout.String())
 	}
+}
+
+func TestProgressReporterExplainsRuntimeEvents(t *testing.T) {
+	t.Parallel()
+	var stderr bytes.Buffer
+	application := &app{
+		stderr:   &stderr,
+		output:   outputText,
+		progress: progressPlain,
+		color:    colorAlways,
+	}
+	reporter := application.progressReporter()
+	if reporter == nil {
+		t.Fatal("progress reporter was not created")
+	}
+	reporter.observe(context.Background(), sdk.Event{
+		Name:      sdk.EventBeforeTool,
+		SessionID: "session-1",
+		Payload: json.RawMessage(
+			`{"turn":0,"call":{"id":"call-1","name":"custom_tool","arguments":{"path":"README.md","limit":3,"nested":{"owner":"me"}}}}`,
+		),
+	})
+	reporter.observe(context.Background(), sdk.Event{
+		Name:      sdk.EventAfterTool,
+		SessionID: "session-1",
+		Payload: json.RawMessage(
+			`{"turn":0,"call":{"id":"call-1","name":"custom_tool"},"result":{"content":"first line\nsecond line","is_error":false}}`,
+		),
+	})
+	got := stderr.String()
+	for _, expected := range []string{
+		"TOOL",
+		"custom_tool",
+		`path="README.md"`,
+		"limit=3",
+		"nested={\"owner\":\"me\"}",
+		"OK",
+		"2 line(s)",
+		"first line second line",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("progress output %q missing %q", got, expected)
+		}
+	}
+	if !strings.ContainsRune(got, '\x1b') {
+		t.Fatalf("progress output is not colored: %q", got)
+	}
+}
+
+func TestProgressModelRendersInlineStatus(t *testing.T) {
+	t.Parallel()
+	cancelled := false
+	model := newProgressModel(
+		newProgressStyles(&bytes.Buffer{}, false, false),
+		func() { cancelled = true },
+	)
+	updated, _ := model.Update(progressRecordMsg{
+		Status:    progressStatusTool,
+		Turn:      2,
+		SessionID: "session-1",
+		ToolName:  "remote_lookup",
+		Label:     "remote_lookup",
+		Detail:    `query="status"`,
+	})
+	view := updated.(progressModel).View()
+	for _, expected := range []string{
+		"ag using tools",
+		"Overview",
+		"session=session-1",
+		"turn=2",
+		"tools=0/1",
+		"remote_lookup",
+		`query="status"`,
+	} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("progress view %q missing %q", view, expected)
+		}
+	}
+	if strings.ContainsRune(view, '\x1b') {
+		t.Fatalf("uncolored progress view contains terminal escape: %q", view)
+	}
+
+	timeline, _ := updated.(progressModel).Update(tea.KeyMsg{Type: tea.KeyTab})
+	if view := timeline.(progressModel).View(); !strings.Contains(view, "Timeline") ||
+		!strings.Contains(view, "> 001") {
+		t.Fatalf("timeline view = %q", view)
+	}
+	help, _ := timeline.(progressModel).Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune{'?'},
+	})
+	if view := help.(progressModel).View(); !strings.Contains(view, "ctrl+c: cancel run") {
+		t.Fatalf("help view = %q", view)
+	}
+	cancelledModel, cmd := help.(progressModel).Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil || !cancelled {
+		t.Fatalf("ctrl+c cmd=%v cancelled=%v", cmd, cancelled)
+	}
+	if view := cancelledModel.(progressModel).View(); view != "" {
+		t.Fatalf("cancelled progress view = %q, want empty", view)
+	}
+
+	closed, cmd := updated.(progressModel).Update(progressDoneMsg{})
+	if cmd == nil {
+		t.Fatal("progress done did not request Bubble Tea quit")
+	}
+	if view := closed.(progressModel).View(); view != "" {
+		t.Fatalf("closed progress view = %q, want empty", view)
+	}
+}
+
+func TestProgressReporterIgnoresJSONOutput(t *testing.T) {
+	t.Parallel()
+	application := &app{
+		stderr:   &bytes.Buffer{},
+		output:   outputJSON,
+		progress: progressAlways,
+		color:    colorAlways,
+	}
+	if reporter := application.progressReporter(); reporter != nil {
+		t.Fatal("progress reporter was created for JSON output")
+	}
+}
+
+func TestSchemaIncludesMachineReadableGlobalFlags(t *testing.T) {
+	t.Parallel()
+	var stdout bytes.Buffer
+	command := New(&stdout, &bytes.Buffer{}, "test-version")
+	schema := schemaForCommand(command)
+	if schema.Name != "ag" || len(schema.Commands) == 0 {
+		t.Fatalf("schema = %#v", schema)
+	}
+	flags := map[string]flagSchema{}
+	for _, flag := range schema.PersistentFlags {
+		flags[flag.Name] = flag
+	}
+	if flags["dump-schema"].Name == "" || flags["version"].Name == "" {
+		t.Fatalf("schema missing introspection flags: %#v", flags)
+	}
+	progress := flags["progress"]
+	if !slicesEqual(progress.AllowedValues, []string{
+		progressAuto,
+		progressTUI,
+		progressPlain,
+		progressAlways,
+		progressNever,
+	}) {
+		t.Fatalf("progress schema = %#v", progress)
+	}
+	color := flags["color"]
+	if !slicesEqual(color.AllowedValues, []string{
+		colorAuto,
+		colorAlways,
+		colorNever,
+	}) {
+		t.Fatalf("color schema = %#v", color)
+	}
+}
+
+func slicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }

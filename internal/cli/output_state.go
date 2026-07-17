@@ -13,6 +13,11 @@ type stateOutput struct {
 	Capabilities sdk.StorageCapabilities `json:"capabilities"`
 }
 
+type prunePreviewOutput struct {
+	Cutoff string `json:"cutoff"`
+	DryRun bool   `json:"dry_run"`
+}
+
 func (application *app) writeState(value stateOutput) error {
 	return application.render(value, func(writer io.Writer) error {
 		table := newTable(writer)
@@ -50,6 +55,21 @@ func (application *app) writePrune(result sdk.PruneResult) error {
 		fmt.Fprintf(table, "Operations deleted:\t%d\n", result.Operations)
 		fmt.Fprintf(table, "Deliveries deleted:\t%d\n", result.Deliveries)
 		fmt.Fprintf(table, "Trajectories deleted:\t%d\n", result.Trajectories)
+		return table.Flush()
+	})
+}
+
+func (application *app) writePrunePreview(value prunePreviewOutput) error {
+	return application.render(value, func(writer io.Writer) error {
+		if _, err := fmt.Fprintln(writer, "Would prune terminal state."); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(writer); err != nil {
+			return err
+		}
+		table := newTable(writer)
+		fmt.Fprintf(table, "Cutoff:\t%s\n", tableCell(value.Cutoff))
+		fmt.Fprintf(table, "Dry run:\tyes\n")
 		return table.Flush()
 	})
 }

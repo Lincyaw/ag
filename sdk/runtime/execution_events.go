@@ -143,7 +143,27 @@ func (runtime *Runtime) dispatch(
 		recordSpanError(span, err)
 		return DispatchResult{}, err
 	}
+	runtime.observeEvent(ctx, result.Event)
 	return result, nil
+}
+
+func (runtime *Runtime) observeEvent(ctx context.Context, event sdk.Event) {
+	if runtime.eventObserver == nil {
+		return
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			runtime.logger.WarnContext(
+				ctx,
+				"runtime event observer panicked",
+				"event",
+				event.Name,
+				"panic",
+				recovered,
+			)
+		}
+	}()
+	runtime.eventObserver(ctx, sdk.CloneEvent(event))
 }
 
 func (runtime *Runtime) invokeHook(

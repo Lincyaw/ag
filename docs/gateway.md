@@ -43,8 +43,9 @@ When omitted, `gateway.directory` defaults to the resolved
 `$HOME/.ag/gateway` path. A configured path is interpreted literally; shell
 tilde expansion does not apply inside TOML.
 
-The OpenAI-compatible API key is read from `OPENAI_API_KEY`; it is not stored
-in or printed by the `ag` configuration schema.
+The OpenAI-compatible API key is read from `[openai].api_key` in the config
+file, with `OPENAI_API_KEY` and `AGENTM_OPENAI_API_KEY` available as
+compatibility aliases. `ag config show` reports only whether the key is set.
 
 Start the control plane, one or more standalone plugins, and the gateway:
 
