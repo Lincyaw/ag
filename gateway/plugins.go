@@ -29,6 +29,11 @@ type PluginCatalog interface {
 	) (registry.DiscoveryPage, error)
 }
 
+type PluginDirectory interface {
+	PluginCatalog
+	Close(context.Context) error
+}
+
 type ManagerConfig struct {
 	Store            SessionStore
 	Directory        PluginCatalog

@@ -37,7 +37,7 @@ type ExecutionRecoveryBackend interface {
 
 type ServiceConfig struct {
 	Store            SessionStore
-	Directory        registry.Directory
+	Directory        PluginDirectory
 	Executions       ExecutionBackend
 	DefaultNamespace string
 	DefaultProvider  string
@@ -47,7 +47,7 @@ type ServiceConfig struct {
 
 type Service struct {
 	store      SessionStore
-	directory  registry.Directory
+	directory  PluginDirectory
 	executions ExecutionBackend
 	manager    *Manager
 	defaults   Session
