@@ -37,8 +37,25 @@ idempotent; the SDK does not claim exactly-once execution.
 
 Requires the Go version declared in `go.mod`.
 
+Build `ag` and link it to the executable used by `~/.ag/ag`:
+
 ```bash
-go build -o bin/ag ./cmd/ag
+make
+```
+
+This produces `bin/ag` and links `~/.ag/bin/ag-core` to it. The paths can be
+overridden when needed:
+
+```bash
+make AG_HOME=/custom/ag-home
+make build
+make test
+make clean
+```
+
+Standalone plugin binaries can still be built directly:
+
+```bash
 go build -o bin/agentm-plugin-file ./cmd/agentm-plugin-file
 go build -o bin/agentm-plugin-bash ./cmd/agentm-plugin-bash
 ```
