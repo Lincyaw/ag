@@ -100,6 +100,36 @@ func TestAwaitOperationCancellationUsesFreshContext(t *testing.T) {
 	}
 }
 
+func TestAwaitOperationShutdownDoesNotCancelResource(t *testing.T) {
+	t.Parallel()
+	runtime := &Runtime{
+		closed:    true,
+		operation: operationRuntime{poll: time.Second},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := runtime.awaitOperation(
+		ctx,
+		sdk.Operation{
+			ID:             "operation-shutdown",
+			IdempotencyKey: "entry-shutdown",
+			State:          sdk.OperationRunning,
+			Revision:       4,
+		},
+		func(context.Context, string, uint64) (sdk.Operation, error) {
+			t.Fatal("poll called after runtime shutdown")
+			return sdk.Operation{}, nil
+		},
+		func(context.Context, string) (sdk.Operation, error) {
+			t.Fatal("resource cancelled during runtime shutdown")
+			return sdk.Operation{}, nil
+		},
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("await error = %v, want context.Canceled", err)
+	}
+}
+
 func TestAwaitOperationRejectsRemoteStateCorruption(t *testing.T) {
 	t.Parallel()
 	tests := map[string]sdk.Operation{
