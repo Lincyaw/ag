@@ -95,6 +95,10 @@ bin/ag run \
   --prompt "Inspect the workspace, then run the tests."
 ```
 
+The [independent Python example](examples/python-plugin/README.md) implements
+the same protocol without importing the Go SDK. It includes provider, tool,
+capability, hook, subscriber, async operation, and registry lease behavior.
+
 Remote aliases share the plugin namespace with local plugins. Disable a local
 plugin (for example, `--file=false`) before mounting a remote plugin under the
 same name; `ag plugin inspect grpc://host:port` can inspect a URI directly.
@@ -156,10 +160,10 @@ go test -race ./...
 go build ./cmd/ag ./cmd/agentm-plugin-file ./cmd/agentm-plugin-bash
 ```
 
-The integration suite builds and starts real standalone plugin processes,
-performs protobuf `Submit / Poll` calls, verifies lease registration and
-cleanup, and exercises CLI trajectory resume/rollback through a real
-OpenAI-compatible HTTP server.
+The integration suite builds and starts real Go and Python standalone plugin
+processes, performs protobuf `Submit / Poll / Cancel` calls, verifies lease
+renewal and cleanup, and exercises CLI trajectory resume/rollback through a
+real OpenAI-compatible HTTP server.
 
 See [docs/pluggable-sdk.md](docs/pluggable-sdk.md) for the normative architecture
 and [decisions.md](decisions.md) for accepted design decisions.

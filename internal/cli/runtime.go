@@ -98,14 +98,19 @@ func (running *runningRuntime) close(stderr io.Writer) {
 	if running == nil {
 		return
 	}
-	ctx, cancel := closeContext()
-	defer cancel()
 	var err error
 	if running.runtime != nil {
+		ctx, cancel := closeContext()
+		err = errors.Join(err, running.runtime.DrainDeliveries(ctx))
+		cancel()
+		ctx, cancel = closeContext()
 		err = errors.Join(err, running.runtime.Close(ctx))
+		cancel()
 	}
 	if running.telemetry != nil {
+		ctx, cancel := closeContext()
 		err = errors.Join(err, running.telemetry.Shutdown(ctx))
+		cancel()
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "ag: shutdown: %v\n", err)

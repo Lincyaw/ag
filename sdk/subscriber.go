@@ -68,6 +68,49 @@ func (runtime *Runtime) startDeliveryWorkers() {
 	})
 }
 
+// DrainDeliveries waits for deliveries addressed to subscribers in the current
+// runtime snapshot to reach a terminal state. Producers remain asynchronous;
+// callers opt into this synchronization only at an explicit lifecycle boundary.
+func (runtime *Runtime) DrainDeliveries(ctx context.Context) error {
+	lease, err := runtime.acquireSnapshot()
+	if err != nil {
+		return err
+	}
+	targets := make(map[string]string, len(lease.snapshot.subscribers))
+	for name, subscriber := range lease.snapshot.subscribers {
+		targets[name] = subscriber.owner.manifest.Name
+	}
+	lease.release()
+	if len(targets) == 0 {
+		return nil
+	}
+
+	for {
+		deliveries, err := runtime.outbox.List(ctx)
+		if err != nil {
+			return fmt.Errorf("list subscriber deliveries while draining: %w", err)
+		}
+		pending := false
+		for _, delivery := range deliveries {
+			plugin, exists := targets[delivery.Subscription]
+			if !exists || plugin != delivery.Plugin {
+				continue
+			}
+			if delivery.State != DeliveryDelivered &&
+				delivery.State != DeliveryDeadLetter {
+				pending = true
+				break
+			}
+		}
+		if !pending {
+			return nil
+		}
+		if !waitContext(ctx, runtime.deliveryPoll) {
+			return ctx.Err()
+		}
+	}
+}
+
 func (runtime *Runtime) deliveryLoop(worker int) {
 	defer runtime.deliveryWait.Done()
 	for {

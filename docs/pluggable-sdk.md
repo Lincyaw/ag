@@ -436,6 +436,8 @@ Business output goes to stdout. Diagnostics and logs go to stderr.
 The repository also builds `agentm-plugin-file` and `agentm-plugin-bash` as
 standalone Cobra processes. Each owns durable operation/inbox state, exposes
 gRPC health, optionally serves TLS, and may register/renew/unregister a lease.
+`examples/python-plugin` independently implements the wire protocol without
+importing the Go SDK.
 
 ## End-to-end acceptance
 
@@ -463,6 +465,9 @@ The complete acceptance suite also:
     output, and persistent trajectory behavior;
 19. builds and starts real file/bash child processes, then executes tools via
     protobuf Submit/Poll and checks durable operation state.
+20. generates Python stubs from the public proto, starts a real Python plugin
+    process, mounts it through its renewable lease, and runs provider -> hook ->
+    tool -> provider plus capability, subscriber, idempotency, Poll, and Cancel.
 
 Shape-only tests and tests that only check getters do not satisfy this
 acceptance criterion.

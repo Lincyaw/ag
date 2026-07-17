@@ -58,7 +58,7 @@ func TestStandaloneFileAndBashProcessesWithLeaseAndPolling(t *testing.T) {
 		t.Fatalf("build bash plugin: %v\n%s", err, output)
 	}
 
-	registryURI, registryClient := startRegistry(t)
+	registryURI, registryClient, _ := startRegistry(t)
 	root := t.TempDir()
 	fileState := filepath.Join(t.TempDir(), "file-state")
 	fileProcess := startPluginProcess(t, fileBinary,
@@ -136,9 +136,21 @@ type childProcess struct {
 }
 
 func startPluginProcess(t *testing.T, binary string, arguments ...string) *childProcess {
+	return startPluginProcessEnv(t, nil, binary, arguments...)
+}
+
+func startPluginProcessEnv(
+	t *testing.T,
+	environment []string,
+	binary string,
+	arguments ...string,
+) *childProcess {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	command := exec.CommandContext(ctx, binary, arguments...)
+	if len(environment) > 0 {
+		command.Env = append(os.Environ(), environment...)
+	}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		cancel()
@@ -188,7 +200,9 @@ func (process *childProcess) stop(t *testing.T) {
 	}
 }
 
-func startRegistry(t *testing.T) (string, *pluginrpc.RegistryClient) {
+func startRegistry(
+	t *testing.T,
+) (string, *pluginrpc.RegistryClient, *sdk.LeaseRegistry) {
 	t.Helper()
 	leaseRegistry := sdk.NewLeaseRegistry(sdk.LeaseRegistryConfig{})
 	adapter, err := pluginrpc.NewRegistryServer(leaseRegistry)
@@ -218,7 +232,7 @@ func startRegistry(t *testing.T) (string, *pluginrpc.RegistryClient) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
-	return uri, client
+	return uri, client, leaseRegistry
 }
 
 func connectPlugin(

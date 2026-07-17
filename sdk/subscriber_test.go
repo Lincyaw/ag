@@ -181,6 +181,74 @@ func TestSubscriberRetriesAndDeadLettersWithoutBlockingProducer(t *testing.T) {
 	})
 }
 
+func TestDrainDeliveriesWaitsForCurrentSubscribersAndHonorsContext(t *testing.T) {
+	t.Parallel()
+	runtime := newSubscriberTestRuntime(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	plugin := &subscriberTestPlugin{
+		manifest: Manifest{
+			Name:        "drain-observer",
+			Version:     "1.0.0",
+			Description: "holds a delivery across an explicit drain boundary",
+			APIVersion:  APIVersion,
+			Registers:   []string{SubscriberResource("drain-events")},
+		},
+		subscriber: SubscriberFunc{
+			SubscriberSpec: SubscriberSpec{
+				Name:   "drain-events",
+				Events: []string{EventAgentEnd},
+			},
+			ReceiveFunc: func(ctx context.Context, _ Delivery) error {
+				close(entered)
+				select {
+				case <-release:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			},
+		},
+		closed: make(chan struct{}),
+	}
+	if _, err := runtime.Mount(context.Background(), Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Emit(
+		context.Background(),
+		EventAgentEnd,
+		"drain-session",
+		AgentEndPayload{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("subscriber did not enter")
+	}
+
+	shortCtx, shortCancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer shortCancel()
+	if err := runtime.DrainDeliveries(shortCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("short drain error = %v", err)
+	}
+
+	close(release)
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), time.Second)
+	defer drainCancel()
+	if err := runtime.DrainDeliveries(drainCtx); err != nil {
+		t.Fatalf("drain deliveries: %v", err)
+	}
+	deliveries, err := runtime.Outbox().List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != 1 || deliveries[0].State != DeliveryDelivered {
+		t.Fatalf("drained deliveries = %#v", deliveries)
+	}
+}
+
 func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
