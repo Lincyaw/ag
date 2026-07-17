@@ -245,6 +245,24 @@ message Registration {
   string name = 1;
   string uri = 2;
   Manifest manifest = 3;
+  string namespace = 4;
+  string instance_id = 5;
+  map<string, string> labels = 6;
+}
+
+message InstanceKey {
+  string namespace = 1;
+  string name = 2;
+  string instance_id = 3;
+}
+
+message PluginInstance {
+  Registration registration = 1;
+  int64 registered_unix_milli = 2;
+  int64 updated_unix_milli = 3;
+  int64 expires_unix_milli = 4;
+  uint64 revision = 5;
+  uint64 epoch = 6;
 }
 
 message RegisterRequest {
@@ -259,11 +277,15 @@ message RegisterResponse {
 message Lease {
   string id = 1;
   int64 expires_unix_milli = 2;
+  string token = 3;
+  InstanceKey key = 4;
+  uint64 epoch = 5;
 }
 
 message RenewRequest {
   string id = 1;
   int64 ttl_millis = 2;
+  string token = 3;
 }
 
 message RenewResponse {
@@ -272,14 +294,65 @@ message RenewResponse {
 
 message UnregisterRequest {
   string id = 1;
+  string token = 2;
 }
 
 message UnregisterResponse {}
 
-message ListRegistrationsRequest {}
+message DiscoveryQuery {
+  string namespace = 1;
+  string name = 2;
+  string version = 3;
+  string resource = 4;
+  map<string, string> labels = 5;
+}
+
+message GetRegistrationRequest {
+  InstanceKey key = 1;
+}
+
+message GetRegistrationResponse {
+  PluginInstance instance = 1;
+}
+
+message ListRegistrationsRequest {
+  DiscoveryQuery query = 1;
+  string page_token = 2;
+  uint32 page_size = 3;
+}
 
 message ListRegistrationsResponse {
+  // Deprecated compatibility projection. New clients should use instances.
   repeated Registration registrations = 1;
+  string next_page_token = 2;
+  uint64 revision = 3;
+  repeated PluginInstance instances = 4;
+}
+
+enum RegistrationChangeKind {
+  REGISTRATION_CHANGE_KIND_UNSPECIFIED = 0;
+  REGISTRATION_CHANGE_KIND_UPSERT = 1;
+  REGISTRATION_CHANGE_KIND_DELETE = 2;
+  REGISTRATION_CHANGE_KIND_EXPIRE = 3;
+}
+
+message RegistrationChange {
+  uint64 revision = 1;
+  RegistrationChangeKind kind = 2;
+  PluginInstance instance = 3;
+}
+
+message PollRegistrationsRequest {
+  DiscoveryQuery query = 1;
+  uint64 after_revision = 2;
+  uint32 limit = 3;
+  int64 wait_millis = 4;
+}
+
+message PollRegistrationsResponse {
+  repeated RegistrationChange changes = 1;
+  uint64 next_revision = 2;
+  uint64 current_revision = 3;
 }
 
 service PluginService {
@@ -297,6 +370,10 @@ service RegistryService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   rpc Renew(RenewRequest) returns (RenewResponse);
   rpc Unregister(UnregisterRequest) returns (UnregisterResponse);
+  rpc GetRegistration(GetRegistrationRequest)
+      returns (GetRegistrationResponse);
   rpc ListRegistrations(ListRegistrationsRequest)
       returns (ListRegistrationsResponse);
+  rpc PollRegistrations(PollRegistrationsRequest)
+      returns (PollRegistrationsResponse);
 }

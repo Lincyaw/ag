@@ -16,6 +16,7 @@ import (
 	"github.com/lincyaw/ag/internal/cli"
 	"github.com/lincyaw/ag/pluginrpc"
 	pluginv1 "github.com/lincyaw/ag/pluginrpc/v1"
+	pluginregistry "github.com/lincyaw/ag/registry"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 	sdkstorage "github.com/lincyaw/ag/sdk/storage"
@@ -55,7 +56,7 @@ func TestPythonPluginProcessImplementsCrossLanguageContract(t *testing.T) {
 		t.Fatalf("generate Python protocol stubs: %v\n%s", err, output)
 	}
 
-	registryURI, registryClient, registry := startRegistry(t)
+	registryURI, registryClient, _ := startRegistry(t)
 	eventsFile := filepath.Join(t.TempDir(), "deliveries.jsonl")
 	process := startPluginProcessEnv(
 		t,
@@ -73,19 +74,43 @@ func TestPythonPluginProcessImplementsCrossLanguageContract(t *testing.T) {
 		t.Fatalf("Python plugin ready = %#v", process.ready)
 	}
 	eventually(t, 2*time.Second, func() bool {
-		registrations, listErr := registryClient.List(context.Background())
-		return listErr == nil && len(registrations) == 1 &&
-			registrations[0].Name == "python-e2e" &&
-			registrations[0].URI == process.ready.URI &&
-			len(registrations[0].Manifest.Registers) == 6
+		page, listErr := registryClient.List(
+			context.Background(),
+			pluginregistry.DiscoveryQuery{},
+			pluginregistry.PageRequest{},
+		)
+		return listErr == nil && len(page.Items) == 1 &&
+			page.Items[0].Name == "python-e2e" &&
+			page.Items[0].URI == process.ready.URI &&
+			len(page.Items[0].Manifest.Registers) == 6
 	})
 	time.Sleep(700 * time.Millisecond)
-	registrations, err := registryClient.List(context.Background())
-	if err != nil || len(registrations) != 1 {
-		t.Fatalf("Python lease was not renewed: registrations=%#v err=%v", registrations, err)
+	registrations, err := registryClient.List(
+		context.Background(),
+		pluginregistry.DiscoveryQuery{},
+		pluginregistry.PageRequest{},
+	)
+	if err != nil || len(registrations.Items) != 1 {
+		t.Fatalf(
+			"Python lease was not renewed: registrations=%#v err=%v",
+			registrations,
+			err,
+		)
 	}
 
-	if err := pluginrpc.RegisterDrivers(registry, pluginrpc.ClientConfig{}); err != nil {
+	sourceRegistry := sdk.NewPluginRegistry()
+	if err := pluginrpc.RegisterDrivers(
+		sourceRegistry,
+		pluginrpc.ClientConfig{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceRegistry.Register(sdk.PluginReference{
+		Name:        registrations.Items[0].Name,
+		URI:         registrations.Items[0].URI,
+		Description: registrations.Items[0].Manifest.Description,
+		Labels:      registrations.Items[0].Labels,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{
@@ -105,7 +130,7 @@ func TestPythonPluginProcessImplementsCrossLanguageContract(t *testing.T) {
 			t.Errorf("close runtime: %v", err)
 		}
 	})
-	source, err := registry.Resolve(context.Background(), "python-e2e")
+	source, err := sourceRegistry.Resolve(context.Background(), "python-e2e")
 	if err != nil {
 		t.Fatalf("resolve Python plugin through lease registration: %v", err)
 	}
@@ -317,8 +342,12 @@ func TestPythonPluginProcessImplementsCrossLanguageContract(t *testing.T) {
 	}
 	process.stop(t)
 	eventually(t, 2*time.Second, func() bool {
-		registrations, listErr := registryClient.List(context.Background())
-		return listErr == nil && len(registrations) == 0
+		page, listErr := registryClient.List(
+			context.Background(),
+			pluginregistry.DiscoveryQuery{},
+			pluginregistry.PageRequest{},
+		)
+		return listErr == nil && len(page.Items) == 0
 	})
 }
 

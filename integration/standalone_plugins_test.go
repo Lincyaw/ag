@@ -26,6 +26,7 @@ import (
 	"github.com/lincyaw/ag/internal/pluginhost"
 	"github.com/lincyaw/ag/pluginrpc"
 	pluginv1 "github.com/lincyaw/ag/pluginrpc/v1"
+	"github.com/lincyaw/ag/registry"
 	"github.com/lincyaw/ag/sdk"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -72,9 +73,14 @@ func TestStandaloneFileAndBashProcessesWithLeaseAndPolling(t *testing.T) {
 		t.Fatalf("file ready = %#v", fileProcess.ready)
 	}
 	eventually(t, 2*time.Second, func() bool {
-		registrations, err := registryClient.List(context.Background())
-		return err == nil && len(registrations) == 1 &&
-			registrations[0].Name == "file" && registrations[0].URI == fileProcess.ready.URI
+		page, err := registryClient.List(
+			context.Background(),
+			registry.DiscoveryQuery{},
+			registry.PageRequest{},
+		)
+		return err == nil && len(page.Items) == 1 &&
+			page.Items[0].Name == "file" &&
+			page.Items[0].URI == fileProcess.ready.URI
 	})
 	fileClient := connectPlugin(t, fileProcess.ready.URI, nil)
 	write := callTool(t, fileClient, "write_file", "write-once", map[string]any{
@@ -108,8 +114,12 @@ func TestStandaloneFileAndBashProcessesWithLeaseAndPolling(t *testing.T) {
 	}
 	fileProcess.stop(t)
 	eventually(t, 2*time.Second, func() bool {
-		registrations, err := registryClient.List(context.Background())
-		return err == nil && len(registrations) == 0
+		page, err := registryClient.List(
+			context.Background(),
+			registry.DiscoveryQuery{},
+			registry.PageRequest{},
+		)
+		return err == nil && len(page.Items) == 0
 	})
 	if _, err := os.Stat(filepath.Join(fileState, "operations", "operations.json")); err != nil {
 		t.Fatalf("durable operation state missing: %v", err)
@@ -233,13 +243,10 @@ func (process *childProcess) stop(t *testing.T) {
 
 func startRegistry(
 	t *testing.T,
-) (string, *pluginrpc.RegistryClient, *sdk.PluginRegistry) {
+) (string, *pluginrpc.RegistryClient, registry.Directory) {
 	t.Helper()
-	registry := sdk.NewPluginRegistry()
-	leaseRegistry := sdk.NewLeaseRegistry(sdk.LeaseRegistryConfig{
-		Registry: registry,
-	})
-	adapter, err := pluginrpc.NewRegistryServer(leaseRegistry)
+	directory := registry.NewMemoryDirectory(registry.MemoryConfig{})
+	adapter, err := pluginrpc.NewRegistryServer(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,14 +264,17 @@ func startRegistry(
 		if err := <-serveDone; err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			t.Errorf("registry serve: %v", err)
 		}
+		if err := directory.Close(context.Background()); err != nil {
+			t.Errorf("registry close: %v", err)
+		}
 	})
 	uri := "grpc://" + listener.Addr().String()
 	client, err := pluginrpc.NewRegistryClient(context.Background(), uri, pluginrpc.ClientConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = client.Close() })
-	return uri, client, registry
+	t.Cleanup(func() { _ = client.Close(context.Background()) })
+	return uri, client, directory
 }
 
 func connectPlugin(

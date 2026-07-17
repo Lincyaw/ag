@@ -419,6 +419,8 @@ def main() -> int:
     registry_channel = None
     registry = None
     lease_id = ""
+    lease_token = ""
+    instance_id = uuid.uuid4().hex
     try:
         if arguments.registry_uri:
             registry_channel = grpc.insecure_channel(
@@ -429,7 +431,9 @@ def main() -> int:
             response = registry.Register(
                 protocol.RegisterRequest(
                     registration=protocol.Registration(
+                        namespace="default",
                         name=PLUGIN_NAME,
+                        instance_id=instance_id,
                         uri=uri,
                         manifest=manifest(),
                     ),
@@ -438,11 +442,14 @@ def main() -> int:
                 timeout=5,
             )
             lease_id = response.lease.id
+            lease_token = response.lease.token
 
         print(
             json.dumps(
                 {
                     "name": PLUGIN_NAME,
+                    "namespace": "default",
+                    "instance_id": instance_id,
                     "uri": uri,
                     "pid": os.getpid(),
                 },
@@ -457,6 +464,7 @@ def main() -> int:
                 registry.Renew(
                     protocol.RenewRequest(
                         id=lease_id,
+                        token=lease_token,
                         ttl_millis=arguments.lease_ttl_ms,
                     ),
                     timeout=5,
@@ -465,7 +473,10 @@ def main() -> int:
         if registry is not None and lease_id:
             try:
                 registry.Unregister(
-                    protocol.UnregisterRequest(id=lease_id),
+                    protocol.UnregisterRequest(
+                        id=lease_id,
+                        token=lease_token,
+                    ),
                     timeout=2,
                 )
             except grpc.RpcError:

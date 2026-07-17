@@ -82,6 +82,24 @@ func NewCommand(config CommandConfig) *cobra.Command {
 	command.Flags().StringVar(&host.Listen, "listen", "127.0.0.1:0", "TCP listen address.")
 	command.Flags().StringVar(&host.AdvertiseURI, "advertise-uri", "", "Registry-facing grpc[s] URI.")
 	command.Flags().StringVar(&host.RegistryURI, "registry-uri", "", "Optional lease registry URI.")
+	command.Flags().StringVar(
+		&host.RegistryNamespace,
+		"registry-namespace",
+		"default",
+		"Registry namespace.",
+	)
+	command.Flags().StringVar(
+		&host.InstanceID,
+		"instance-id",
+		"",
+		"Registry instance identity (default: generated per process).",
+	)
+	command.Flags().StringToStringVar(
+		&host.RegistryLabels,
+		"label",
+		nil,
+		"Registry label in key=value form (repeatable).",
+	)
 	command.Flags().DurationVar(&host.LeaseTTL, "lease-ttl", 30*time.Second, "Discovery lease TTL.")
 	command.Flags().StringVar(&host.StateDirectory, "state-dir", "", "Durable operation and inbox state.")
 	command.Flags().StringVar(

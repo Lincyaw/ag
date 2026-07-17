@@ -314,7 +314,9 @@ const (
 	RegistryService_Register_FullMethodName          = "/pluginrpc.v1.RegistryService/Register"
 	RegistryService_Renew_FullMethodName             = "/pluginrpc.v1.RegistryService/Renew"
 	RegistryService_Unregister_FullMethodName        = "/pluginrpc.v1.RegistryService/Unregister"
+	RegistryService_GetRegistration_FullMethodName   = "/pluginrpc.v1.RegistryService/GetRegistration"
 	RegistryService_ListRegistrations_FullMethodName = "/pluginrpc.v1.RegistryService/ListRegistrations"
+	RegistryService_PollRegistrations_FullMethodName = "/pluginrpc.v1.RegistryService/PollRegistrations"
 )
 
 // RegistryServiceClient is the client API for RegistryService service.
@@ -324,7 +326,9 @@ type RegistryServiceClient interface {
 	Register(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*RegisterResponse, error)
 	Renew(ctx context.Context, in *RenewRequest, opts ...grpc.CallOption) (*RenewResponse, error)
 	Unregister(ctx context.Context, in *UnregisterRequest, opts ...grpc.CallOption) (*UnregisterResponse, error)
+	GetRegistration(ctx context.Context, in *GetRegistrationRequest, opts ...grpc.CallOption) (*GetRegistrationResponse, error)
 	ListRegistrations(ctx context.Context, in *ListRegistrationsRequest, opts ...grpc.CallOption) (*ListRegistrationsResponse, error)
+	PollRegistrations(ctx context.Context, in *PollRegistrationsRequest, opts ...grpc.CallOption) (*PollRegistrationsResponse, error)
 }
 
 type registryServiceClient struct {
@@ -365,10 +369,30 @@ func (c *registryServiceClient) Unregister(ctx context.Context, in *UnregisterRe
 	return out, nil
 }
 
+func (c *registryServiceClient) GetRegistration(ctx context.Context, in *GetRegistrationRequest, opts ...grpc.CallOption) (*GetRegistrationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetRegistrationResponse)
+	err := c.cc.Invoke(ctx, RegistryService_GetRegistration_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *registryServiceClient) ListRegistrations(ctx context.Context, in *ListRegistrationsRequest, opts ...grpc.CallOption) (*ListRegistrationsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListRegistrationsResponse)
 	err := c.cc.Invoke(ctx, RegistryService_ListRegistrations_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *registryServiceClient) PollRegistrations(ctx context.Context, in *PollRegistrationsRequest, opts ...grpc.CallOption) (*PollRegistrationsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PollRegistrationsResponse)
+	err := c.cc.Invoke(ctx, RegistryService_PollRegistrations_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -382,7 +406,9 @@ type RegistryServiceServer interface {
 	Register(context.Context, *RegisterRequest) (*RegisterResponse, error)
 	Renew(context.Context, *RenewRequest) (*RenewResponse, error)
 	Unregister(context.Context, *UnregisterRequest) (*UnregisterResponse, error)
+	GetRegistration(context.Context, *GetRegistrationRequest) (*GetRegistrationResponse, error)
 	ListRegistrations(context.Context, *ListRegistrationsRequest) (*ListRegistrationsResponse, error)
+	PollRegistrations(context.Context, *PollRegistrationsRequest) (*PollRegistrationsResponse, error)
 	mustEmbedUnimplementedRegistryServiceServer()
 }
 
@@ -402,8 +428,14 @@ func (UnimplementedRegistryServiceServer) Renew(context.Context, *RenewRequest) 
 func (UnimplementedRegistryServiceServer) Unregister(context.Context, *UnregisterRequest) (*UnregisterResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Unregister not implemented")
 }
+func (UnimplementedRegistryServiceServer) GetRegistration(context.Context, *GetRegistrationRequest) (*GetRegistrationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRegistration not implemented")
+}
 func (UnimplementedRegistryServiceServer) ListRegistrations(context.Context, *ListRegistrationsRequest) (*ListRegistrationsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListRegistrations not implemented")
+}
+func (UnimplementedRegistryServiceServer) PollRegistrations(context.Context, *PollRegistrationsRequest) (*PollRegistrationsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PollRegistrations not implemented")
 }
 func (UnimplementedRegistryServiceServer) mustEmbedUnimplementedRegistryServiceServer() {}
 func (UnimplementedRegistryServiceServer) testEmbeddedByValue()                         {}
@@ -480,6 +512,24 @@ func _RegistryService_Unregister_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RegistryService_GetRegistration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRegistrationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RegistryServiceServer).GetRegistration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RegistryService_GetRegistration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RegistryServiceServer).GetRegistration(ctx, req.(*GetRegistrationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _RegistryService_ListRegistrations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListRegistrationsRequest)
 	if err := dec(in); err != nil {
@@ -494,6 +544,24 @@ func _RegistryService_ListRegistrations_Handler(srv interface{}, ctx context.Con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(RegistryServiceServer).ListRegistrations(ctx, req.(*ListRegistrationsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RegistryService_PollRegistrations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PollRegistrationsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RegistryServiceServer).PollRegistrations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RegistryService_PollRegistrations_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RegistryServiceServer).PollRegistrations(ctx, req.(*PollRegistrationsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -518,8 +586,16 @@ var RegistryService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _RegistryService_Unregister_Handler,
 		},
 		{
+			MethodName: "GetRegistration",
+			Handler:    _RegistryService_GetRegistration_Handler,
+		},
+		{
 			MethodName: "ListRegistrations",
 			Handler:    _RegistryService_ListRegistrations_Handler,
+		},
+		{
+			MethodName: "PollRegistrations",
+			Handler:    _RegistryService_PollRegistrations_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -233,6 +233,58 @@ func (OperationKind) EnumDescriptor() ([]byte, []int) {
 	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{3}
 }
 
+type RegistrationChangeKind int32
+
+const (
+	RegistrationChangeKind_REGISTRATION_CHANGE_KIND_UNSPECIFIED RegistrationChangeKind = 0
+	RegistrationChangeKind_REGISTRATION_CHANGE_KIND_UPSERT      RegistrationChangeKind = 1
+	RegistrationChangeKind_REGISTRATION_CHANGE_KIND_DELETE      RegistrationChangeKind = 2
+	RegistrationChangeKind_REGISTRATION_CHANGE_KIND_EXPIRE      RegistrationChangeKind = 3
+)
+
+// Enum value maps for RegistrationChangeKind.
+var (
+	RegistrationChangeKind_name = map[int32]string{
+		0: "REGISTRATION_CHANGE_KIND_UNSPECIFIED",
+		1: "REGISTRATION_CHANGE_KIND_UPSERT",
+		2: "REGISTRATION_CHANGE_KIND_DELETE",
+		3: "REGISTRATION_CHANGE_KIND_EXPIRE",
+	}
+	RegistrationChangeKind_value = map[string]int32{
+		"REGISTRATION_CHANGE_KIND_UNSPECIFIED": 0,
+		"REGISTRATION_CHANGE_KIND_UPSERT":      1,
+		"REGISTRATION_CHANGE_KIND_DELETE":      2,
+		"REGISTRATION_CHANGE_KIND_EXPIRE":      3,
+	}
+)
+
+func (x RegistrationChangeKind) Enum() *RegistrationChangeKind {
+	p := new(RegistrationChangeKind)
+	*p = x
+	return p
+}
+
+func (x RegistrationChangeKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RegistrationChangeKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_pluginrpc_v1_plugin_proto_enumTypes[4].Descriptor()
+}
+
+func (RegistrationChangeKind) Type() protoreflect.EnumType {
+	return &file_pluginrpc_v1_plugin_proto_enumTypes[4]
+}
+
+func (x RegistrationChangeKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RegistrationChangeKind.Descriptor instead.
+func (RegistrationChangeKind) EnumDescriptor() ([]byte, []int) {
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{4}
+}
+
 type Manifest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -2290,6 +2342,9 @@ type Registration struct {
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Uri           string                 `protobuf:"bytes,2,opt,name=uri,proto3" json:"uri,omitempty"`
 	Manifest      *Manifest              `protobuf:"bytes,3,opt,name=manifest,proto3" json:"manifest,omitempty"`
+	Namespace     string                 `protobuf:"bytes,4,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	InstanceId    string                 `protobuf:"bytes,5,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	Labels        map[string]string      `protobuf:"bytes,6,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2345,6 +2400,171 @@ func (x *Registration) GetManifest() *Manifest {
 	return nil
 }
 
+func (x *Registration) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *Registration) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *Registration) GetLabels() map[string]string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
+}
+
+type InstanceKey struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	InstanceId    string                 `protobuf:"bytes,3,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InstanceKey) Reset() {
+	*x = InstanceKey{}
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InstanceKey) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InstanceKey) ProtoMessage() {}
+
+func (x *InstanceKey) ProtoReflect() protoreflect.Message {
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InstanceKey.ProtoReflect.Descriptor instead.
+func (*InstanceKey) Descriptor() ([]byte, []int) {
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *InstanceKey) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *InstanceKey) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *InstanceKey) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+type PluginInstance struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Registration        *Registration          `protobuf:"bytes,1,opt,name=registration,proto3" json:"registration,omitempty"`
+	RegisteredUnixMilli int64                  `protobuf:"varint,2,opt,name=registered_unix_milli,json=registeredUnixMilli,proto3" json:"registered_unix_milli,omitempty"`
+	UpdatedUnixMilli    int64                  `protobuf:"varint,3,opt,name=updated_unix_milli,json=updatedUnixMilli,proto3" json:"updated_unix_milli,omitempty"`
+	ExpiresUnixMilli    int64                  `protobuf:"varint,4,opt,name=expires_unix_milli,json=expiresUnixMilli,proto3" json:"expires_unix_milli,omitempty"`
+	Revision            uint64                 `protobuf:"varint,5,opt,name=revision,proto3" json:"revision,omitempty"`
+	Epoch               uint64                 `protobuf:"varint,6,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *PluginInstance) Reset() {
+	*x = PluginInstance{}
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PluginInstance) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PluginInstance) ProtoMessage() {}
+
+func (x *PluginInstance) ProtoReflect() protoreflect.Message {
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PluginInstance.ProtoReflect.Descriptor instead.
+func (*PluginInstance) Descriptor() ([]byte, []int) {
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *PluginInstance) GetRegistration() *Registration {
+	if x != nil {
+		return x.Registration
+	}
+	return nil
+}
+
+func (x *PluginInstance) GetRegisteredUnixMilli() int64 {
+	if x != nil {
+		return x.RegisteredUnixMilli
+	}
+	return 0
+}
+
+func (x *PluginInstance) GetUpdatedUnixMilli() int64 {
+	if x != nil {
+		return x.UpdatedUnixMilli
+	}
+	return 0
+}
+
+func (x *PluginInstance) GetExpiresUnixMilli() int64 {
+	if x != nil {
+		return x.ExpiresUnixMilli
+	}
+	return 0
+}
+
+func (x *PluginInstance) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *PluginInstance) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
 type RegisterRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Registration  *Registration          `protobuf:"bytes,1,opt,name=registration,proto3" json:"registration,omitempty"`
@@ -2355,7 +2575,7 @@ type RegisterRequest struct {
 
 func (x *RegisterRequest) Reset() {
 	*x = RegisterRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[34]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2367,7 +2587,7 @@ func (x *RegisterRequest) String() string {
 func (*RegisterRequest) ProtoMessage() {}
 
 func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[34]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2380,7 +2600,7 @@ func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterRequest.ProtoReflect.Descriptor instead.
 func (*RegisterRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{34}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *RegisterRequest) GetRegistration() *Registration {
@@ -2406,7 +2626,7 @@ type RegisterResponse struct {
 
 func (x *RegisterResponse) Reset() {
 	*x = RegisterResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[35]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2418,7 +2638,7 @@ func (x *RegisterResponse) String() string {
 func (*RegisterResponse) ProtoMessage() {}
 
 func (x *RegisterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[35]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2431,7 +2651,7 @@ func (x *RegisterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterResponse.ProtoReflect.Descriptor instead.
 func (*RegisterResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{35}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *RegisterResponse) GetLease() *Lease {
@@ -2445,13 +2665,16 @@ type Lease struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Id               string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	ExpiresUnixMilli int64                  `protobuf:"varint,2,opt,name=expires_unix_milli,json=expiresUnixMilli,proto3" json:"expires_unix_milli,omitempty"`
+	Token            string                 `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
+	Key              *InstanceKey           `protobuf:"bytes,4,opt,name=key,proto3" json:"key,omitempty"`
+	Epoch            uint64                 `protobuf:"varint,5,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Lease) Reset() {
 	*x = Lease{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[36]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2463,7 +2686,7 @@ func (x *Lease) String() string {
 func (*Lease) ProtoMessage() {}
 
 func (x *Lease) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[36]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2476,7 +2699,7 @@ func (x *Lease) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Lease.ProtoReflect.Descriptor instead.
 func (*Lease) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{36}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *Lease) GetId() string {
@@ -2493,17 +2716,39 @@ func (x *Lease) GetExpiresUnixMilli() int64 {
 	return 0
 }
 
+func (x *Lease) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *Lease) GetKey() *InstanceKey {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *Lease) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
 type RenewRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	TtlMillis     int64                  `protobuf:"varint,2,opt,name=ttl_millis,json=ttlMillis,proto3" json:"ttl_millis,omitempty"`
+	Token         string                 `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RenewRequest) Reset() {
 	*x = RenewRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[37]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2515,7 +2760,7 @@ func (x *RenewRequest) String() string {
 func (*RenewRequest) ProtoMessage() {}
 
 func (x *RenewRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[37]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2528,7 +2773,7 @@ func (x *RenewRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewRequest.ProtoReflect.Descriptor instead.
 func (*RenewRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{37}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *RenewRequest) GetId() string {
@@ -2545,6 +2790,13 @@ func (x *RenewRequest) GetTtlMillis() int64 {
 	return 0
 }
 
+func (x *RenewRequest) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
 type RenewResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Lease         *Lease                 `protobuf:"bytes,1,opt,name=lease,proto3" json:"lease,omitempty"`
@@ -2554,7 +2806,7 @@ type RenewResponse struct {
 
 func (x *RenewResponse) Reset() {
 	*x = RenewResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[38]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2566,7 +2818,7 @@ func (x *RenewResponse) String() string {
 func (*RenewResponse) ProtoMessage() {}
 
 func (x *RenewResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[38]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2579,7 +2831,7 @@ func (x *RenewResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewResponse.ProtoReflect.Descriptor instead.
 func (*RenewResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{38}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *RenewResponse) GetLease() *Lease {
@@ -2592,13 +2844,14 @@ func (x *RenewResponse) GetLease() *Lease {
 type UnregisterRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Token         string                 `protobuf:"bytes,2,opt,name=token,proto3" json:"token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UnregisterRequest) Reset() {
 	*x = UnregisterRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[39]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2610,7 +2863,7 @@ func (x *UnregisterRequest) String() string {
 func (*UnregisterRequest) ProtoMessage() {}
 
 func (x *UnregisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[39]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2623,12 +2876,19 @@ func (x *UnregisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnregisterRequest.ProtoReflect.Descriptor instead.
 func (*UnregisterRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{39}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *UnregisterRequest) GetId() string {
 	if x != nil {
 		return x.Id
+	}
+	return ""
+}
+
+func (x *UnregisterRequest) GetToken() string {
+	if x != nil {
+		return x.Token
 	}
 	return ""
 }
@@ -2641,7 +2901,7 @@ type UnregisterResponse struct {
 
 func (x *UnregisterResponse) Reset() {
 	*x = UnregisterResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[40]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2653,7 +2913,7 @@ func (x *UnregisterResponse) String() string {
 func (*UnregisterResponse) ProtoMessage() {}
 
 func (x *UnregisterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[40]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2666,18 +2926,185 @@ func (x *UnregisterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnregisterResponse.ProtoReflect.Descriptor instead.
 func (*UnregisterResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{40}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{42}
+}
+
+type DiscoveryQuery struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Version       string                 `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"`
+	Resource      string                 `protobuf:"bytes,4,opt,name=resource,proto3" json:"resource,omitempty"`
+	Labels        map[string]string      `protobuf:"bytes,5,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiscoveryQuery) Reset() {
+	*x = DiscoveryQuery{}
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiscoveryQuery) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiscoveryQuery) ProtoMessage() {}
+
+func (x *DiscoveryQuery) ProtoReflect() protoreflect.Message {
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiscoveryQuery.ProtoReflect.Descriptor instead.
+func (*DiscoveryQuery) Descriptor() ([]byte, []int) {
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *DiscoveryQuery) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *DiscoveryQuery) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *DiscoveryQuery) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *DiscoveryQuery) GetResource() string {
+	if x != nil {
+		return x.Resource
+	}
+	return ""
+}
+
+func (x *DiscoveryQuery) GetLabels() map[string]string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
+}
+
+type GetRegistrationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           *InstanceKey           `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetRegistrationRequest) Reset() {
+	*x = GetRegistrationRequest{}
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetRegistrationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetRegistrationRequest) ProtoMessage() {}
+
+func (x *GetRegistrationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetRegistrationRequest.ProtoReflect.Descriptor instead.
+func (*GetRegistrationRequest) Descriptor() ([]byte, []int) {
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *GetRegistrationRequest) GetKey() *InstanceKey {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+type GetRegistrationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Instance      *PluginInstance        `protobuf:"bytes,1,opt,name=instance,proto3" json:"instance,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetRegistrationResponse) Reset() {
+	*x = GetRegistrationResponse{}
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetRegistrationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetRegistrationResponse) ProtoMessage() {}
+
+func (x *GetRegistrationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetRegistrationResponse.ProtoReflect.Descriptor instead.
+func (*GetRegistrationResponse) Descriptor() ([]byte, []int) {
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *GetRegistrationResponse) GetInstance() *PluginInstance {
+	if x != nil {
+		return x.Instance
+	}
+	return nil
 }
 
 type ListRegistrationsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	Query         *DiscoveryQuery        `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
+	PageToken     string                 `protobuf:"bytes,2,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	PageSize      uint32                 `protobuf:"varint,3,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ListRegistrationsRequest) Reset() {
 	*x = ListRegistrationsRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[41]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2689,7 +3116,7 @@ func (x *ListRegistrationsRequest) String() string {
 func (*ListRegistrationsRequest) ProtoMessage() {}
 
 func (x *ListRegistrationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[41]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2702,19 +3129,44 @@ func (x *ListRegistrationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRegistrationsRequest.ProtoReflect.Descriptor instead.
 func (*ListRegistrationsRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{41}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *ListRegistrationsRequest) GetQuery() *DiscoveryQuery {
+	if x != nil {
+		return x.Query
+	}
+	return nil
+}
+
+func (x *ListRegistrationsRequest) GetPageToken() string {
+	if x != nil {
+		return x.PageToken
+	}
+	return ""
+}
+
+func (x *ListRegistrationsRequest) GetPageSize() uint32 {
+	if x != nil {
+		return x.PageSize
+	}
+	return 0
 }
 
 type ListRegistrationsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Registrations []*Registration        `protobuf:"bytes,1,rep,name=registrations,proto3" json:"registrations,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Deprecated compatibility projection. New clients should use instances.
+	Registrations []*Registration   `protobuf:"bytes,1,rep,name=registrations,proto3" json:"registrations,omitempty"`
+	NextPageToken string            `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
+	Revision      uint64            `protobuf:"varint,3,opt,name=revision,proto3" json:"revision,omitempty"`
+	Instances     []*PluginInstance `protobuf:"bytes,4,rep,name=instances,proto3" json:"instances,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ListRegistrationsResponse) Reset() {
 	*x = ListRegistrationsResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[42]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2726,7 +3178,7 @@ func (x *ListRegistrationsResponse) String() string {
 func (*ListRegistrationsResponse) ProtoMessage() {}
 
 func (x *ListRegistrationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[42]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2739,7 +3191,7 @@ func (x *ListRegistrationsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRegistrationsResponse.ProtoReflect.Descriptor instead.
 func (*ListRegistrationsResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{42}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ListRegistrationsResponse) GetRegistrations() []*Registration {
@@ -2747,6 +3199,215 @@ func (x *ListRegistrationsResponse) GetRegistrations() []*Registration {
 		return x.Registrations
 	}
 	return nil
+}
+
+func (x *ListRegistrationsResponse) GetNextPageToken() string {
+	if x != nil {
+		return x.NextPageToken
+	}
+	return ""
+}
+
+func (x *ListRegistrationsResponse) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *ListRegistrationsResponse) GetInstances() []*PluginInstance {
+	if x != nil {
+		return x.Instances
+	}
+	return nil
+}
+
+type RegistrationChange struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Revision      uint64                 `protobuf:"varint,1,opt,name=revision,proto3" json:"revision,omitempty"`
+	Kind          RegistrationChangeKind `protobuf:"varint,2,opt,name=kind,proto3,enum=pluginrpc.v1.RegistrationChangeKind" json:"kind,omitempty"`
+	Instance      *PluginInstance        `protobuf:"bytes,3,opt,name=instance,proto3" json:"instance,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegistrationChange) Reset() {
+	*x = RegistrationChange{}
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegistrationChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegistrationChange) ProtoMessage() {}
+
+func (x *RegistrationChange) ProtoReflect() protoreflect.Message {
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegistrationChange.ProtoReflect.Descriptor instead.
+func (*RegistrationChange) Descriptor() ([]byte, []int) {
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *RegistrationChange) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *RegistrationChange) GetKind() RegistrationChangeKind {
+	if x != nil {
+		return x.Kind
+	}
+	return RegistrationChangeKind_REGISTRATION_CHANGE_KIND_UNSPECIFIED
+}
+
+func (x *RegistrationChange) GetInstance() *PluginInstance {
+	if x != nil {
+		return x.Instance
+	}
+	return nil
+}
+
+type PollRegistrationsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Query         *DiscoveryQuery        `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
+	AfterRevision uint64                 `protobuf:"varint,2,opt,name=after_revision,json=afterRevision,proto3" json:"after_revision,omitempty"`
+	Limit         uint32                 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	WaitMillis    int64                  `protobuf:"varint,4,opt,name=wait_millis,json=waitMillis,proto3" json:"wait_millis,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PollRegistrationsRequest) Reset() {
+	*x = PollRegistrationsRequest{}
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PollRegistrationsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PollRegistrationsRequest) ProtoMessage() {}
+
+func (x *PollRegistrationsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PollRegistrationsRequest.ProtoReflect.Descriptor instead.
+func (*PollRegistrationsRequest) Descriptor() ([]byte, []int) {
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *PollRegistrationsRequest) GetQuery() *DiscoveryQuery {
+	if x != nil {
+		return x.Query
+	}
+	return nil
+}
+
+func (x *PollRegistrationsRequest) GetAfterRevision() uint64 {
+	if x != nil {
+		return x.AfterRevision
+	}
+	return 0
+}
+
+func (x *PollRegistrationsRequest) GetLimit() uint32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *PollRegistrationsRequest) GetWaitMillis() int64 {
+	if x != nil {
+		return x.WaitMillis
+	}
+	return 0
+}
+
+type PollRegistrationsResponse struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Changes         []*RegistrationChange  `protobuf:"bytes,1,rep,name=changes,proto3" json:"changes,omitempty"`
+	NextRevision    uint64                 `protobuf:"varint,2,opt,name=next_revision,json=nextRevision,proto3" json:"next_revision,omitempty"`
+	CurrentRevision uint64                 `protobuf:"varint,3,opt,name=current_revision,json=currentRevision,proto3" json:"current_revision,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *PollRegistrationsResponse) Reset() {
+	*x = PollRegistrationsResponse{}
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PollRegistrationsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PollRegistrationsResponse) ProtoMessage() {}
+
+func (x *PollRegistrationsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PollRegistrationsResponse.ProtoReflect.Descriptor instead.
+func (*PollRegistrationsResponse) Descriptor() ([]byte, []int) {
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *PollRegistrationsResponse) GetChanges() []*RegistrationChange {
+	if x != nil {
+		return x.Changes
+	}
+	return nil
+}
+
+func (x *PollRegistrationsResponse) GetNextRevision() uint64 {
+	if x != nil {
+		return x.NextRevision
+	}
+	return 0
+}
+
+func (x *PollRegistrationsResponse) GetCurrentRevision() uint64 {
+	if x != nil {
+		return x.CurrentRevision
+	}
+	return 0
 }
 
 var File_pluginrpc_v1_plugin_proto protoreflect.FileDescriptor
@@ -2905,32 +3566,90 @@ const file_pluginrpc_v1_plugin_proto_rawDesc = "" +
 	"\x0eDeliverRequest\x122\n" +
 	"\bdelivery\x18\x01 \x01(\v2\x16.pluginrpc.v1.DeliveryR\bdelivery\"-\n" +
 	"\x0fDeliverResponse\x12\x1a\n" +
-	"\baccepted\x18\x01 \x01(\bR\baccepted\"h\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\"\xa2\x02\n" +
 	"\fRegistration\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03uri\x18\x02 \x01(\tR\x03uri\x122\n" +
-	"\bmanifest\x18\x03 \x01(\v2\x16.pluginrpc.v1.ManifestR\bmanifest\"p\n" +
+	"\bmanifest\x18\x03 \x01(\v2\x16.pluginrpc.v1.ManifestR\bmanifest\x12\x1c\n" +
+	"\tnamespace\x18\x04 \x01(\tR\tnamespace\x12\x1f\n" +
+	"\vinstance_id\x18\x05 \x01(\tR\n" +
+	"instanceId\x12>\n" +
+	"\x06labels\x18\x06 \x03(\v2&.pluginrpc.v1.Registration.LabelsEntryR\x06labels\x1a9\n" +
+	"\vLabelsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"`\n" +
+	"\vInstanceKey\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1f\n" +
+	"\vinstance_id\x18\x03 \x01(\tR\n" +
+	"instanceId\"\x92\x02\n" +
+	"\x0ePluginInstance\x12>\n" +
+	"\fregistration\x18\x01 \x01(\v2\x1a.pluginrpc.v1.RegistrationR\fregistration\x122\n" +
+	"\x15registered_unix_milli\x18\x02 \x01(\x03R\x13registeredUnixMilli\x12,\n" +
+	"\x12updated_unix_milli\x18\x03 \x01(\x03R\x10updatedUnixMilli\x12,\n" +
+	"\x12expires_unix_milli\x18\x04 \x01(\x03R\x10expiresUnixMilli\x12\x1a\n" +
+	"\brevision\x18\x05 \x01(\x04R\brevision\x12\x14\n" +
+	"\x05epoch\x18\x06 \x01(\x04R\x05epoch\"p\n" +
 	"\x0fRegisterRequest\x12>\n" +
 	"\fregistration\x18\x01 \x01(\v2\x1a.pluginrpc.v1.RegistrationR\fregistration\x12\x1d\n" +
 	"\n" +
 	"ttl_millis\x18\x02 \x01(\x03R\tttlMillis\"=\n" +
 	"\x10RegisterResponse\x12)\n" +
-	"\x05lease\x18\x01 \x01(\v2\x13.pluginrpc.v1.LeaseR\x05lease\"E\n" +
+	"\x05lease\x18\x01 \x01(\v2\x13.pluginrpc.v1.LeaseR\x05lease\"\x9e\x01\n" +
 	"\x05Lease\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12,\n" +
-	"\x12expires_unix_milli\x18\x02 \x01(\x03R\x10expiresUnixMilli\"=\n" +
+	"\x12expires_unix_milli\x18\x02 \x01(\x03R\x10expiresUnixMilli\x12\x14\n" +
+	"\x05token\x18\x03 \x01(\tR\x05token\x12+\n" +
+	"\x03key\x18\x04 \x01(\v2\x19.pluginrpc.v1.InstanceKeyR\x03key\x12\x14\n" +
+	"\x05epoch\x18\x05 \x01(\x04R\x05epoch\"S\n" +
 	"\fRenewRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
-	"ttl_millis\x18\x02 \x01(\x03R\tttlMillis\":\n" +
+	"ttl_millis\x18\x02 \x01(\x03R\tttlMillis\x12\x14\n" +
+	"\x05token\x18\x03 \x01(\tR\x05token\":\n" +
 	"\rRenewResponse\x12)\n" +
-	"\x05lease\x18\x01 \x01(\v2\x13.pluginrpc.v1.LeaseR\x05lease\"#\n" +
+	"\x05lease\x18\x01 \x01(\v2\x13.pluginrpc.v1.LeaseR\x05lease\"9\n" +
 	"\x11UnregisterRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\x14\n" +
-	"\x12UnregisterResponse\"\x1a\n" +
-	"\x18ListRegistrationsRequest\"]\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
+	"\x05token\x18\x02 \x01(\tR\x05token\"\x14\n" +
+	"\x12UnregisterResponse\"\xf5\x01\n" +
+	"\x0eDiscoveryQuery\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
+	"\aversion\x18\x03 \x01(\tR\aversion\x12\x1a\n" +
+	"\bresource\x18\x04 \x01(\tR\bresource\x12@\n" +
+	"\x06labels\x18\x05 \x03(\v2(.pluginrpc.v1.DiscoveryQuery.LabelsEntryR\x06labels\x1a9\n" +
+	"\vLabelsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"E\n" +
+	"\x16GetRegistrationRequest\x12+\n" +
+	"\x03key\x18\x01 \x01(\v2\x19.pluginrpc.v1.InstanceKeyR\x03key\"S\n" +
+	"\x17GetRegistrationResponse\x128\n" +
+	"\binstance\x18\x01 \x01(\v2\x1c.pluginrpc.v1.PluginInstanceR\binstance\"\x8a\x01\n" +
+	"\x18ListRegistrationsRequest\x122\n" +
+	"\x05query\x18\x01 \x01(\v2\x1c.pluginrpc.v1.DiscoveryQueryR\x05query\x12\x1d\n" +
+	"\n" +
+	"page_token\x18\x02 \x01(\tR\tpageToken\x12\x1b\n" +
+	"\tpage_size\x18\x03 \x01(\rR\bpageSize\"\xdd\x01\n" +
 	"\x19ListRegistrationsResponse\x12@\n" +
-	"\rregistrations\x18\x01 \x03(\v2\x1a.pluginrpc.v1.RegistrationR\rregistrations*l\n" +
+	"\rregistrations\x18\x01 \x03(\v2\x1a.pluginrpc.v1.RegistrationR\rregistrations\x12&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x12\x1a\n" +
+	"\brevision\x18\x03 \x01(\x04R\brevision\x12:\n" +
+	"\tinstances\x18\x04 \x03(\v2\x1c.pluginrpc.v1.PluginInstanceR\tinstances\"\xa4\x01\n" +
+	"\x12RegistrationChange\x12\x1a\n" +
+	"\brevision\x18\x01 \x01(\x04R\brevision\x128\n" +
+	"\x04kind\x18\x02 \x01(\x0e2$.pluginrpc.v1.RegistrationChangeKindR\x04kind\x128\n" +
+	"\binstance\x18\x03 \x01(\v2\x1c.pluginrpc.v1.PluginInstanceR\binstance\"\xac\x01\n" +
+	"\x18PollRegistrationsRequest\x122\n" +
+	"\x05query\x18\x01 \x01(\v2\x1c.pluginrpc.v1.DiscoveryQueryR\x05query\x12%\n" +
+	"\x0eafter_revision\x18\x02 \x01(\x04R\rafterRevision\x12\x14\n" +
+	"\x05limit\x18\x03 \x01(\rR\x05limit\x12\x1f\n" +
+	"\vwait_millis\x18\x04 \x01(\x03R\n" +
+	"waitMillis\"\xa7\x01\n" +
+	"\x19PollRegistrationsResponse\x12:\n" +
+	"\achanges\x18\x01 \x03(\v2 .pluginrpc.v1.RegistrationChangeR\achanges\x12#\n" +
+	"\rnext_revision\x18\x02 \x01(\x04R\fnextRevision\x12)\n" +
+	"\x10current_revision\x18\x03 \x01(\x04R\x0fcurrentRevision*l\n" +
 	"\rFailurePolicy\x12\x1e\n" +
 	"\x1aFAILURE_POLICY_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aFAILURE_POLICY_FAIL_CLOSED\x10\x01\x12\x1b\n" +
@@ -2952,7 +3671,12 @@ const file_pluginrpc_v1_plugin_proto_rawDesc = "" +
 	"\x1aOPERATION_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17OPERATION_KIND_PROVIDER\x10\x01\x12\x17\n" +
 	"\x13OPERATION_KIND_TOOL\x10\x02\x12\x1d\n" +
-	"\x19OPERATION_KIND_CAPABILITY\x10\x032\x8d\x04\n" +
+	"\x19OPERATION_KIND_CAPABILITY\x10\x03*\xb1\x01\n" +
+	"\x16RegistrationChangeKind\x12(\n" +
+	"$REGISTRATION_CHANGE_KIND_UNSPECIFIED\x10\x00\x12#\n" +
+	"\x1fREGISTRATION_CHANGE_KIND_UPSERT\x10\x01\x12#\n" +
+	"\x1fREGISTRATION_CHANGE_KIND_DELETE\x10\x02\x12#\n" +
+	"\x1fREGISTRATION_CHANGE_KIND_EXPIRE\x10\x032\x8d\x04\n" +
 	"\rPluginService\x12I\n" +
 	"\bDescribe\x12\x1d.pluginrpc.v1.DescribeRequest\x1a\x1e.pluginrpc.v1.DescribeResponse\x12^\n" +
 	"\x0fSubmitOperation\x12$.pluginrpc.v1.SubmitOperationRequest\x1a%.pluginrpc.v1.SubmitOperationResponse\x12X\n" +
@@ -2960,13 +3684,15 @@ const file_pluginrpc_v1_plugin_proto_rawDesc = "" +
 	"\x0fCancelOperation\x12$.pluginrpc.v1.CancelOperationRequest\x1a%.pluginrpc.v1.CancelOperationResponse\x12O\n" +
 	"\n" +
 	"HandleHook\x12\x1f.pluginrpc.v1.HandleHookRequest\x1a .pluginrpc.v1.HandleHookResponse\x12F\n" +
-	"\aDeliver\x12\x1c.pluginrpc.v1.DeliverRequest\x1a\x1d.pluginrpc.v1.DeliverResponse2\xd5\x02\n" +
+	"\aDeliver\x12\x1c.pluginrpc.v1.DeliverRequest\x1a\x1d.pluginrpc.v1.DeliverResponse2\x9b\x04\n" +
 	"\x0fRegistryService\x12I\n" +
 	"\bRegister\x12\x1d.pluginrpc.v1.RegisterRequest\x1a\x1e.pluginrpc.v1.RegisterResponse\x12@\n" +
 	"\x05Renew\x12\x1a.pluginrpc.v1.RenewRequest\x1a\x1b.pluginrpc.v1.RenewResponse\x12O\n" +
 	"\n" +
-	"Unregister\x12\x1f.pluginrpc.v1.UnregisterRequest\x1a .pluginrpc.v1.UnregisterResponse\x12d\n" +
-	"\x11ListRegistrations\x12&.pluginrpc.v1.ListRegistrationsRequest\x1a'.pluginrpc.v1.ListRegistrationsResponseB-Z+github.com/lincyaw/ag/pluginrpc/v1;pluginv1b\x06proto3"
+	"Unregister\x12\x1f.pluginrpc.v1.UnregisterRequest\x1a .pluginrpc.v1.UnregisterResponse\x12^\n" +
+	"\x0fGetRegistration\x12$.pluginrpc.v1.GetRegistrationRequest\x1a%.pluginrpc.v1.GetRegistrationResponse\x12d\n" +
+	"\x11ListRegistrations\x12&.pluginrpc.v1.ListRegistrationsRequest\x1a'.pluginrpc.v1.ListRegistrationsResponse\x12d\n" +
+	"\x11PollRegistrations\x12&.pluginrpc.v1.PollRegistrationsRequest\x1a'.pluginrpc.v1.PollRegistrationsResponseB-Z+github.com/lincyaw/ag/pluginrpc/v1;pluginv1b\x06proto3"
 
 var (
 	file_pluginrpc_v1_plugin_proto_rawDescOnce sync.Once
@@ -2980,127 +3706,154 @@ func file_pluginrpc_v1_plugin_proto_rawDescGZIP() []byte {
 	return file_pluginrpc_v1_plugin_proto_rawDescData
 }
 
-var file_pluginrpc_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_pluginrpc_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
+var file_pluginrpc_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_pluginrpc_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 53)
 var file_pluginrpc_v1_plugin_proto_goTypes = []any{
 	(FailurePolicy)(0),                // 0: pluginrpc.v1.FailurePolicy
 	(ActionKind)(0),                   // 1: pluginrpc.v1.ActionKind
 	(OperationState)(0),               // 2: pluginrpc.v1.OperationState
 	(OperationKind)(0),                // 3: pluginrpc.v1.OperationKind
-	(*Manifest)(nil),                  // 4: pluginrpc.v1.Manifest
-	(*ProviderSpec)(nil),              // 5: pluginrpc.v1.ProviderSpec
-	(*ToolSpec)(nil),                  // 6: pluginrpc.v1.ToolSpec
-	(*HookSpec)(nil),                  // 7: pluginrpc.v1.HookSpec
-	(*SubscriberSpec)(nil),            // 8: pluginrpc.v1.SubscriberSpec
-	(*CapabilitySpec)(nil),            // 9: pluginrpc.v1.CapabilitySpec
-	(*EventContract)(nil),             // 10: pluginrpc.v1.EventContract
-	(*DescribeResponse)(nil),          // 11: pluginrpc.v1.DescribeResponse
-	(*DescribeRequest)(nil),           // 12: pluginrpc.v1.DescribeRequest
-	(*ToolCall)(nil),                  // 13: pluginrpc.v1.ToolCall
-	(*Message)(nil),                   // 14: pluginrpc.v1.Message
-	(*Usage)(nil),                     // 15: pluginrpc.v1.Usage
-	(*ModelRequest)(nil),              // 16: pluginrpc.v1.ModelRequest
-	(*ModelResponse)(nil),             // 17: pluginrpc.v1.ModelResponse
-	(*ToolResult)(nil),                // 18: pluginrpc.v1.ToolResult
-	(*EventEnvelope)(nil),             // 19: pluginrpc.v1.EventEnvelope
-	(*Block)(nil),                     // 20: pluginrpc.v1.Block
-	(*Cause)(nil),                     // 21: pluginrpc.v1.Cause
-	(*Action)(nil),                    // 22: pluginrpc.v1.Action
-	(*Effect)(nil),                    // 23: pluginrpc.v1.Effect
-	(*OperationRequest)(nil),          // 24: pluginrpc.v1.OperationRequest
-	(*SubmitOperationRequest)(nil),    // 25: pluginrpc.v1.SubmitOperationRequest
-	(*SubmitOperationResponse)(nil),   // 26: pluginrpc.v1.SubmitOperationResponse
-	(*PollOperationRequest)(nil),      // 27: pluginrpc.v1.PollOperationRequest
-	(*PollOperationResponse)(nil),     // 28: pluginrpc.v1.PollOperationResponse
-	(*CancelOperationRequest)(nil),    // 29: pluginrpc.v1.CancelOperationRequest
-	(*CancelOperationResponse)(nil),   // 30: pluginrpc.v1.CancelOperationResponse
-	(*Operation)(nil),                 // 31: pluginrpc.v1.Operation
-	(*HandleHookRequest)(nil),         // 32: pluginrpc.v1.HandleHookRequest
-	(*HandleHookResponse)(nil),        // 33: pluginrpc.v1.HandleHookResponse
-	(*Delivery)(nil),                  // 34: pluginrpc.v1.Delivery
-	(*DeliverRequest)(nil),            // 35: pluginrpc.v1.DeliverRequest
-	(*DeliverResponse)(nil),           // 36: pluginrpc.v1.DeliverResponse
-	(*Registration)(nil),              // 37: pluginrpc.v1.Registration
-	(*RegisterRequest)(nil),           // 38: pluginrpc.v1.RegisterRequest
-	(*RegisterResponse)(nil),          // 39: pluginrpc.v1.RegisterResponse
-	(*Lease)(nil),                     // 40: pluginrpc.v1.Lease
-	(*RenewRequest)(nil),              // 41: pluginrpc.v1.RenewRequest
-	(*RenewResponse)(nil),             // 42: pluginrpc.v1.RenewResponse
-	(*UnregisterRequest)(nil),         // 43: pluginrpc.v1.UnregisterRequest
-	(*UnregisterResponse)(nil),        // 44: pluginrpc.v1.UnregisterResponse
-	(*ListRegistrationsRequest)(nil),  // 45: pluginrpc.v1.ListRegistrationsRequest
-	(*ListRegistrationsResponse)(nil), // 46: pluginrpc.v1.ListRegistrationsResponse
-	(*structpb.Struct)(nil),           // 47: google.protobuf.Struct
+	(RegistrationChangeKind)(0),       // 4: pluginrpc.v1.RegistrationChangeKind
+	(*Manifest)(nil),                  // 5: pluginrpc.v1.Manifest
+	(*ProviderSpec)(nil),              // 6: pluginrpc.v1.ProviderSpec
+	(*ToolSpec)(nil),                  // 7: pluginrpc.v1.ToolSpec
+	(*HookSpec)(nil),                  // 8: pluginrpc.v1.HookSpec
+	(*SubscriberSpec)(nil),            // 9: pluginrpc.v1.SubscriberSpec
+	(*CapabilitySpec)(nil),            // 10: pluginrpc.v1.CapabilitySpec
+	(*EventContract)(nil),             // 11: pluginrpc.v1.EventContract
+	(*DescribeResponse)(nil),          // 12: pluginrpc.v1.DescribeResponse
+	(*DescribeRequest)(nil),           // 13: pluginrpc.v1.DescribeRequest
+	(*ToolCall)(nil),                  // 14: pluginrpc.v1.ToolCall
+	(*Message)(nil),                   // 15: pluginrpc.v1.Message
+	(*Usage)(nil),                     // 16: pluginrpc.v1.Usage
+	(*ModelRequest)(nil),              // 17: pluginrpc.v1.ModelRequest
+	(*ModelResponse)(nil),             // 18: pluginrpc.v1.ModelResponse
+	(*ToolResult)(nil),                // 19: pluginrpc.v1.ToolResult
+	(*EventEnvelope)(nil),             // 20: pluginrpc.v1.EventEnvelope
+	(*Block)(nil),                     // 21: pluginrpc.v1.Block
+	(*Cause)(nil),                     // 22: pluginrpc.v1.Cause
+	(*Action)(nil),                    // 23: pluginrpc.v1.Action
+	(*Effect)(nil),                    // 24: pluginrpc.v1.Effect
+	(*OperationRequest)(nil),          // 25: pluginrpc.v1.OperationRequest
+	(*SubmitOperationRequest)(nil),    // 26: pluginrpc.v1.SubmitOperationRequest
+	(*SubmitOperationResponse)(nil),   // 27: pluginrpc.v1.SubmitOperationResponse
+	(*PollOperationRequest)(nil),      // 28: pluginrpc.v1.PollOperationRequest
+	(*PollOperationResponse)(nil),     // 29: pluginrpc.v1.PollOperationResponse
+	(*CancelOperationRequest)(nil),    // 30: pluginrpc.v1.CancelOperationRequest
+	(*CancelOperationResponse)(nil),   // 31: pluginrpc.v1.CancelOperationResponse
+	(*Operation)(nil),                 // 32: pluginrpc.v1.Operation
+	(*HandleHookRequest)(nil),         // 33: pluginrpc.v1.HandleHookRequest
+	(*HandleHookResponse)(nil),        // 34: pluginrpc.v1.HandleHookResponse
+	(*Delivery)(nil),                  // 35: pluginrpc.v1.Delivery
+	(*DeliverRequest)(nil),            // 36: pluginrpc.v1.DeliverRequest
+	(*DeliverResponse)(nil),           // 37: pluginrpc.v1.DeliverResponse
+	(*Registration)(nil),              // 38: pluginrpc.v1.Registration
+	(*InstanceKey)(nil),               // 39: pluginrpc.v1.InstanceKey
+	(*PluginInstance)(nil),            // 40: pluginrpc.v1.PluginInstance
+	(*RegisterRequest)(nil),           // 41: pluginrpc.v1.RegisterRequest
+	(*RegisterResponse)(nil),          // 42: pluginrpc.v1.RegisterResponse
+	(*Lease)(nil),                     // 43: pluginrpc.v1.Lease
+	(*RenewRequest)(nil),              // 44: pluginrpc.v1.RenewRequest
+	(*RenewResponse)(nil),             // 45: pluginrpc.v1.RenewResponse
+	(*UnregisterRequest)(nil),         // 46: pluginrpc.v1.UnregisterRequest
+	(*UnregisterResponse)(nil),        // 47: pluginrpc.v1.UnregisterResponse
+	(*DiscoveryQuery)(nil),            // 48: pluginrpc.v1.DiscoveryQuery
+	(*GetRegistrationRequest)(nil),    // 49: pluginrpc.v1.GetRegistrationRequest
+	(*GetRegistrationResponse)(nil),   // 50: pluginrpc.v1.GetRegistrationResponse
+	(*ListRegistrationsRequest)(nil),  // 51: pluginrpc.v1.ListRegistrationsRequest
+	(*ListRegistrationsResponse)(nil), // 52: pluginrpc.v1.ListRegistrationsResponse
+	(*RegistrationChange)(nil),        // 53: pluginrpc.v1.RegistrationChange
+	(*PollRegistrationsRequest)(nil),  // 54: pluginrpc.v1.PollRegistrationsRequest
+	(*PollRegistrationsResponse)(nil), // 55: pluginrpc.v1.PollRegistrationsResponse
+	nil,                               // 56: pluginrpc.v1.Registration.LabelsEntry
+	nil,                               // 57: pluginrpc.v1.DiscoveryQuery.LabelsEntry
+	(*structpb.Struct)(nil),           // 58: google.protobuf.Struct
 }
 var file_pluginrpc_v1_plugin_proto_depIdxs = []int32{
-	47, // 0: pluginrpc.v1.ToolSpec.parameters:type_name -> google.protobuf.Struct
+	58, // 0: pluginrpc.v1.ToolSpec.parameters:type_name -> google.protobuf.Struct
 	0,  // 1: pluginrpc.v1.HookSpec.failure_policy:type_name -> pluginrpc.v1.FailurePolicy
-	47, // 2: pluginrpc.v1.CapabilitySpec.input_schema:type_name -> google.protobuf.Struct
-	47, // 3: pluginrpc.v1.CapabilitySpec.output_schema:type_name -> google.protobuf.Struct
-	4,  // 4: pluginrpc.v1.DescribeResponse.manifest:type_name -> pluginrpc.v1.Manifest
-	5,  // 5: pluginrpc.v1.DescribeResponse.providers:type_name -> pluginrpc.v1.ProviderSpec
-	6,  // 6: pluginrpc.v1.DescribeResponse.tools:type_name -> pluginrpc.v1.ToolSpec
-	7,  // 7: pluginrpc.v1.DescribeResponse.hooks:type_name -> pluginrpc.v1.HookSpec
-	9,  // 8: pluginrpc.v1.DescribeResponse.capabilities:type_name -> pluginrpc.v1.CapabilitySpec
-	10, // 9: pluginrpc.v1.DescribeResponse.events:type_name -> pluginrpc.v1.EventContract
-	8,  // 10: pluginrpc.v1.DescribeResponse.subscribers:type_name -> pluginrpc.v1.SubscriberSpec
-	47, // 11: pluginrpc.v1.ToolCall.arguments:type_name -> google.protobuf.Struct
-	13, // 12: pluginrpc.v1.Message.tool_calls:type_name -> pluginrpc.v1.ToolCall
-	14, // 13: pluginrpc.v1.ModelRequest.messages:type_name -> pluginrpc.v1.Message
-	6,  // 14: pluginrpc.v1.ModelRequest.tools:type_name -> pluginrpc.v1.ToolSpec
-	13, // 15: pluginrpc.v1.ModelResponse.tool_calls:type_name -> pluginrpc.v1.ToolCall
-	15, // 16: pluginrpc.v1.ModelResponse.usage:type_name -> pluginrpc.v1.Usage
-	47, // 17: pluginrpc.v1.EventEnvelope.payload:type_name -> google.protobuf.Struct
+	58, // 2: pluginrpc.v1.CapabilitySpec.input_schema:type_name -> google.protobuf.Struct
+	58, // 3: pluginrpc.v1.CapabilitySpec.output_schema:type_name -> google.protobuf.Struct
+	5,  // 4: pluginrpc.v1.DescribeResponse.manifest:type_name -> pluginrpc.v1.Manifest
+	6,  // 5: pluginrpc.v1.DescribeResponse.providers:type_name -> pluginrpc.v1.ProviderSpec
+	7,  // 6: pluginrpc.v1.DescribeResponse.tools:type_name -> pluginrpc.v1.ToolSpec
+	8,  // 7: pluginrpc.v1.DescribeResponse.hooks:type_name -> pluginrpc.v1.HookSpec
+	10, // 8: pluginrpc.v1.DescribeResponse.capabilities:type_name -> pluginrpc.v1.CapabilitySpec
+	11, // 9: pluginrpc.v1.DescribeResponse.events:type_name -> pluginrpc.v1.EventContract
+	9,  // 10: pluginrpc.v1.DescribeResponse.subscribers:type_name -> pluginrpc.v1.SubscriberSpec
+	58, // 11: pluginrpc.v1.ToolCall.arguments:type_name -> google.protobuf.Struct
+	14, // 12: pluginrpc.v1.Message.tool_calls:type_name -> pluginrpc.v1.ToolCall
+	15, // 13: pluginrpc.v1.ModelRequest.messages:type_name -> pluginrpc.v1.Message
+	7,  // 14: pluginrpc.v1.ModelRequest.tools:type_name -> pluginrpc.v1.ToolSpec
+	14, // 15: pluginrpc.v1.ModelResponse.tool_calls:type_name -> pluginrpc.v1.ToolCall
+	16, // 16: pluginrpc.v1.ModelResponse.usage:type_name -> pluginrpc.v1.Usage
+	58, // 17: pluginrpc.v1.EventEnvelope.payload:type_name -> google.protobuf.Struct
 	1,  // 18: pluginrpc.v1.Action.kind:type_name -> pluginrpc.v1.ActionKind
-	21, // 19: pluginrpc.v1.Action.cause:type_name -> pluginrpc.v1.Cause
-	14, // 20: pluginrpc.v1.Action.messages:type_name -> pluginrpc.v1.Message
-	47, // 21: pluginrpc.v1.Effect.patch:type_name -> google.protobuf.Struct
-	20, // 22: pluginrpc.v1.Effect.block:type_name -> pluginrpc.v1.Block
-	22, // 23: pluginrpc.v1.Effect.action:type_name -> pluginrpc.v1.Action
-	47, // 24: pluginrpc.v1.OperationRequest.input:type_name -> google.protobuf.Struct
+	22, // 19: pluginrpc.v1.Action.cause:type_name -> pluginrpc.v1.Cause
+	15, // 20: pluginrpc.v1.Action.messages:type_name -> pluginrpc.v1.Message
+	58, // 21: pluginrpc.v1.Effect.patch:type_name -> google.protobuf.Struct
+	21, // 22: pluginrpc.v1.Effect.block:type_name -> pluginrpc.v1.Block
+	23, // 23: pluginrpc.v1.Effect.action:type_name -> pluginrpc.v1.Action
+	58, // 24: pluginrpc.v1.OperationRequest.input:type_name -> google.protobuf.Struct
 	3,  // 25: pluginrpc.v1.SubmitOperationRequest.kind:type_name -> pluginrpc.v1.OperationKind
-	24, // 26: pluginrpc.v1.SubmitOperationRequest.request:type_name -> pluginrpc.v1.OperationRequest
-	31, // 27: pluginrpc.v1.SubmitOperationResponse.operation:type_name -> pluginrpc.v1.Operation
+	25, // 26: pluginrpc.v1.SubmitOperationRequest.request:type_name -> pluginrpc.v1.OperationRequest
+	32, // 27: pluginrpc.v1.SubmitOperationResponse.operation:type_name -> pluginrpc.v1.Operation
 	3,  // 28: pluginrpc.v1.PollOperationRequest.kind:type_name -> pluginrpc.v1.OperationKind
-	31, // 29: pluginrpc.v1.PollOperationResponse.operation:type_name -> pluginrpc.v1.Operation
+	32, // 29: pluginrpc.v1.PollOperationResponse.operation:type_name -> pluginrpc.v1.Operation
 	3,  // 30: pluginrpc.v1.CancelOperationRequest.kind:type_name -> pluginrpc.v1.OperationKind
-	31, // 31: pluginrpc.v1.CancelOperationResponse.operation:type_name -> pluginrpc.v1.Operation
+	32, // 31: pluginrpc.v1.CancelOperationResponse.operation:type_name -> pluginrpc.v1.Operation
 	2,  // 32: pluginrpc.v1.Operation.state:type_name -> pluginrpc.v1.OperationState
-	47, // 33: pluginrpc.v1.Operation.output:type_name -> google.protobuf.Struct
-	19, // 34: pluginrpc.v1.HandleHookRequest.event:type_name -> pluginrpc.v1.EventEnvelope
-	23, // 35: pluginrpc.v1.HandleHookResponse.effect:type_name -> pluginrpc.v1.Effect
-	19, // 36: pluginrpc.v1.Delivery.event:type_name -> pluginrpc.v1.EventEnvelope
-	34, // 37: pluginrpc.v1.DeliverRequest.delivery:type_name -> pluginrpc.v1.Delivery
-	4,  // 38: pluginrpc.v1.Registration.manifest:type_name -> pluginrpc.v1.Manifest
-	37, // 39: pluginrpc.v1.RegisterRequest.registration:type_name -> pluginrpc.v1.Registration
-	40, // 40: pluginrpc.v1.RegisterResponse.lease:type_name -> pluginrpc.v1.Lease
-	40, // 41: pluginrpc.v1.RenewResponse.lease:type_name -> pluginrpc.v1.Lease
-	37, // 42: pluginrpc.v1.ListRegistrationsResponse.registrations:type_name -> pluginrpc.v1.Registration
-	12, // 43: pluginrpc.v1.PluginService.Describe:input_type -> pluginrpc.v1.DescribeRequest
-	25, // 44: pluginrpc.v1.PluginService.SubmitOperation:input_type -> pluginrpc.v1.SubmitOperationRequest
-	27, // 45: pluginrpc.v1.PluginService.PollOperation:input_type -> pluginrpc.v1.PollOperationRequest
-	29, // 46: pluginrpc.v1.PluginService.CancelOperation:input_type -> pluginrpc.v1.CancelOperationRequest
-	32, // 47: pluginrpc.v1.PluginService.HandleHook:input_type -> pluginrpc.v1.HandleHookRequest
-	35, // 48: pluginrpc.v1.PluginService.Deliver:input_type -> pluginrpc.v1.DeliverRequest
-	38, // 49: pluginrpc.v1.RegistryService.Register:input_type -> pluginrpc.v1.RegisterRequest
-	41, // 50: pluginrpc.v1.RegistryService.Renew:input_type -> pluginrpc.v1.RenewRequest
-	43, // 51: pluginrpc.v1.RegistryService.Unregister:input_type -> pluginrpc.v1.UnregisterRequest
-	45, // 52: pluginrpc.v1.RegistryService.ListRegistrations:input_type -> pluginrpc.v1.ListRegistrationsRequest
-	11, // 53: pluginrpc.v1.PluginService.Describe:output_type -> pluginrpc.v1.DescribeResponse
-	26, // 54: pluginrpc.v1.PluginService.SubmitOperation:output_type -> pluginrpc.v1.SubmitOperationResponse
-	28, // 55: pluginrpc.v1.PluginService.PollOperation:output_type -> pluginrpc.v1.PollOperationResponse
-	30, // 56: pluginrpc.v1.PluginService.CancelOperation:output_type -> pluginrpc.v1.CancelOperationResponse
-	33, // 57: pluginrpc.v1.PluginService.HandleHook:output_type -> pluginrpc.v1.HandleHookResponse
-	36, // 58: pluginrpc.v1.PluginService.Deliver:output_type -> pluginrpc.v1.DeliverResponse
-	39, // 59: pluginrpc.v1.RegistryService.Register:output_type -> pluginrpc.v1.RegisterResponse
-	42, // 60: pluginrpc.v1.RegistryService.Renew:output_type -> pluginrpc.v1.RenewResponse
-	44, // 61: pluginrpc.v1.RegistryService.Unregister:output_type -> pluginrpc.v1.UnregisterResponse
-	46, // 62: pluginrpc.v1.RegistryService.ListRegistrations:output_type -> pluginrpc.v1.ListRegistrationsResponse
-	53, // [53:63] is the sub-list for method output_type
-	43, // [43:53] is the sub-list for method input_type
-	43, // [43:43] is the sub-list for extension type_name
-	43, // [43:43] is the sub-list for extension extendee
-	0,  // [0:43] is the sub-list for field type_name
+	58, // 33: pluginrpc.v1.Operation.output:type_name -> google.protobuf.Struct
+	20, // 34: pluginrpc.v1.HandleHookRequest.event:type_name -> pluginrpc.v1.EventEnvelope
+	24, // 35: pluginrpc.v1.HandleHookResponse.effect:type_name -> pluginrpc.v1.Effect
+	20, // 36: pluginrpc.v1.Delivery.event:type_name -> pluginrpc.v1.EventEnvelope
+	35, // 37: pluginrpc.v1.DeliverRequest.delivery:type_name -> pluginrpc.v1.Delivery
+	5,  // 38: pluginrpc.v1.Registration.manifest:type_name -> pluginrpc.v1.Manifest
+	56, // 39: pluginrpc.v1.Registration.labels:type_name -> pluginrpc.v1.Registration.LabelsEntry
+	38, // 40: pluginrpc.v1.PluginInstance.registration:type_name -> pluginrpc.v1.Registration
+	38, // 41: pluginrpc.v1.RegisterRequest.registration:type_name -> pluginrpc.v1.Registration
+	43, // 42: pluginrpc.v1.RegisterResponse.lease:type_name -> pluginrpc.v1.Lease
+	39, // 43: pluginrpc.v1.Lease.key:type_name -> pluginrpc.v1.InstanceKey
+	43, // 44: pluginrpc.v1.RenewResponse.lease:type_name -> pluginrpc.v1.Lease
+	57, // 45: pluginrpc.v1.DiscoveryQuery.labels:type_name -> pluginrpc.v1.DiscoveryQuery.LabelsEntry
+	39, // 46: pluginrpc.v1.GetRegistrationRequest.key:type_name -> pluginrpc.v1.InstanceKey
+	40, // 47: pluginrpc.v1.GetRegistrationResponse.instance:type_name -> pluginrpc.v1.PluginInstance
+	48, // 48: pluginrpc.v1.ListRegistrationsRequest.query:type_name -> pluginrpc.v1.DiscoveryQuery
+	38, // 49: pluginrpc.v1.ListRegistrationsResponse.registrations:type_name -> pluginrpc.v1.Registration
+	40, // 50: pluginrpc.v1.ListRegistrationsResponse.instances:type_name -> pluginrpc.v1.PluginInstance
+	4,  // 51: pluginrpc.v1.RegistrationChange.kind:type_name -> pluginrpc.v1.RegistrationChangeKind
+	40, // 52: pluginrpc.v1.RegistrationChange.instance:type_name -> pluginrpc.v1.PluginInstance
+	48, // 53: pluginrpc.v1.PollRegistrationsRequest.query:type_name -> pluginrpc.v1.DiscoveryQuery
+	53, // 54: pluginrpc.v1.PollRegistrationsResponse.changes:type_name -> pluginrpc.v1.RegistrationChange
+	13, // 55: pluginrpc.v1.PluginService.Describe:input_type -> pluginrpc.v1.DescribeRequest
+	26, // 56: pluginrpc.v1.PluginService.SubmitOperation:input_type -> pluginrpc.v1.SubmitOperationRequest
+	28, // 57: pluginrpc.v1.PluginService.PollOperation:input_type -> pluginrpc.v1.PollOperationRequest
+	30, // 58: pluginrpc.v1.PluginService.CancelOperation:input_type -> pluginrpc.v1.CancelOperationRequest
+	33, // 59: pluginrpc.v1.PluginService.HandleHook:input_type -> pluginrpc.v1.HandleHookRequest
+	36, // 60: pluginrpc.v1.PluginService.Deliver:input_type -> pluginrpc.v1.DeliverRequest
+	41, // 61: pluginrpc.v1.RegistryService.Register:input_type -> pluginrpc.v1.RegisterRequest
+	44, // 62: pluginrpc.v1.RegistryService.Renew:input_type -> pluginrpc.v1.RenewRequest
+	46, // 63: pluginrpc.v1.RegistryService.Unregister:input_type -> pluginrpc.v1.UnregisterRequest
+	49, // 64: pluginrpc.v1.RegistryService.GetRegistration:input_type -> pluginrpc.v1.GetRegistrationRequest
+	51, // 65: pluginrpc.v1.RegistryService.ListRegistrations:input_type -> pluginrpc.v1.ListRegistrationsRequest
+	54, // 66: pluginrpc.v1.RegistryService.PollRegistrations:input_type -> pluginrpc.v1.PollRegistrationsRequest
+	12, // 67: pluginrpc.v1.PluginService.Describe:output_type -> pluginrpc.v1.DescribeResponse
+	27, // 68: pluginrpc.v1.PluginService.SubmitOperation:output_type -> pluginrpc.v1.SubmitOperationResponse
+	29, // 69: pluginrpc.v1.PluginService.PollOperation:output_type -> pluginrpc.v1.PollOperationResponse
+	31, // 70: pluginrpc.v1.PluginService.CancelOperation:output_type -> pluginrpc.v1.CancelOperationResponse
+	34, // 71: pluginrpc.v1.PluginService.HandleHook:output_type -> pluginrpc.v1.HandleHookResponse
+	37, // 72: pluginrpc.v1.PluginService.Deliver:output_type -> pluginrpc.v1.DeliverResponse
+	42, // 73: pluginrpc.v1.RegistryService.Register:output_type -> pluginrpc.v1.RegisterResponse
+	45, // 74: pluginrpc.v1.RegistryService.Renew:output_type -> pluginrpc.v1.RenewResponse
+	47, // 75: pluginrpc.v1.RegistryService.Unregister:output_type -> pluginrpc.v1.UnregisterResponse
+	50, // 76: pluginrpc.v1.RegistryService.GetRegistration:output_type -> pluginrpc.v1.GetRegistrationResponse
+	52, // 77: pluginrpc.v1.RegistryService.ListRegistrations:output_type -> pluginrpc.v1.ListRegistrationsResponse
+	55, // 78: pluginrpc.v1.RegistryService.PollRegistrations:output_type -> pluginrpc.v1.PollRegistrationsResponse
+	67, // [67:79] is the sub-list for method output_type
+	55, // [55:67] is the sub-list for method input_type
+	55, // [55:55] is the sub-list for extension type_name
+	55, // [55:55] is the sub-list for extension extendee
+	0,  // [0:55] is the sub-list for field type_name
 }
 
 func init() { file_pluginrpc_v1_plugin_proto_init() }
@@ -3113,8 +3866,8 @@ func file_pluginrpc_v1_plugin_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pluginrpc_v1_plugin_proto_rawDesc), len(file_pluginrpc_v1_plugin_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   43,
+			NumEnums:      5,
+			NumMessages:   53,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

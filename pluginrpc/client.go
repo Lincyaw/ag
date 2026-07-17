@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	pluginv1 "github.com/lincyaw/ag/pluginrpc/v1"
+	"github.com/lincyaw/ag/registry"
 	"github.com/lincyaw/ag/sdk"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
@@ -168,19 +169,32 @@ func (driver *driver) Discover(
 	if err != nil {
 		return nil, err
 	}
-	registrations, listErr := client.List(ctx)
-	err = errors.Join(listErr, client.Close())
+	var instances []registry.PluginInstance
+	pageRequest := registry.PageRequest{Limit: registry.MaxPageSize}
+	for {
+		page, listErr := client.List(ctx, registry.DiscoveryQuery{
+			Name: query.Name, Labels: query.Labels,
+		}, pageRequest)
+		if listErr != nil {
+			err = listErr
+			break
+		}
+		instances = append(instances, page.Items...)
+		if page.Next == "" {
+			break
+		}
+		pageRequest.After = page.Next
+	}
+	err = errors.Join(err, client.Close(ctx))
 	if err != nil {
 		return nil, err
 	}
-	result := make([]sdk.PluginReference, 0, len(registrations))
-	for _, registration := range registrations {
-		if query.Name != "" && query.Name != registration.Name {
-			continue
-		}
+	result := make([]sdk.PluginReference, 0, len(instances))
+	for _, instance := range instances {
 		result = append(result, sdk.PluginReference{
-			Name: registration.Name, URI: registration.URI,
-			Description: registration.Manifest.Description,
+			Name: instance.Name, URI: instance.URI,
+			Description: instance.Manifest.Description,
+			Labels:      instance.Labels,
 		})
 	}
 	return result, nil

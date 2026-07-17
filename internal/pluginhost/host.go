@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lincyaw/ag/pluginrpc"
+	pluginregistry "github.com/lincyaw/ag/registry"
 	"github.com/lincyaw/ag/sdk"
 	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 	"google.golang.org/grpc"
@@ -22,22 +23,27 @@ import (
 )
 
 type Config struct {
-	Plugin          sdk.Plugin
-	Listen          string
-	AdvertiseURI    string
-	RegistryURI     string
-	LeaseTTL        time.Duration
-	StateDirectory  string
-	StorageURI      string
-	TLSCertFile     string
-	TLSKeyFile      string
-	MaxMessageBytes int
-	Logger          *slog.Logger
-	ReadyWriter     io.Writer
+	Plugin            sdk.Plugin
+	Listen            string
+	AdvertiseURI      string
+	RegistryURI       string
+	RegistryNamespace string
+	InstanceID        string
+	RegistryLabels    map[string]string
+	LeaseTTL          time.Duration
+	StateDirectory    string
+	StorageURI        string
+	TLSCertFile       string
+	TLSKeyFile        string
+	MaxMessageBytes   int
+	Logger            *slog.Logger
+	ReadyWriter       io.Writer
 }
 
 type Ready struct {
+	Namespace      string `json:"namespace"`
 	Name           string `json:"name"`
+	InstanceID     string `json:"instance_id"`
 	URI            string `json:"uri"`
 	StateDirectory string `json:"state_directory"`
 	Storage        string `json:"storage"`
@@ -50,32 +56,40 @@ func Serve(ctx context.Context, config Config) (returnErr error) {
 	}
 	runContext, runCancel := context.WithCancel(ctx)
 	var (
-		storage       sdk.StateBackend
-		adapter       pluginrpc.Server
-		listener      net.Listener
-		server        *grpc.Server
-		registry      *pluginrpc.RegistryClient
-		lease         sdk.PluginLease
-		serveDone     chan error
-		serverStarted bool
-		serveObserved bool
+		storage        sdk.StateBackend
+		adapter        pluginrpc.Server
+		listener       net.Listener
+		server         *grpc.Server
+		registryClient *pluginrpc.RegistryClient
+		lease          pluginregistry.PluginLease
+		serveDone      chan error
+		serverStarted  bool
+		serveObserved  bool
 	)
 	defer func() {
 		runCancel()
 		var cleanupErr error
-		if registry != nil {
+		if registryClient != nil {
+			cleanupCtx, cancel := context.WithTimeout(
+				context.Background(),
+				2*time.Second,
+			)
 			if lease.ID != "" {
-				cleanupCtx, cancel := context.WithTimeout(
-					context.Background(),
-					2*time.Second,
-				)
 				cleanupErr = errors.Join(
 					cleanupErr,
-					registry.Unregister(cleanupCtx, lease.ID),
+					registryClient.Unregister(
+						cleanupCtx,
+						pluginregistry.LeaseCredential{
+							ID: lease.ID, Token: lease.Token,
+						},
+					),
 				)
-				cancel()
 			}
-			cleanupErr = errors.Join(cleanupErr, registry.Close())
+			cleanupErr = errors.Join(
+				cleanupErr,
+				registryClient.Close(cleanupCtx),
+			)
+			cancel()
 		}
 		if serverStarted {
 			stopServer(server)
@@ -129,6 +143,14 @@ func Serve(ctx context.Context, config Config) (returnErr error) {
 	}
 	if config.LeaseTTL <= 0 {
 		return errors.New("plugin lease TTL must be positive")
+	}
+	config.RegistryNamespace = strings.TrimSpace(config.RegistryNamespace)
+	if config.RegistryNamespace == "" {
+		config.RegistryNamespace = pluginregistry.DefaultNamespace
+	}
+	config.InstanceID = strings.TrimSpace(config.InstanceID)
+	if config.InstanceID == "" {
+		config.InstanceID = sdk.NewID()
 	}
 	if (config.TLSCertFile == "") != (config.TLSKeyFile == "") {
 		return errors.New("TLS certificate and key must be configured together")
@@ -190,20 +212,41 @@ func Serve(ctx context.Context, config Config) (returnErr error) {
 
 	leaseDone := make(chan error, 1)
 	if config.RegistryURI != "" {
-		registry, err = pluginrpc.NewRegistryClient(runContext, config.RegistryURI, pluginrpc.ClientConfig{})
+		registryClient, err = pluginrpc.NewRegistryClient(
+			runContext,
+			config.RegistryURI,
+			pluginrpc.ClientConfig{},
+		)
 		if err != nil {
 			return fmt.Errorf("connect plugin registry: %w", err)
 		}
-		lease, err = registry.Register(runContext, sdk.PluginRegistration{
-			Name: manifest.Name, URI: uri, Manifest: manifest,
-		}, config.LeaseTTL)
+		lease, err = registryClient.Register(
+			runContext,
+			pluginregistry.PluginRegistration{
+				Namespace:  config.RegistryNamespace,
+				Name:       manifest.Name,
+				InstanceID: config.InstanceID,
+				URI:        uri,
+				Manifest:   manifest,
+				Labels:     config.RegistryLabels,
+			},
+			pluginregistry.LeaseOptions{TTL: config.LeaseTTL},
+		)
 		if err != nil {
 			return fmt.Errorf("register plugin lease: %w", err)
 		}
-		go renewLease(runContext, registry, lease, config.LeaseTTL, leaseDone)
+		go renewLease(
+			runContext,
+			registryClient,
+			lease,
+			config.LeaseTTL,
+			leaseDone,
+		)
 	}
 	if err := json.NewEncoder(config.ReadyWriter).Encode(Ready{
-		Name: manifest.Name, URI: uri, StateDirectory: stateDirectory,
+		Namespace: config.RegistryNamespace,
+		Name:      manifest.Name, InstanceID: config.InstanceID,
+		URI: uri, StateDirectory: stateDirectory,
 		Storage: storage.String(), PID: os.Getpid(),
 	}); err != nil {
 		return fmt.Errorf("write plugin ready record: %w", err)
@@ -229,7 +272,7 @@ func Serve(ctx context.Context, config Config) (returnErr error) {
 func renewLease(
 	ctx context.Context,
 	client *pluginrpc.RegistryClient,
-	lease sdk.PluginLease,
+	lease pluginregistry.PluginLease,
 	ttl time.Duration,
 	done chan<- error,
 ) {
@@ -242,7 +285,13 @@ func renewLease(
 			return
 		case <-ticker.C:
 			var err error
-			lease, err = client.Renew(ctx, lease.ID, ttl)
+			lease, err = client.Renew(
+				ctx,
+				pluginregistry.LeaseCredential{
+					ID: lease.ID, Token: lease.Token,
+				},
+				ttl,
+			)
 			if err != nil {
 				done <- fmt.Errorf("renew plugin lease: %w", err)
 				return
