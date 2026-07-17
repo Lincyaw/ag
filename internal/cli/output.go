@@ -16,6 +16,7 @@ import (
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 const (
@@ -76,11 +77,17 @@ func selectedOutput(command *cobra.Command) string {
 	return flag.Value.String()
 }
 
-func requestedOutput(args []string, fallback string) string {
+func requestedOutput(
+	args []string,
+	fallback string,
+	command *cobra.Command,
+) string {
 	selected := fallback
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
 		switch {
+		case argument == "--":
+			return selected
 		case argument == "-o" || argument == "--output":
 			if index+1 < len(args) {
 				selected = args[index+1]
@@ -92,9 +99,47 @@ func requestedOutput(args []string, fallback string) string {
 			selected = strings.TrimPrefix(argument, "-o=")
 		case strings.HasPrefix(argument, "-o") && len(argument) > len("-o"):
 			selected = strings.TrimPrefix(argument, "-o")
+		case flagConsumesNext(command, argument):
+			index++
 		}
 	}
 	return selected
+}
+
+func flagConsumesNext(command *cobra.Command, argument string) bool {
+	if command == nil || strings.Contains(argument, "=") {
+		return false
+	}
+	var name, shorthand string
+	switch {
+	case strings.HasPrefix(argument, "--") && len(argument) > len("--"):
+		name = strings.TrimPrefix(argument, "--")
+	case strings.HasPrefix(argument, "-") && len(argument) == len("-x"):
+		shorthand = strings.TrimPrefix(argument, "-")
+	default:
+		return false
+	}
+	var consumes bool
+	var visit func(*cobra.Command)
+	visit = func(candidate *cobra.Command) {
+		candidate.LocalNonPersistentFlags().VisitAll(func(flag *pflag.Flag) {
+			if (name != "" && flag.Name == name) ||
+				(shorthand != "" && flag.Shorthand == shorthand) {
+				consumes = consumes || flag.NoOptDefVal == ""
+			}
+		})
+		candidate.PersistentFlags().VisitAll(func(flag *pflag.Flag) {
+			if (name != "" && flag.Name == name) ||
+				(shorthand != "" && flag.Shorthand == shorthand) {
+				consumes = consumes || flag.NoOptDefVal == ""
+			}
+		})
+		for _, child := range candidate.Commands() {
+			visit(child)
+		}
+	}
+	visit(command.Root())
+	return consumes
 }
 
 func writeCLIError(
@@ -140,10 +185,14 @@ func (application *app) writeRun(sessionID string, result agentruntime.Result) e
 			}
 		}
 		table := newTable(writer)
-		fmt.Fprintf(table, "Session:\t%s\n", sessionID)
+		fmt.Fprintf(table, "Session:\t%s\n", tableCell(sessionID))
 		fmt.Fprintf(table, "Turns:\t%d\n", result.Turns)
 		fmt.Fprintf(table, "Tool calls:\t%d\n", result.ToolCalls)
-		fmt.Fprintf(table, "Cause:\t%s\n", emptyAs(result.Cause.Code, "unknown"))
+		fmt.Fprintf(
+			table,
+			"Cause:\t%s\n",
+			tableCell(emptyAs(result.Cause.Code, "unknown")),
+		)
 		return table.Flush()
 	})
 }

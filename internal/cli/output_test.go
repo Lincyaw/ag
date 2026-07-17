@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lincyaw/ag/sdk"
+	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 )
 
 func TestHumanResourceRenderersExposeUsefulOperationalFields(t *testing.T) {
@@ -162,5 +163,67 @@ func TestJSONOnlyChangesRepresentation(t *testing.T) {
 	}
 	if path["path"] != "/tmp/config.toml" {
 		t.Fatalf("path = %#v", path)
+	}
+}
+
+func TestRequestedOutputHonorsArgumentBoundaries(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		args     []string
+		expected string
+	}{
+		{
+			name:     "explicit output after unknown flag",
+			args:     []string{"run", "--unknown", "-o", "json"},
+			expected: outputJSON,
+		},
+		{
+			name:     "output-looking prompt value",
+			args:     []string{"run", "--prompt", "-o", "json"},
+			expected: outputText,
+		},
+		{
+			name:     "arguments after terminator",
+			args:     []string{"version", "--", "-o", "json"},
+			expected: outputText,
+		},
+	}
+	for _, test := range cases {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			command := New(&bytes.Buffer{}, &bytes.Buffer{}, "test")
+			if actual := requestedOutput(test.args, outputText, command); actual != test.expected {
+				t.Fatalf("requestedOutput(%q) = %q, want %q", test.args, actual, test.expected)
+			}
+		})
+	}
+}
+
+func TestHumanRunSummaryEscapesUntrustedFields(t *testing.T) {
+	t.Parallel()
+	var stdout bytes.Buffer
+	application := &app{stdout: &stdout, output: outputText}
+	err := application.writeRun(
+		"session\nFAKE\t\x1b[31mred",
+		agentruntime.Result{
+			Output: "answer",
+			Cause:  sdk.Cause{Code: "model_end\nFAKE\t\x1b[31mred"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`session FAKE \u001b[31mred`,
+		`model_end FAKE \u001b[31mred`,
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("output %q missing %q", stdout.String(), expected)
+		}
+	}
+	if strings.ContainsRune(stdout.String(), '\x1b') {
+		t.Fatalf("human output contains terminal escape: %q", stdout.String())
 	}
 }

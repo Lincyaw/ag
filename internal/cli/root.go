@@ -45,7 +45,7 @@ func Run(args []string, stdout, stderr io.Writer, version string) int {
 		case errors.Is(err, context.Canceled):
 			exitCode = exitCanceled
 		}
-		if requestedOutput(args, selectedOutput(command)) == outputJSON {
+		if requestedOutput(args, selectedOutput(command), command) == outputJSON {
 			_ = writeCLIError(stderr, command, err, exitCode)
 		} else {
 			fmt.Fprintf(stderr, "ag: %v\n", err)
