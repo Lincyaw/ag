@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/lincyaw/ag/sdk"
 )
@@ -146,6 +147,72 @@ func TestMemoryStorageURIRejectsNonLocalTargets(t *testing.T) {
 				t.Fatalf("Open(%q) unexpectedly succeeded", uri)
 			}
 		})
+	}
+}
+
+func TestPrunePreservesOperationsWhileTrajectoryExecutionIsActive(
+	t *testing.T,
+) {
+	t.Parallel()
+	ctx := t.Context()
+	backend := NewMemoryStateBackend()
+	trajectories := backend.Trajectories()
+	if err := trajectories.Create(
+		ctx,
+		sdk.Trajectory{ID: "active-prune"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := trajectories.BeginExecution(
+		ctx,
+		"active-prune",
+		"",
+		sdk.TrajectoryExecutionStart{
+			ID: "active-execution", MaxTurns: 2,
+		},
+		trajectoryTestEntry(
+			"active-input",
+			"",
+			sdk.TrajectoryKindUserMessage,
+			`{"role":"user","content":"keep operation"}`,
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	operation, _, err := backend.Operations().Submit(
+		ctx,
+		sdk.OperationRecord{
+			Operation: sdk.Operation{IdempotencyKey: "stable-operation"},
+			Kind:      sdk.OperationKindTool,
+			Resource:  "test-tool",
+			Input:     []byte(`{}`),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.Operations().Transition(
+		ctx,
+		operation.Operation.ID,
+		operation.Operation.Revision,
+		sdk.OperationFailed,
+		nil,
+		"finished failure",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = backend.Prune(ctx, sdk.RetentionPolicy{
+		OperationsBefore: time.Now().UTC().Add(time.Hour),
+	})
+	if !errors.Is(err, sdk.ErrTrajectoryExecution) {
+		t.Fatalf("Prune() error = %v", err)
+	}
+	if _, err := backend.Operations().Get(
+		ctx,
+		operation.Operation.ID,
+	); err != nil {
+		t.Fatalf("active execution operation was pruned: %v", err)
 	}
 }
 

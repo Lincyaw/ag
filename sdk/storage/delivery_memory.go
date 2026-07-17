@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -258,63 +257,4 @@ func (store *memoryDeliveryStore) PurgeTerminal(
 		}
 	}
 	return removed, nil
-}
-
-func validateNewDelivery(delivery sdk.Delivery) error {
-	if delivery.ID == "" {
-		return errors.New("delivery ID is empty")
-	}
-	if err := sdk.ValidateResourceName("plugin", delivery.Plugin); err != nil {
-		return err
-	}
-	if err := sdk.ValidateResourceName("subscription", delivery.Subscription); err != nil {
-		return err
-	}
-	if delivery.Event.ID == "" || delivery.Event.Name == "" {
-		return errors.New("delivery event ID and name are required")
-	}
-	if !json.Valid(delivery.Event.Payload) {
-		return errors.New("delivery event payload is invalid JSON")
-	}
-	return nil
-}
-
-func sameDeliveryIdentity(left, right sdk.Delivery) bool {
-	return left.ID == right.ID &&
-		left.Plugin == right.Plugin &&
-		left.PluginVersion == right.PluginVersion &&
-		left.Subscription == right.Subscription &&
-		left.ResourceRevision == right.ResourceRevision &&
-		left.Event.ID == right.Event.ID
-}
-
-func compareDeliveries(left, right sdk.Delivery) int {
-	if left.Sequence != 0 || right.Sequence != 0 {
-		if left.Sequence < right.Sequence {
-			return -1
-		}
-		if left.Sequence > right.Sequence {
-			return 1
-		}
-	}
-	if order := left.AvailableAt.Compare(right.AvailableAt); order != 0 {
-		return order
-	}
-	if order := left.CreatedAt.Compare(right.CreatedAt); order != 0 {
-		return order
-	}
-	if left.ID < right.ID {
-		return -1
-	}
-	if left.ID > right.ID {
-		return 1
-	}
-	return 0
-}
-
-func deliveryPartition(delivery sdk.Delivery) string {
-	if delivery.Partition != "" {
-		return delivery.Partition
-	}
-	return delivery.Plugin + "/" + delivery.Subscription
 }

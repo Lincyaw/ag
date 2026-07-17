@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 	"time"
 )
@@ -37,6 +38,45 @@ type PruneResult struct {
 	Trajectories int `json:"trajectories"`
 }
 
+// ExecutionStepOperation completes one previously claimed external operation
+// as part of the same durable commit as its trajectory and delivery changes.
+type ExecutionStepOperation struct {
+	ID         string          `json:"id"`
+	LeaseToken string          `json:"lease_token"`
+	State      OperationState  `json:"state"`
+	Output     json.RawMessage `json:"output,omitempty"`
+	Error      string          `json:"error,omitempty"`
+}
+
+// ExecutionStepDeliveryAck acknowledges a leased inbox delivery in an atomic
+// execution-step commit.
+type ExecutionStepDeliveryAck struct {
+	Queue      string    `json:"queue"`
+	ID         string    `json:"id"`
+	LeaseToken string    `json:"lease_token"`
+	At         time.Time `json:"at,omitempty"`
+}
+
+// ExecutionStepDeliveries appends deliveries to one named outbox queue.
+type ExecutionStepDeliveries struct {
+	Queue      string     `json:"queue"`
+	Deliveries []Delivery `json:"deliveries"`
+}
+
+// ExecutionStepCommit is the durable boundary after an external LLM or tool
+// call. Implementations must commit every requested mutation or none of them.
+type ExecutionStepCommit struct {
+	Trajectory TrajectoryExecutionCommit `json:"trajectory"`
+	Operation  *ExecutionStepOperation   `json:"operation,omitempty"`
+	InboxAck   *ExecutionStepDeliveryAck `json:"inbox_ack,omitempty"`
+	Outbox     []ExecutionStepDeliveries `json:"outbox,omitempty"`
+}
+
+type ExecutionStepResult struct {
+	Trajectory TrajectoryMetadata `json:"trajectory"`
+	Operation  *OperationRecord   `json:"operation,omitempty"`
+}
+
 // StateBackend is a bootstrap port, not an execution plugin. It must be
 // available before plugin composition so recovery and durable delivery have a
 // source of truth.
@@ -50,6 +90,17 @@ type StateBackend interface {
 	Health(context.Context) error
 	Close(context.Context) error
 	String() string
+}
+
+// AtomicStateBackend is an optional stronger StateBackend contract. Runtime
+// uses it when AtomicState is advertised; callers of Runtime remain neutral to
+// the concrete database.
+type AtomicStateBackend interface {
+	StateBackend
+	CommitExecutionStep(
+		context.Context,
+		ExecutionStepCommit,
+	) (ExecutionStepResult, error)
 }
 
 // StorageDriver resolves one URI scheme to a StateBackend. Applications can

@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -60,9 +59,9 @@ func (store *memoryOperationStore) Submit(
 	defer store.mu.Unlock()
 	if id, exists := store.keys[key]; exists {
 		existing := store.operations[id]
-		if !bytes.Equal(existing.Input, record.Input) {
+		if !sameOperationSubmission(existing, record) {
 			return sdk.OperationRecord{}, false, fmt.Errorf(
-				"operation idempotency key %q was reused with different input",
+				"operation idempotency key %q was reused with a different submission",
 				record.Operation.IdempotencyKey,
 			)
 		}
@@ -376,59 +375,4 @@ func (store *memoryOperationStore) PurgeTerminal(
 		}
 	}
 	return removed, nil
-}
-
-func validateNewOperationRecord(record sdk.OperationRecord) error {
-	if record.Operation.ID == "" {
-		return errors.New("operation ID is empty")
-	}
-	if record.Operation.IdempotencyKey == "" {
-		return errors.New("operation idempotency key is empty")
-	}
-	switch record.Kind {
-	case sdk.OperationKindProvider, sdk.OperationKindTool, sdk.OperationKindCapability:
-	default:
-		return fmt.Errorf("invalid operation kind %q", record.Kind)
-	}
-	if err := sdk.ValidateResourceName(string(record.Kind), record.Resource); err != nil {
-		return err
-	}
-	if !json.Valid(record.Input) {
-		return errors.New("operation input is invalid JSON")
-	}
-	return nil
-}
-
-func validateOperationTransition(current, next sdk.OperationState) error {
-	switch current {
-	case sdk.OperationPending:
-		switch next {
-		case sdk.OperationRunning, sdk.OperationFailed, sdk.OperationCancelled:
-			return nil
-		}
-	case sdk.OperationRunning:
-		switch next {
-		case sdk.OperationRunning, sdk.OperationSucceeded, sdk.OperationFailed, sdk.OperationCancelled:
-			return nil
-		}
-	case sdk.OperationSucceeded, sdk.OperationFailed, sdk.OperationCancelled:
-		return fmt.Errorf("terminal operation in state %q cannot transition", current)
-	}
-	return fmt.Errorf("invalid operation transition %q -> %q", current, next)
-}
-
-func operationIdempotencyIndex(record sdk.OperationRecord) string {
-	return string(record.Kind) + "\x00" + record.Resource + "\x00" +
-		record.ResourceRevision + "\x00" +
-		record.Operation.IdempotencyKey
-}
-
-func cloneOperationRecord(record sdk.OperationRecord) sdk.OperationRecord {
-	record.Input = append(json.RawMessage(nil), record.Input...)
-	record.Operation.Output = append(json.RawMessage(nil), record.Operation.Output...)
-	if record.Execution != nil {
-		execution := *record.Execution
-		record.Execution = &execution
-	}
-	return record
 }

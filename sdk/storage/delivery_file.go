@@ -219,30 +219,6 @@ func (store *fileDeliveryStore) readLocked() (*memoryDeliveryStore, error) {
 	return memory, nil
 }
 
-func validateLoadedDelivery(delivery sdk.Delivery) error {
-	if err := validateNewDelivery(delivery); err != nil {
-		return err
-	}
-	if delivery.Attempt < 0 {
-		return errors.New("delivery attempt cannot be negative")
-	}
-	switch delivery.State {
-	case sdk.DeliveryLeased:
-		if delivery.Attempt == 0 ||
-			delivery.LeaseToken == "" ||
-			delivery.LeaseExpiresAt.IsZero() {
-			return errors.New("leased delivery has an invalid lease")
-		}
-	case sdk.DeliveryPending, sdk.DeliveryDelivered, sdk.DeliveryDeadLetter:
-		if delivery.LeaseToken != "" || !delivery.LeaseExpiresAt.IsZero() {
-			return errors.New("unleased delivery contains a lease")
-		}
-	default:
-		return fmt.Errorf("delivery has invalid state %q", delivery.State)
-	}
-	return nil
-}
-
 func (store *fileDeliveryStore) writeLocked(
 	ctx context.Context,
 	memory *memoryDeliveryStore,

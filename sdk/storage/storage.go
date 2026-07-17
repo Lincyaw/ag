@@ -23,9 +23,11 @@ func NewStorageRegistry() *StorageRegistry {
 
 func NewDefaultStorageRegistry() *StorageRegistry {
 	return &StorageRegistry{drivers: map[string]sdk.StorageDriver{
-		"duckdb": duckDBStorageDriver{},
-		"file":   fileStorageDriver{},
-		"memory": memoryStorageDriver{},
+		"duckdb":     duckDBStorageDriver{},
+		"file":       fileStorageDriver{},
+		"memory":     memoryStorageDriver{},
+		"postgres":   postgresStorageDriver{scheme: "postgres"},
+		"postgresql": postgresStorageDriver{scheme: "postgresql"},
 	}}
 }
 
@@ -165,6 +167,21 @@ func pruneState(
 	var result sdk.PruneResult
 	var err error
 	if !policy.OperationsBefore.IsZero() {
+		items, listErr := trajectories.List(ctx)
+		if listErr != nil {
+			return result, listErr
+		}
+		for _, item := range items {
+			if item.ExecutionState == sdk.TrajectoryExecutionPending ||
+				item.ExecutionState == sdk.TrajectoryExecutionRunning {
+				return result, fmt.Errorf(
+					"%w: cannot prune operations while trajectory %s execution %s is active",
+					sdk.ErrTrajectoryExecution,
+					item.ID,
+					item.ExecutionID,
+				)
+			}
+		}
 		result.Operations, err = operations.PurgeTerminal(
 			ctx,
 			policy.OperationsBefore,
@@ -190,12 +207,17 @@ func pruneState(
 		if listErr != nil {
 			return result, listErr
 		}
-		for _, item := range items {
+		for index := len(items) - 1; index >= 0; index-- {
+			item := items[index]
 			if item.UpdatedAt.Before(policy.TrajectoriesBefore) {
 				if deleteErr := trajectories.Delete(
 					ctx,
 					item.ID,
 				); deleteErr != nil {
+					if errors.Is(deleteErr, sdk.ErrTrajectoryReferenced) ||
+						errors.Is(deleteErr, sdk.ErrTrajectoryExecution) {
+						continue
+					}
 					return result, deleteErr
 				}
 				result.Trajectories++

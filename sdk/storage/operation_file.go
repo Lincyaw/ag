@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	sdk "github.com/lincyaw/ag/sdk"
@@ -287,25 +286,6 @@ func (store *fileOperationStore) readLocked() (*memoryOperationStore, error) {
 		memory.keys[key] = id
 	}
 	return memory, nil
-}
-
-func validateLoadedOperationRecord(record sdk.OperationRecord) error {
-	if err := validateNewOperationRecord(record); err != nil {
-		return err
-	}
-	if err := sdk.ValidateOperation(record.Operation); err != nil {
-		return err
-	}
-	if record.Execution == nil {
-		return nil
-	}
-	if record.Operation.State != sdk.OperationRunning ||
-		strings.TrimSpace(record.Execution.Owner) == "" ||
-		record.Execution.Token == "" ||
-		record.Execution.ExpiresAt.IsZero() {
-		return errors.New("operation execution lease is invalid")
-	}
-	return nil
 }
 
 func (store *fileOperationStore) writeLocked(
