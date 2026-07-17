@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/lincyaw/ag/sdk"
+	"github.com/lincyaw/ag/sdk"
 )
 
 func TestFileDeliveryStoreSurvivesRestartAndRecoversExpiredLease(t *testing.T) {
@@ -20,14 +20,14 @@ func TestFileDeliveryStoreSurvivesRestartAndRecoversExpiredLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := time.Date(2026, 7, 17, 14, 0, 0, 0, time.UTC)
-	delivery := Delivery{
+	delivery := sdk.Delivery{
 		ID:           "durable-1",
 		Plugin:       "observer",
 		Subscription: "events",
 		Partition:    "events/session",
-		Event: Event{
+		Event: sdk.Event{
 			ID:      "event-durable-1",
-			Name:    EventAgentStart,
+			Name:    sdk.EventAgentStart,
 			Payload: []byte(`{}`),
 		},
 		CreatedAt: base,
@@ -44,7 +44,7 @@ func TestFileDeliveryStoreSurvivesRestartAndRecoversExpiredLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reopened.Lease(ctx, base.Add(30*time.Second), time.Minute); !errors.Is(err, ErrNoDelivery) {
+	if _, err := reopened.Lease(ctx, base.Add(30*time.Second), time.Minute); !errors.Is(err, sdk.ErrNoDelivery) {
 		t.Fatalf("unexpired lease was redelivered: %v", err)
 	}
 	secondLease, err := reopened.Lease(ctx, base.Add(time.Minute), time.Minute)
@@ -55,7 +55,7 @@ func TestFileDeliveryStoreSurvivesRestartAndRecoversExpiredLease(t *testing.T) {
 		secondLease.LeaseToken == firstLease.LeaseToken {
 		t.Fatalf("recovered lease = %#v, first = %#v", secondLease, firstLease)
 	}
-	if err := firstStore.Ack(ctx, firstLease.ID, firstLease.LeaseToken, base.Add(time.Minute)); !errors.Is(err, ErrDeliveryLease) {
+	if err := firstStore.Ack(ctx, firstLease.ID, firstLease.LeaseToken, base.Add(time.Minute)); !errors.Is(err, sdk.ErrDeliveryLease) {
 		t.Fatalf("stale post-restart ack = %v", err)
 	}
 	if err := reopened.Retry(
@@ -72,7 +72,7 @@ func TestFileDeliveryStoreSurvivesRestartAndRecoversExpiredLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := thirdStore.Lease(ctx, base.Add(2*time.Minute), time.Minute); !errors.Is(err, ErrNoDelivery) {
+	if _, err := thirdStore.Lease(ctx, base.Add(2*time.Minute), time.Minute); !errors.Is(err, sdk.ErrNoDelivery) {
 		t.Fatalf("scheduled retry was leased early: %v", err)
 	}
 	thirdLease, err := thirdStore.Lease(ctx, base.Add(3*time.Minute), time.Minute)
@@ -89,7 +89,7 @@ func TestFileDeliveryStoreSurvivesRestartAndRecoversExpiredLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 1 || listed[0].State != DeliveryDelivered || listed[0].LastError != "retry after restart" {
+	if len(listed) != 1 || listed[0].State != sdk.DeliveryDelivered || listed[0].LastError != "retry after restart" {
 		t.Fatalf("persisted deliveries = %#v", listed)
 	}
 }
@@ -106,7 +106,7 @@ func TestFileDeliveryStoreSerializesConcurrentInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stores := []DeliveryStore{left, right}
+	stores := []sdk.DeliveryStore{left, right}
 	const count = 32
 	var wait sync.WaitGroup
 	errorsChannel := make(chan error, count)
@@ -114,14 +114,14 @@ func TestFileDeliveryStoreSerializesConcurrentInstances(t *testing.T) {
 		wait.Add(1)
 		go func(index int) {
 			defer wait.Done()
-			delivery := Delivery{
+			delivery := sdk.Delivery{
 				ID:           fmt.Sprintf("delivery-%02d", index),
 				Plugin:       "observer",
 				Subscription: "events",
 				Partition:    fmt.Sprintf("partition-%02d", index),
-				Event: Event{
+				Event: sdk.Event{
 					ID:      fmt.Sprintf("event-%02d", index),
-					Name:    EventAgentEnd,
+					Name:    sdk.EventAgentEnd,
 					Payload: []byte(`{}`),
 				},
 			}

@@ -10,18 +10,18 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/lincyaw/ag/sdk"
+	"github.com/lincyaw/ag/sdk"
 )
 
 func TestTrajectoryStoresPreserveBranchesAndRejectConcurrentLostUpdates(
 	t *testing.T,
 ) {
 	t.Parallel()
-	factories := map[string]func(*testing.T) TrajectoryStore{
-		"memory": func(*testing.T) TrajectoryStore {
+	factories := map[string]func(*testing.T) sdk.TrajectoryStore{
+		"memory": func(*testing.T) sdk.TrajectoryStore {
 			return NewMemoryTrajectoryStore()
 		},
-		"file": func(t *testing.T) TrajectoryStore {
+		"file": func(t *testing.T) sdk.TrajectoryStore {
 			store, err := NewFileTrajectoryStore(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
@@ -34,7 +34,7 @@ func TestTrajectoryStoresPreserveBranchesAndRejectConcurrentLostUpdates(
 			t.Parallel()
 			ctx := context.Background()
 			store := factory(t)
-			if err := store.Create(ctx, Trajectory{ID: "session-main"}); err != nil {
+			if err := store.Create(ctx, sdk.Trajectory{ID: "session-main"}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -42,9 +42,9 @@ func TestTrajectoryStoresPreserveBranchesAndRejectConcurrentLostUpdates(
 				ctx,
 				"session-main",
 				"",
-				trajectoryTestEntry("user-1", "", TrajectoryKindUserMessage, `{"text":"hello"}`),
-				trajectoryTestEntry("checkpoint-1", "user-1", TrajectoryKindCheckpoint, `{"turn":1}`),
-				trajectoryTestEntry("partial-tool", "checkpoint-1", TrajectoryKindToolCall, `{"name":"write"}`),
+				trajectoryTestEntry("user-1", "", sdk.TrajectoryKindUserMessage, `{"text":"hello"}`),
+				trajectoryTestEntry("checkpoint-1", "user-1", sdk.TrajectoryKindCheckpoint, `{"turn":1}`),
+				trajectoryTestEntry("partial-tool", "checkpoint-1", sdk.TrajectoryKindToolCall, `{"name":"write"}`),
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -56,7 +56,7 @@ func TestTrajectoryStoresPreserveBranchesAndRejectConcurrentLostUpdates(
 			rollback := trajectoryTestEntry(
 				"rollback-1",
 				"checkpoint-1",
-				TrajectoryKindRollback,
+				sdk.TrajectoryKindRollback,
 				`{"from":"partial-tool","to":"checkpoint-1"}`,
 			)
 			head, err = store.Append(ctx, "session-main", head, rollback)
@@ -77,7 +77,7 @@ func TestTrajectoryStoresPreserveBranchesAndRejectConcurrentLostUpdates(
 					entry := trajectoryTestEntry(
 						fmt.Sprintf("writer-%02d", index),
 						head,
-						TrajectoryKindUserMessage,
+						sdk.TrajectoryKindUserMessage,
 						fmt.Sprintf(`{"writer":%d}`, index),
 					)
 					if _, appendErr := store.Append(
@@ -87,7 +87,7 @@ func TestTrajectoryStoresPreserveBranchesAndRejectConcurrentLostUpdates(
 						entry,
 					); appendErr == nil {
 						successes.Add(1)
-					} else if errors.Is(appendErr, ErrTrajectoryConflict) {
+					} else if errors.Is(appendErr, sdk.ErrTrajectoryConflict) {
 						conflicts.Add(1)
 					} else {
 						t.Errorf("writer %d: %v", index, appendErr)
@@ -136,7 +136,7 @@ func TestTrajectoryStoresPreserveBranchesAndRejectConcurrentLostUpdates(
 				cancelled,
 				trajectory.ID,
 				before,
-				trajectoryTestEntry("cancelled", before, TrajectoryKindTerminal, `{}`),
+				trajectoryTestEntry("cancelled", before, sdk.TrajectoryKindTerminal, `{}`),
 			)
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("cancelled append error = %v", err)
@@ -160,18 +160,18 @@ func TestFileTrajectoryStoreSurvivesReopenWithLineage(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := first.Create(ctx, Trajectory{ID: "source"}); err != nil {
+	if err := first.Create(ctx, sdk.Trajectory{ID: "source"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := first.Append(
 		ctx,
 		"source",
 		"",
-		trajectoryTestEntry("source-checkpoint", "", TrajectoryKindCheckpoint, `{"messages":[]}`),
+		trajectoryTestEntry("source-checkpoint", "", sdk.TrajectoryKindCheckpoint, `{"messages":[]}`),
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := first.Create(ctx, Trajectory{
+	if err := first.Create(ctx, sdk.Trajectory{
 		ID:            "fork",
 		ParentID:      "source",
 		ParentEntryID: "source-checkpoint",
@@ -182,7 +182,7 @@ func TestFileTrajectoryStoreSurvivesReopenWithLineage(t *testing.T) {
 		ctx,
 		"fork",
 		"",
-		trajectoryTestEntry("fork-message", "", TrajectoryKindUserMessage, `{"text":"new path"}`),
+		trajectoryTestEntry("fork-message", "", sdk.TrajectoryKindUserMessage, `{"text":"new path"}`),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -212,8 +212,8 @@ func trajectoryTestEntry(
 	parent string,
 	kind string,
 	payload string,
-) TrajectoryEntry {
-	return TrajectoryEntry{
+) sdk.TrajectoryEntry {
+	return sdk.TrajectoryEntry{
 		ID:        id,
 		ParentID:  parent,
 		Kind:      kind,

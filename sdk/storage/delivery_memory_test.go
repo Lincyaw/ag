@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/lincyaw/ag/sdk"
+	"github.com/lincyaw/ag/sdk"
 )
 
 func TestMemoryDeliveryStoreLeaseRecoveryAndConcurrentDeduplication(t *testing.T) {
@@ -17,14 +17,14 @@ func TestMemoryDeliveryStoreLeaseRecoveryAndConcurrentDeduplication(t *testing.T
 	ctx := context.Background()
 	store := NewMemoryDeliveryStore()
 	base := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
-	delivery := Delivery{
+	delivery := sdk.Delivery{
 		ID:           "event-1:observe",
 		Plugin:       "observer",
 		Subscription: "observe",
 		Partition:    "session-1",
-		Event: Event{
+		Event: sdk.Event{
 			ID:        "event-1",
-			Name:      EventAgentStart,
+			Name:      sdk.EventAgentStart,
 			SessionID: "session-1",
 			Payload:   []byte(`{"messages":[]}`),
 		},
@@ -50,7 +50,7 @@ func TestMemoryDeliveryStoreLeaseRecoveryAndConcurrentDeduplication(t *testing.T
 
 	const leaseWorkers = 64
 	var leased atomic.Int64
-	leases := make(chan Delivery, leaseWorkers)
+	leases := make(chan sdk.Delivery, leaseWorkers)
 	for range leaseWorkers {
 		wait.Add(1)
 		go func() {
@@ -60,7 +60,7 @@ func TestMemoryDeliveryStoreLeaseRecoveryAndConcurrentDeduplication(t *testing.T
 			case err == nil:
 				leased.Add(1)
 				leases <- candidate
-			case errors.Is(err, ErrNoDelivery):
+			case errors.Is(err, sdk.ErrNoDelivery):
 			default:
 				t.Errorf("lease: %v", err)
 			}
@@ -80,7 +80,7 @@ func TestMemoryDeliveryStoreLeaseRecoveryAndConcurrentDeduplication(t *testing.T
 	if second.Attempt != 2 || second.LeaseToken == first.LeaseToken {
 		t.Fatalf("re-lease = %#v, first = %#v", second, first)
 	}
-	if err := store.Ack(ctx, first.ID, first.LeaseToken, base.Add(time.Minute)); !errors.Is(err, ErrDeliveryLease) {
+	if err := store.Ack(ctx, first.ID, first.LeaseToken, base.Add(time.Minute)); !errors.Is(err, sdk.ErrDeliveryLease) {
 		t.Fatalf("stale ack error = %v, want ErrDeliveryLease", err)
 	}
 	if err := store.Retry(
@@ -92,7 +92,7 @@ func TestMemoryDeliveryStoreLeaseRecoveryAndConcurrentDeduplication(t *testing.T
 	); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
-	if _, err := store.Lease(ctx, base.Add(2*time.Minute), time.Minute); !errors.Is(err, ErrNoDelivery) {
+	if _, err := store.Lease(ctx, base.Add(2*time.Minute), time.Minute); !errors.Is(err, sdk.ErrNoDelivery) {
 		t.Fatalf("early retry lease error = %v, want ErrNoDelivery", err)
 	}
 	third, err := store.Lease(ctx, base.Add(3*time.Minute), time.Minute)
@@ -110,7 +110,7 @@ func TestMemoryDeliveryStoreLeaseRecoveryAndConcurrentDeduplication(t *testing.T
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(listed) != 1 || listed[0].State != DeliveryDelivered {
+	if len(listed) != 1 || listed[0].State != sdk.DeliveryDelivered {
 		t.Fatalf("deliveries = %#v", listed)
 	}
 }
@@ -118,14 +118,14 @@ func TestMemoryDeliveryStoreLeaseRecoveryAndConcurrentDeduplication(t *testing.T
 func TestMemoryDeliveryStoreAtomicBatchAndCancellation(t *testing.T) {
 	t.Parallel()
 	store := NewMemoryDeliveryStore()
-	valid := func(id string) Delivery {
-		return Delivery{
+	valid := func(id string) sdk.Delivery {
+		return sdk.Delivery{
 			ID:           id,
 			Plugin:       "observer",
 			Subscription: "all",
-			Event: Event{
+			Event: sdk.Event{
 				ID:      "event-" + id,
-				Name:    EventAgentEnd,
+				Name:    sdk.EventAgentEnd,
 				Payload: []byte(`{}`),
 			},
 		}
@@ -170,15 +170,15 @@ func TestMemoryDeliveryStorePreservesPartitionOrderAcrossWorkers(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryDeliveryStore()
 	now := time.Date(2026, 7, 17, 13, 0, 0, 0, time.UTC)
-	makeDelivery := func(id, partition string) Delivery {
-		return Delivery{
+	makeDelivery := func(id, partition string) sdk.Delivery {
+		return sdk.Delivery{
 			ID:           id,
 			Plugin:       "observer",
 			Subscription: "events",
 			Partition:    partition,
-			Event: Event{
+			Event: sdk.Event{
 				ID:      "event-" + id,
-				Name:    EventTurnStart,
+				Name:    sdk.EventTurnStart,
 				Payload: []byte(`{}`),
 			},
 			CreatedAt: now,
@@ -200,7 +200,7 @@ func TestMemoryDeliveryStorePreservesPartitionOrderAcrossWorkers(t *testing.T) {
 	if err != nil || second.ID != "session-b-1" {
 		t.Fatalf("parallel partition lease = %#v, %v", second, err)
 	}
-	if _, err := store.Lease(ctx, now, time.Minute); !errors.Is(err, ErrNoDelivery) {
+	if _, err := store.Lease(ctx, now, time.Minute); !errors.Is(err, sdk.ErrNoDelivery) {
 		t.Fatalf("same partition successor leased early: %v", err)
 	}
 	if err := store.Ack(ctx, first.ID, first.LeaseToken, now); err != nil {

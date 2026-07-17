@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/lincyaw/ag/sdk"
+	"github.com/lincyaw/ag/sdk"
 )
 
 func TestMemoryOperationStoreConcurrentIdempotentSubmitAndCAS(t *testing.T) {
@@ -16,19 +16,19 @@ func TestMemoryOperationStoreConcurrentIdempotentSubmitAndCAS(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryOperationStore()
 	const workers = 64
-	records := make(chan OperationRecord, workers)
+	records := make(chan sdk.OperationRecord, workers)
 	var created atomic.Int64
 	var wait sync.WaitGroup
 	for index := range workers {
 		wait.Add(1)
 		go func(index int) {
 			defer wait.Done()
-			record, wasCreated, err := store.Submit(ctx, OperationRecord{
-				Operation: Operation{
-					ID:             NewID(),
+			record, wasCreated, err := store.Submit(ctx, sdk.OperationRecord{
+				Operation: sdk.Operation{
+					ID:             sdk.NewID(),
 					IdempotencyKey: "trajectory-entry-1",
 				},
-				Kind:     OperationKindTool,
+				Kind:     sdk.OperationKindTool,
 				Resource: "bash",
 				Input:    []byte(`{"command":"printf ok"}`),
 			})
@@ -66,14 +66,14 @@ func TestMemoryOperationStoreConcurrentIdempotentSubmitAndCAS(t *testing.T) {
 				ctx,
 				operationID,
 				1,
-				OperationRunning,
+				sdk.OperationRunning,
 				nil,
 				"",
 			)
 			switch {
 			case err == nil:
 				transitioned.Add(1)
-			case errors.Is(err, ErrOperationConflict):
+			case errors.Is(err, sdk.ErrOperationConflict):
 			default:
 				t.Errorf("transition: %v", err)
 			}
@@ -87,21 +87,21 @@ func TestMemoryOperationStoreConcurrentIdempotentSubmitAndCAS(t *testing.T) {
 		ctx,
 		operationID,
 		2,
-		OperationSucceeded,
+		sdk.OperationSucceeded,
 		[]byte(`{"content":"ok"}`),
 		"",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if completed.Operation.Revision != 3 || completed.Operation.State != OperationSucceeded {
+	if completed.Operation.Revision != 3 || completed.Operation.State != sdk.OperationSucceeded {
 		t.Fatalf("completed operation = %#v", completed)
 	}
 	if _, err := store.Transition(
 		ctx,
 		operationID,
 		3,
-		OperationRunning,
+		sdk.OperationRunning,
 		nil,
 		"",
 	); err == nil {
@@ -113,9 +113,9 @@ func TestOperationLeaseFencesExpiredWorker(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := NewMemoryOperationStore()
-	submitted, _, err := store.Submit(ctx, OperationRecord{
-		Operation: Operation{IdempotencyKey: "fenced-request"},
-		Kind:      OperationKindTool,
+	submitted, _, err := store.Submit(ctx, sdk.OperationRecord{
+		Operation: sdk.Operation{IdempotencyKey: "fenced-request"},
+		Kind:      sdk.OperationKindTool,
 		Resource:  "writer",
 		Input:     []byte(`{"value":"one"}`),
 	})
@@ -139,7 +139,7 @@ func TestOperationLeaseFencesExpiredWorker(t *testing.T) {
 		"worker-b",
 		now.Add(30*time.Minute),
 		time.Hour,
-	); !errors.Is(err, ErrOperationClaimed) {
+	); !errors.Is(err, sdk.ErrOperationClaimed) {
 		t.Fatalf("live lease claim = %v, want ErrOperationClaimed", err)
 	}
 	second, err := store.Claim(
@@ -159,17 +159,17 @@ func TestOperationLeaseFencesExpiredWorker(t *testing.T) {
 		ctx,
 		submitted.Operation.ID,
 		first.Execution.Token,
-		OperationSucceeded,
+		sdk.OperationSucceeded,
 		[]byte(`{"winner":"a"}`),
 		"",
-	); !errors.Is(err, ErrOperationFence) {
+	); !errors.Is(err, sdk.ErrOperationFence) {
 		t.Fatalf("stale completion = %v, want ErrOperationFence", err)
 	}
 	completed, err := store.Complete(
 		ctx,
 		submitted.Operation.ID,
 		second.Execution.Token,
-		OperationSucceeded,
+		sdk.OperationSucceeded,
 		[]byte(`{"winner":"b"}`),
 		"",
 	)
@@ -185,9 +185,9 @@ func TestMemoryOperationStoreRejectsIdempotencyKeyInputCollision(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := NewMemoryOperationStore()
-	base := OperationRecord{
-		Operation: Operation{IdempotencyKey: "same-key"},
-		Kind:      OperationKindProvider,
+	base := sdk.OperationRecord{
+		Operation: sdk.Operation{IdempotencyKey: "same-key"},
+		Kind:      sdk.OperationKindProvider,
 		Resource:  "model",
 		Input:     []byte(`{"prompt":"one"}`),
 	}

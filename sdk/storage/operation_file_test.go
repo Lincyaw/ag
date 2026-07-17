@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	. "github.com/lincyaw/ag/sdk"
+	"github.com/lincyaw/ag/sdk"
 )
 
 func TestFileOperationStorePreservesIdempotencyAndCASAcrossRestart(t *testing.T) {
@@ -16,12 +16,12 @@ func TestFileOperationStorePreservesIdempotencyAndCASAcrossRestart(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := OperationRecord{
-		Operation: Operation{
+	record := sdk.OperationRecord{
+		Operation: sdk.Operation{
 			ID:             "durable-operation",
 			IdempotencyKey: "trajectory-entry",
 		},
-		Kind:     OperationKindTool,
+		Kind:     sdk.OperationKindTool,
 		Resource: "file-write",
 		Input:    []byte(`{"path":"result.txt","content":"hello"}`),
 	}
@@ -44,7 +44,7 @@ func TestFileOperationStorePreservesIdempotencyAndCASAcrossRestart(t *testing.T)
 		ctx,
 		created.Operation.ID,
 		1,
-		OperationRunning,
+		sdk.OperationRunning,
 		nil,
 		"",
 	)
@@ -60,7 +60,7 @@ func TestFileOperationStorePreservesIdempotencyAndCASAcrossRestart(t *testing.T)
 		ctx,
 		created.Operation.ID,
 		2,
-		OperationSucceeded,
+		sdk.OperationSucceeded,
 		[]byte(`{"ok":true}`),
 		"",
 	)
@@ -71,17 +71,17 @@ func TestFileOperationStorePreservesIdempotencyAndCASAcrossRestart(t *testing.T)
 		ctx,
 		created.Operation.ID,
 		2,
-		OperationFailed,
+		sdk.OperationFailed,
 		nil,
 		"stale worker",
-	); !errors.Is(err, ErrOperationConflict) {
+	); !errors.Is(err, sdk.ErrOperationConflict) {
 		t.Fatalf("stale transition = %v, want ErrOperationConflict", err)
 	}
 	loaded, err := first.Get(ctx, created.Operation.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Operation.State != OperationSucceeded || string(loaded.Operation.Output) != `{"ok":true}` {
+	if loaded.Operation.State != sdk.OperationSucceeded || string(loaded.Operation.Output) != `{"ok":true}` {
 		t.Fatalf("loaded operation = %#v", loaded)
 	}
 }

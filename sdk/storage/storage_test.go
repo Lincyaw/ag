@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	. "github.com/lincyaw/ag/sdk"
+	"github.com/lincyaw/ag/sdk"
 )
 
 type testStorageDriver struct {
 	opened  *url.URL
-	backend StateBackend
+	backend sdk.StateBackend
 }
 
 func (*testStorageDriver) Scheme() string { return "teststore" }
@@ -21,13 +21,13 @@ func (*testStorageDriver) Scheme() string { return "teststore" }
 func (driver *testStorageDriver) Open(
 	_ context.Context,
 	uri *url.URL,
-) (StateBackend, error) {
+) (sdk.StateBackend, error) {
 	driver.opened = uri
 	return driver.backend, nil
 }
 
 type unhealthyStateBackend struct {
-	StateBackend
+	sdk.StateBackend
 	healthErr        error
 	closeErr         error
 	closed           bool
@@ -119,11 +119,11 @@ func TestDefaultStorageRegistryExposesNamedQueuesAndNamespaces(t *testing.T) {
 		!capabilities.NamespaceIsolation {
 		t.Fatalf("capabilities = %#v", capabilities)
 	}
-	hostOutbox, err := backend.Deliveries(HostOutboxQueue)
+	hostOutbox, err := backend.Deliveries(sdk.HostOutboxQueue)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pluginInbox, err := backend.Deliveries(PluginInboxQueue)
+	pluginInbox, err := backend.Deliveries(sdk.PluginInboxQueue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestFileStorageNamespaceHasItsOwnPartition(t *testing.T) {
 	}()
 	if err := backend.Trajectories().Create(
 		t.Context(),
-		Trajectory{ID: "partition-probe"},
+		sdk.Trajectory{ID: "partition-probe"},
 	); err != nil {
 		t.Fatal(err)
 	}
