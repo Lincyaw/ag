@@ -15,6 +15,7 @@ import (
 )
 
 var (
+	ErrInvalidRequest  = errors.New("invalid gateway request")
 	ErrSessionNotFound = errors.New("gateway session not found")
 	ErrSessionExists   = errors.New("gateway session already exists")
 	ErrSessionConflict = errors.New("gateway session revision conflict")
@@ -208,4 +209,26 @@ func validatePage(request sdk.PageRequest) (sdk.PageRequest, error) {
 		)
 	}
 	return request, nil
+}
+
+func listSessions(
+	sessions map[string]Session,
+	request sdk.PageRequest,
+) SessionPage {
+	ids := make([]string, 0, len(sessions))
+	for id := range sessions {
+		if id > request.After {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	limit := min(request.Limit, len(ids))
+	page := SessionPage{Items: make([]Session, 0, limit)}
+	for _, id := range ids[:limit] {
+		page.Items = append(page.Items, cloneSession(sessions[id]))
+	}
+	if len(ids) > request.Limit {
+		page.Next = ids[request.Limit-1]
+	}
+	return page
 }

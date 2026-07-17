@@ -123,7 +123,7 @@ func (manager *Manager) DetachPlugin(
 	}
 	name = strings.TrimSpace(name)
 	if err := sdk.ValidateResourceName("plugin", name); err != nil {
-		return Session{}, err
+		return Session{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
 	filtered := make([]PluginBinding, 0, len(session.Plugins))
 	found := false
@@ -221,7 +221,11 @@ func (manager *Manager) selectInstance(
 ) (registry.PluginInstance, error) {
 	name, instanceID, err := parseSelector(rawSelector)
 	if err != nil {
-		return registry.PluginInstance{}, err
+		return registry.PluginInstance{}, fmt.Errorf(
+			"%w: %v",
+			ErrInvalidRequest,
+			err,
+		)
 	}
 	if instanceID != "" {
 		instance, err := manager.directory.Get(ctx, registry.InstanceKey{
