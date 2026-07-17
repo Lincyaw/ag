@@ -38,6 +38,10 @@ empty and stderr ends with this error document:
 Runtime logs may precede the error on stderr; stderr is a diagnostic stream,
 not the success data channel.
 
+`ag registry serve -o json` is a long-running exception: it emits one complete
+ready document after the listener and backend are ready, then keeps stdout
+open until shutdown. Runtime logs remain on stderr.
+
 ## JSON result shapes
 
 Existing JSON fields are a compatibility contract. Additive fields may appear
@@ -49,8 +53,9 @@ in minor releases; fields are not renamed or removed without a major release.
 | `ag config show` | `{"file": string, "config": Config}` |
 | `ag config path` | `{"path": string}` |
 | `ag plugin list` | `PluginDescriptor[]` |
-| `ag plugin discover` | `PluginDescriptor[]` |
+| `ag plugin discover` | `PluginDiscovery[]` (includes the existing descriptor fields plus namespace, instance, version, lease times, revision, and epoch) |
 | `ag plugin inspect` | `Manifest` |
+| `ag registry serve` | `{"uri": string, "listen": string, "backend": string, "capabilities": RegistryCapabilities, "pid": number}` |
 | `ag trajectory list` | `TrajectorySummary[]` |
 | `ag trajectory show` | `Trajectory` |
 | `ag trajectory rollback` | `{"trajectory_id": string, "head": string, "checkpoint_id": string}` |
@@ -80,6 +85,8 @@ ag run -p "Summarize this repository"
 ag trajectory list
 ag trajectory show <session-id>
 ag config show
+ag plugin discover
+ag registry serve
 ```
 
 Program-oriented equivalents:
@@ -89,6 +96,18 @@ ag run -p "Summarize this repository" -o json
 ag trajectory list -o json
 ag trajectory show <session-id> -o json
 ag config show -o json
+ag plugin discover -o json
+ag registry serve -o json
 ```
 
 `-o` is a global flag, so it may appear before or after the subcommand.
+
+Plugin selection is explicit:
+
+```bash
+ag run --plugin name=grpc://host:port -p "Use this endpoint"
+ag run --plugin name@instance-id -p "Use this discovered instance"
+```
+
+A plain discovered name succeeds only when one active instance exists. See
+[registry.md](registry.md) for backend and cursor semantics.

@@ -16,7 +16,8 @@ an independent process.
 ## What is implemented
 
 - transactional plugin mount/unmount with ownership and immutable snapshots;
-- explicit registration, driver-based discovery, and renewable registry leases;
+- pluggable memory/file/etcd registration and discovery with renewable,
+  fenced leases and revision polling;
 - async-first provider, tool, and capability operations with
   `Submit / Poll / Cancel`, revision CAS, idempotency, and durable stores;
 - short synchronous control hooks plus durable asynchronous event subscribers;
@@ -125,6 +126,21 @@ renew a discovery lease. Discovery never implies execution: `ag plugin
 discover` lists active leases, while `ag run` mounts only explicitly configured
 plugins. `--tls-cert` and `--tls-key` enable a `grpcs://` server.
 
+Run the local durable registry and select an instance explicitly:
+
+```bash
+ag registry serve
+
+ag plugin discover --name file
+ag run --file=false \
+  --plugin file@file-node-a \
+  --prompt "Inspect the workspace"
+```
+
+Use `--registry-backend etcd://host:2379/ag/registry` for a distributed
+registry. See [docs/registry.md](docs/registry.md) for identity, lease, Poll,
+backend, and compaction semantics.
+
 ## CLI
 
 ```text
@@ -133,7 +149,8 @@ ag config show
 ag config path
 ag plugin list
 ag plugin discover
-ag plugin inspect <name-or-uri>
+ag plugin inspect <name[@instance-id]|uri>
+ag registry serve
 ag trajectory list
 ag trajectory show <id> [--head <entry-id>]
 ag trajectory rollback <id> <checkpoint-id>
