@@ -129,6 +129,88 @@ func TestRuntimeExecutionBackendRecoversPendingExecution(t *testing.T) {
 	}
 }
 
+func TestRuntimeExecutionBackendClosePreservesExecutionForRecovery(
+	t *testing.T,
+) {
+	root := t.TempDir()
+	entered := make(chan struct{}, 1)
+	session := Session{
+		ID: "runtime-close-recover", UserID: "user-a",
+		Provider: "gateway-test", MaxTurns: 3,
+	}
+	backend := newTestRuntimeExecutionBackendAt(
+		t,
+		root,
+		&gatewayTestProvider{block: entered},
+	)
+	if err := backend.CreateSession(t.Context(), session); err != nil {
+		t.Fatal(err)
+	}
+	submitted, err := backend.Submit(t.Context(), session, "wait")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("provider did not start")
+	}
+	closeCtx, cancel := context.WithTimeout(
+		context.Background(),
+		3*time.Second,
+	)
+	if err := backend.Close(closeCtx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	cancel()
+
+	states, err := NewFileSessionStateFactory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := states.Open(t.Context(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, loadErr := state.Trajectories().LoadMetadata(
+		t.Context(),
+		session.ID,
+	)
+	closeErr := state.Close(context.Background())
+	if loadErr != nil || closeErr != nil {
+		t.Fatal(errors.Join(loadErr, closeErr))
+	}
+	if metadata.Execution == nil ||
+		metadata.Execution.ID != submitted.Execution.ID ||
+		metadata.Execution.State != sdk.TrajectoryExecutionPending {
+		t.Fatalf("execution after backend close = %#v", metadata.Execution)
+	}
+
+	recoveredBackend := newTestRuntimeExecutionBackendAt(
+		t,
+		root,
+		&gatewayTestProvider{},
+	)
+	if _, err := recoveredBackend.(ExecutionRecoveryBackend).Recover(
+		t.Context(),
+		session,
+	); err != nil {
+		t.Fatal(err)
+	}
+	recovered := waitGatewayExecution(
+		t,
+		recoveredBackend,
+		session,
+		submitted.Execution.ID,
+	)
+	if recovered.Execution.State != sdk.TrajectoryExecutionSucceeded ||
+		recovered.Result == nil ||
+		recovered.Result.Output != "gateway result" {
+		t.Fatalf("recovered execution = %#v", recovered)
+	}
+}
+
 func TestRuntimeExecutionBackendPollWaitsForHostClose(t *testing.T) {
 	provider := &gatewayTestProvider{}
 	backend := newTestRuntimeExecutionBackend(t, provider)

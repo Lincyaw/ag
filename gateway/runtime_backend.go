@@ -34,9 +34,10 @@ type runtimeExecutionBackend struct {
 }
 
 type activeRuntimeExecution struct {
-	id     string
-	cancel context.CancelFunc
-	done   chan struct{}
+	id      string
+	cancel  context.CancelFunc
+	done    chan struct{}
+	runtime *agentruntime.Runtime
 }
 
 func NewRuntimeExecutionBackend(
@@ -125,6 +126,7 @@ func (backend *runtimeExecutionBackend) Submit(
 	runCtx, cancel := context.WithCancel(backend.ctx)
 	active := &activeRuntimeExecution{
 		id: execution.ID, cancel: cancel, done: make(chan struct{}),
+		runtime: runtime,
 	}
 	backend.mu.Lock()
 	if backend.closed {
@@ -348,11 +350,25 @@ func (backend *runtimeExecutionBackend) waitForExecutionHost(
 
 func (backend *runtimeExecutionBackend) Close(ctx context.Context) error {
 	backend.mu.Lock()
+	var runtimes []*agentruntime.Runtime
 	if !backend.closed {
 		backend.closed = true
-		backend.cancel()
+		runtimes = make([]*agentruntime.Runtime, 0, len(backend.active))
+		for _, active := range backend.active {
+			if active.runtime != nil {
+				runtimes = append(runtimes, active.runtime)
+			}
+		}
 	}
 	backend.mu.Unlock()
+	if runtimes != nil {
+		cancelled, cancel := context.WithCancel(context.Background())
+		cancel()
+		for _, runtime := range runtimes {
+			_ = runtime.Close(cancelled)
+		}
+		backend.cancel()
+	}
 	done := make(chan struct{})
 	go func() {
 		backend.wait.Wait()
@@ -428,6 +444,14 @@ func (backend *runtimeExecutionBackend) runRecovery(
 	if err != nil {
 		return
 	}
+	backend.mu.Lock()
+	if backend.closed {
+		backend.mu.Unlock()
+		_ = closeExecutionHost(runtime, state)
+		return
+	}
+	active.runtime = runtime
+	backend.mu.Unlock()
 	_, _ = runtime.RecoverExecution(ctx, session.ID)
 	_ = closeExecutionHost(runtime, state)
 }
