@@ -29,11 +29,14 @@ const (
 )
 
 type Session struct {
-	runtime  *Runtime
-	config   SessionConfig
-	mu       sync.Mutex
-	messages []sdk.Message
-	head     string
+	runtime          *Runtime
+	config           SessionConfig
+	mu               sync.Mutex
+	executionMu      sync.Mutex
+	executionID      string
+	executionToken   string
+	messages         []sdk.Message
+	head             string
 }
 
 type Result struct {
@@ -79,14 +82,27 @@ func (runtime *Runtime) ResumeSession(
 	if err := validateSessionConfig(runtime, &config); err != nil {
 		return nil, err
 	}
-	trajectory, err := runtime.trajectories.Load(ctx, id)
+	metadata, err := runtime.trajectories.LoadMetadata(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("load session trajectory %q: %w", id, err)
 	}
-	checkpointID, checkpoint, err := latestTrajectoryCheckpoint(trajectory)
+	if metadata.Execution != nil && !metadata.Execution.Terminal() {
+		return nil, fmt.Errorf(
+			"%w: trajectory %s has recoverable execution %s; call RecoverExecution",
+			sdk.ErrTrajectoryExecution,
+			id,
+			metadata.Execution.ID,
+		)
+	}
+	checkpointEntry, checkpoint, err := latestTrajectoryCheckpoint(
+		ctx,
+		runtime.trajectories,
+		metadata,
+	)
 	if err != nil {
 		return nil, err
 	}
+	checkpointID := checkpointEntry.ID
 	if config.ResumePolicy == ResumeExact {
 		lease, acquireErr := runtime.acquireSnapshot()
 		if acquireErr != nil {
@@ -101,24 +117,34 @@ func (runtime *Runtime) ResumeSession(
 		if environmentErr != nil {
 			return nil, environmentErr
 		}
-		if err := validateResumeEnvironment(trajectory.Environment, current); err != nil {
+		if err := validateResumeEnvironment(metadata.Environment, current); err != nil {
 			return nil, err
 		}
 		if checkpoint != nil {
 			config.System = checkpoint.System
 			if checkpoint.Provider != "" {
 				config.Provider = checkpoint.Provider
-			} else if trajectory.Environment.RequestedProvider != "" {
-				config.Provider = trajectory.Environment.RequestedProvider
+			} else if metadata.Environment.RequestedProvider != "" {
+				config.Provider = metadata.Environment.RequestedProvider
 			}
 		}
 	}
-	head := trajectory.Head
-	if trajectory.Head != checkpointID &&
-		!trajectoryHeadRestoresCheckpoint(trajectory, checkpointID) {
+	head := metadata.Head
+	restored, err := trajectoryHeadRestoresCheckpoint(
+		ctx,
+		runtime.trajectories,
+		metadata.ID,
+		metadata.Head,
+		checkpointID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if metadata.Head != checkpointID && !restored {
 		head, err = runtime.moveTrajectoryHead(
 			ctx,
-			trajectory,
+			metadata.ID,
+			metadata.Head,
 			checkpointID,
 			sdk.TrajectoryKindRestore,
 		)
@@ -136,7 +162,7 @@ func (runtime *Runtime) ResumeSession(
 		TrajectoryID: id,
 		EntryID:      head,
 		EntryKind:    sdk.TrajectoryKindRestore,
-		From:         trajectory.Head,
+		From:         metadata.Head,
 		To:           checkpointID,
 	})
 	return session, nil

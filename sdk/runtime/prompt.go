@@ -21,7 +21,18 @@ func (session *Session) Prompt(
 	if strings.TrimSpace(prompt) == "" {
 		return Result{}, errors.New("prompt is empty")
 	}
+	if err := session.runtime.beginTrajectoryWork(); err != nil {
+		return Result{}, err
+	}
+	defer session.runtime.endTrajectoryWork()
 	execution := newPromptExecution(session, prompt)
+	if err := session.beginExecution(ctx, execution.userMessage); err != nil {
+		return Result{}, err
+	}
+	if err := session.claimExecution(ctx); err != nil {
+		return Result{}, err
+	}
+	execution.mutated = true
 	defer func() {
 		if !execution.mutated || returnErr == nil {
 			return
@@ -33,16 +44,20 @@ func (session *Session) Prompt(
 		defer cancel()
 		returnErr = errors.Join(
 			returnErr,
-			session.restoreLatestCheckpoint(restoreCtx),
+			session.failExecution(restoreCtx, returnErr),
 		)
+	}()
+	executionCtx, stopHeartbeat := session.executionHeartbeat(ctx)
+	defer func() {
+		returnErr = errors.Join(returnErr, stopHeartbeat())
 	}()
 
 	var done bool
-	result, done, returnErr = execution.start(ctx)
+	result, done, returnErr = execution.start(executionCtx)
 	if returnErr != nil || done {
 		return result, returnErr
 	}
-	return execution.runTurns(ctx)
+	return execution.runTurns(executionCtx)
 }
 
 type promptExecution struct {
@@ -74,15 +89,6 @@ func (execution *promptExecution) start(
 		return Result{}, false, err
 	}
 	defer lease.release()
-	if err := session.appendTrajectory(
-		ctx,
-		sdk.TrajectoryKindUserMessage,
-		lease.snapshot.generation,
-		execution.userMessage,
-	); err != nil {
-		return Result{}, false, err
-	}
-	execution.mutated = true
 	startDispatch, err := session.runtime.dispatch(
 		ctx,
 		lease.snapshot,
@@ -156,7 +162,14 @@ func (execution *promptExecution) start(
 func (execution *promptExecution) runTurns(
 	ctx context.Context,
 ) (Result, error) {
-	for turn := 0; turn < execution.session.config.MaxTurns; turn++ {
+	return execution.runTurnsFrom(ctx, 0)
+}
+
+func (execution *promptExecution) runTurnsFrom(
+	ctx context.Context,
+	startTurn int,
+) (Result, error) {
+	for turn := startTurn; turn < execution.session.config.MaxTurns; turn++ {
 		if err := ctx.Err(); err != nil {
 			cause := sdk.Cause{Code: "cancelled", Detail: err.Error(), Final: true}
 			execution.result.Cause = cause
@@ -319,6 +332,7 @@ func (execution *promptExecution) prepareProviderCall(
 		trajectoryProviderRequestPayload{
 			Turn:     turn,
 			Provider: call.name,
+			Model:    ownedProvider.spec.Model,
 			Request:  call.request,
 		},
 	); err != nil {
@@ -539,11 +553,20 @@ func (session *Session) finish(
 		Messages: cloneMessages(messages),
 		Cause:    cause,
 	}
-	if err := session.appendTrajectory(
+	state := executionStateForCause(cause)
+	commitState := state
+	if state == sdk.TrajectoryExecutionFailed {
+		// Keep the lease active until Prompt's failure defer atomically restores
+		// the last checkpoint and marks the execution failed.
+		commitState = ""
+	}
+	if err := session.appendTrajectoryState(
 		ctx,
 		sdk.TrajectoryKindTerminal,
 		snapshot.generation,
 		end,
+		commitState,
+		"",
 	); err != nil {
 		return result, err
 	}

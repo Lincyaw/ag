@@ -11,18 +11,29 @@ import (
 )
 
 type trajectoryCheckpointPayload struct {
-	Messages  []sdk.Message `json:"messages"`
-	System    string        `json:"system,omitempty"`
-	Provider  string        `json:"provider,omitempty"`
-	Turns     int           `json:"turns"`
-	ToolCalls int           `json:"tool_calls"`
-	Action    sdk.Action    `json:"action"`
+	Messages     []sdk.Message `json:"messages"`
+	System       string        `json:"system,omitempty"`
+	Provider     string        `json:"provider,omitempty"`
+	Output       string        `json:"output,omitempty"`
+	Turns        int           `json:"turns"`
+	ToolCalls    int           `json:"tool_calls"`
+	Generation   uint64        `json:"generation,omitempty"`
+	Action       sdk.Action    `json:"action"`
+	Dependencies []string      `json:"dependencies,omitempty"`
 }
 
 type trajectoryProviderRequestPayload struct {
-	Turn     int              `json:"turn"`
-	Provider string           `json:"provider"`
-	Request  sdk.ModelRequest `json:"request"`
+	Turn         int              `json:"turn"`
+	Provider     string           `json:"provider"`
+	Model        string           `json:"model,omitempty"`
+	OperationKey string           `json:"operation_key"`
+	Request      sdk.ModelRequest `json:"request"`
+}
+
+type trajectoryToolCallPayload struct {
+	Turn         int          `json:"turn"`
+	Call         sdk.ToolCall `json:"call"`
+	OperationKey string       `json:"operation_key"`
 }
 
 type trajectoryDecisionPayload struct {
@@ -30,21 +41,82 @@ type trajectoryDecisionPayload struct {
 	Action sdk.Action `json:"action"`
 }
 
-func latestTrajectoryCheckpoint(
-	trajectory sdk.Trajectory,
-) (string, *trajectoryCheckpointPayload, error) {
-	branch, err := trajectory.Branch(trajectory.Head)
-	if err != nil {
-		return "", nil, err
-	}
-	for index := len(branch) - 1; index >= 0; index-- {
-		if branch[index].Kind != sdk.TrajectoryKindCheckpoint {
-			continue
+func trajectoryEntryFields(payload any) sdk.TrajectoryEntryFields {
+	var fields sdk.TrajectoryEntryFields
+	setTurn := func(turn int) { fields.Turn = &turn }
+	setError := func(isError bool) { fields.IsError = &isError }
+	switch value := payload.(type) {
+	case trajectoryProviderRequestPayload:
+		setTurn(value.Turn)
+		fields.Provider = value.Provider
+		fields.Model = value.Model
+		fields.OperationKey = value.OperationKey
+	case sdk.AfterProviderPayload:
+		setTurn(value.Turn)
+		fields.Provider = value.Provider
+		setError(value.Error != "")
+		if value.Response != nil {
+			fields.Model = value.Response.Model
+			fields.FinishReason = value.Response.FinishReason
+			fields.InputTokens = value.Response.Usage.InputTokens
+			fields.OutputTokens = value.Response.Usage.OutputTokens
 		}
-		checkpoint, err := decodeTrajectoryCheckpoint(trajectory.ID, branch[index])
-		return branch[index].ID, checkpoint, err
+	case sdk.BeforeToolPayload:
+		setTurn(value.Turn)
+		fields.ToolName = value.Call.Name
+		fields.ToolCallID = value.Call.ID
+	case trajectoryToolCallPayload:
+		setTurn(value.Turn)
+		fields.ToolName = value.Call.Name
+		fields.ToolCallID = value.Call.ID
+		fields.OperationKey = value.OperationKey
+	case sdk.AfterToolPayload:
+		setTurn(value.Turn)
+		fields.ToolName = value.Call.Name
+		fields.ToolCallID = value.Call.ID
+		setError(value.Result.IsError)
+	case trajectoryDecisionPayload:
+		setTurn(value.Turn)
+		fields.ActionKind = value.Action.Kind
+		if value.Action.Cause != nil {
+			fields.CauseCode = value.Action.Cause.Code
+		}
+	case trajectoryCheckpointPayload:
+		if value.Turns > 0 {
+			setTurn(value.Turns - 1)
+		}
+		fields.ActionKind = value.Action.Kind
+		if value.Action.Cause != nil {
+			fields.CauseCode = value.Action.Cause.Code
+		}
+	case sdk.AgentEndPayload:
+		fields.CauseCode = value.Cause.Code
 	}
-	return "", nil, nil
+	return fields
+}
+
+func latestTrajectoryCheckpoint(
+	ctx context.Context,
+	store sdk.TrajectoryStore,
+	metadata sdk.TrajectoryMetadata,
+) (sdk.TrajectoryEntry, *trajectoryCheckpointPayload, error) {
+	if metadata.Checkpoint == "" {
+		return sdk.TrajectoryEntry{}, nil, nil
+	}
+	entry, err := store.LoadEntry(ctx, metadata.ID, metadata.Checkpoint)
+	if err != nil {
+		return sdk.TrajectoryEntry{}, nil, err
+	}
+	if entry.Kind != sdk.TrajectoryKindCheckpoint {
+		return sdk.TrajectoryEntry{}, nil, fmt.Errorf(
+			"trajectory %q cached checkpoint %q is %q",
+			metadata.ID,
+			entry.ID,
+			entry.Kind,
+		)
+	}
+	checkpoint, err := decodeTrajectoryCheckpoint(metadata.ID, entry)
+	return entry, checkpoint, err
 }
 
 func decodeTrajectoryCheckpoint(
@@ -72,31 +144,36 @@ func checkpointMessages(checkpoint *trajectoryCheckpointPayload) []sdk.Message {
 }
 
 func trajectoryHeadRestoresCheckpoint(
-	trajectory sdk.Trajectory,
+	ctx context.Context,
+	store sdk.TrajectoryStore,
+	trajectoryID string,
+	head string,
 	checkpointID string,
-) bool {
-	if trajectory.Head == "" {
-		return checkpointID == ""
+) (bool, error) {
+	if head == "" {
+		return checkpointID == "", nil
 	}
-	for _, entry := range trajectory.Entries {
-		if entry.ID != trajectory.Head {
-			continue
-		}
-		return (entry.Kind == sdk.TrajectoryKindRestore ||
-			entry.Kind == sdk.TrajectoryKindRollback) &&
-			entry.ParentID == checkpointID
+	if head == checkpointID {
+		return true, nil
 	}
-	return false
+	entry, err := store.LoadEntry(ctx, trajectoryID, head)
+	if err != nil {
+		return false, err
+	}
+	return (entry.Kind == sdk.TrajectoryKindRestore ||
+		entry.Kind == sdk.TrajectoryKindRollback) &&
+		entry.ParentID == checkpointID, nil
 }
 
 func (runtime *Runtime) moveTrajectoryHead(
 	ctx context.Context,
-	trajectory sdk.Trajectory,
+	trajectoryID string,
+	head string,
 	checkpointID string,
 	kind sdk.TrajectoryKind,
 ) (string, error) {
 	payload, err := json.Marshal(map[string]string{
-		"from": trajectory.Head,
+		"from": head,
 		"to":   checkpointID,
 	})
 	if err != nil {
@@ -104,8 +181,8 @@ func (runtime *Runtime) moveTrajectoryHead(
 	}
 	return runtime.trajectories.Append(
 		ctx,
-		trajectory.ID,
-		trajectory.Head,
+		trajectoryID,
+		head,
 		sdk.TrajectoryEntry{
 			ID:        sdk.NewID(),
 			ParentID:  checkpointID,
@@ -133,24 +210,20 @@ func (runtime *Runtime) rollbackTrajectory(
 	if runtime == nil {
 		return "", nil, errors.New("runtime is nil")
 	}
-	trajectory, err := runtime.trajectories.Load(ctx, id)
+	metadata, err := runtime.trajectories.LoadMetadata(ctx, id)
 	if err != nil {
 		return "", nil, err
 	}
-	var target *sdk.TrajectoryEntry
-	for index := range trajectory.Entries {
-		entry := &trajectory.Entries[index]
-		if entry.ID == checkpointID {
-			target = entry
-			break
-		}
-	}
-	if target == nil {
+	target, err := runtime.trajectories.LoadEntry(ctx, id, checkpointID)
+	if errors.Is(err, sdk.ErrTrajectoryEntryNotFound) {
 		return "", nil, fmt.Errorf(
 			"trajectory %q checkpoint %q not found",
 			id,
 			checkpointID,
 		)
+	}
+	if err != nil {
+		return "", nil, err
 	}
 	if target.Kind != sdk.TrajectoryKindCheckpoint {
 		return "", nil, fmt.Errorf(
@@ -159,13 +232,14 @@ func (runtime *Runtime) rollbackTrajectory(
 			target.Kind,
 		)
 	}
-	checkpoint, err := decodeTrajectoryCheckpoint(trajectory.ID, *target)
+	checkpoint, err := decodeTrajectoryCheckpoint(id, target)
 	if err != nil {
 		return "", nil, err
 	}
 	head, err := runtime.moveTrajectoryHead(
 		ctx,
-		trajectory,
+		id,
+		metadata.Head,
 		checkpointID,
 		sdk.TrajectoryKindRollback,
 	)
@@ -176,7 +250,7 @@ func (runtime *Runtime) rollbackTrajectory(
 		TrajectoryID: id,
 		EntryID:      head,
 		EntryKind:    sdk.TrajectoryKindRollback,
-		From:         trajectory.Head,
+		From:         metadata.Head,
 		To:           checkpointID,
 	})
 	runtime.logger.InfoContext(
@@ -185,7 +259,7 @@ func (runtime *Runtime) rollbackTrajectory(
 		"trajectory_id",
 		id,
 		"from",
-		trajectory.Head,
+		metadata.Head,
 		"to",
 		checkpointID,
 	)
@@ -221,28 +295,76 @@ func (session *Session) appendTrajectory(
 	generation uint64,
 	payload any,
 ) error {
+	return session.appendTrajectoryState(
+		ctx,
+		kind,
+		generation,
+		payload,
+		"",
+		"",
+	)
+}
+
+func (session *Session) appendTrajectoryState(
+	ctx context.Context,
+	kind sdk.TrajectoryKind,
+	generation uint64,
+	payload any,
+	state sdk.TrajectoryExecutionState,
+	executionError string,
+) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("encode %s trajectory entry: %w", kind, err)
 	}
+	entryID := sdk.NewID()
+	fields := trajectoryEntryFields(payload)
+	if fields.OperationKey == "" {
+		switch kind {
+		case sdk.TrajectoryKindProviderRequest,
+			sdk.TrajectoryKindToolCall:
+			// Legacy async resources use the just-appended trajectory head as
+			// their idempotency key. Newer callers can provide an explicit key.
+			fields.OperationKey = entryID
+		}
+	}
 	entry := sdk.TrajectoryEntry{
-		ID:         sdk.NewID(),
+		ID:         entryID,
 		ParentID:   session.head,
 		Kind:       kind,
 		Timestamp:  time.Now().UTC(),
 		Generation: generation,
+		Fields:     fields,
 		Payload:    raw,
 	}
-	head, err := session.runtime.trajectories.Append(
-		ctx,
-		session.config.ID,
-		session.head,
-		entry,
-	)
-	if err != nil {
-		return fmt.Errorf("append %s trajectory entry: %w", kind, err)
+	executionID, token := session.activeExecution()
+	if executionID != "" && token != "" {
+		if err := session.commitExecution(
+			ctx,
+			entry,
+			state,
+			executionError,
+		); err != nil {
+			return fmt.Errorf("commit %s trajectory entry: %w", kind, err)
+		}
+	} else {
+		if state != "" {
+			return fmt.Errorf(
+				"complete %s trajectory entry without an active execution",
+				kind,
+			)
+		}
+		head, appendErr := session.runtime.trajectories.Append(
+			ctx,
+			session.config.ID,
+			session.head,
+			entry,
+		)
+		if appendErr != nil {
+			return fmt.Errorf("append %s trajectory entry: %w", kind, appendErr)
+		}
+		session.head = head
 	}
-	session.head = head
 	session.runtime.emitTrajectoryEvent(ctx, sdk.EventTrajectoryAppend, sdk.TrajectoryEventPayload{
 		TrajectoryID: session.config.ID,
 		EntryID:      entry.ID,
@@ -278,65 +400,29 @@ func (session *Session) checkpointTrajectory(
 	result Result,
 	action sdk.Action,
 	system string,
+	dependencies ...string,
 ) error {
 	err := session.appendTrajectory(
 		ctx,
 		sdk.TrajectoryKindCheckpoint,
 		generation,
 		trajectoryCheckpointPayload{
-			Messages:  cloneMessages(messages),
-			System:    system,
-			Provider:  session.config.Provider,
-			Turns:     result.Turns,
-			ToolCalls: result.ToolCalls,
-			Action:    action,
+			Messages:   cloneMessages(messages),
+			System:     system,
+			Provider:   session.config.Provider,
+			Output:     result.Output,
+			Turns:      result.Turns,
+			ToolCalls:  result.ToolCalls,
+			Generation: result.Generation,
+			Action:     action,
+			Dependencies: append(
+				[]string(nil),
+				dependencies...,
+			),
 		},
 	)
 	if err == nil {
 		session.config.System = system
 	}
 	return err
-}
-
-func (session *Session) restoreLatestCheckpoint(ctx context.Context) error {
-	trajectory, err := session.runtime.trajectories.Load(ctx, session.config.ID)
-	if err != nil {
-		return fmt.Errorf("load trajectory for failure restore: %w", err)
-	}
-	checkpointID, checkpoint, err := latestTrajectoryCheckpoint(trajectory)
-	if err != nil {
-		return err
-	}
-	head := trajectory.Head
-	if !trajectoryHeadRestoresCheckpoint(trajectory, checkpointID) {
-		head, err = session.runtime.moveTrajectoryHead(
-			ctx,
-			trajectory,
-			checkpointID,
-			sdk.TrajectoryKindRestore,
-		)
-		if err != nil {
-			return fmt.Errorf("restore failed prompt trajectory: %w", err)
-		}
-		session.runtime.emitTrajectoryEvent(
-			ctx,
-			sdk.EventTrajectoryRestore,
-			sdk.TrajectoryEventPayload{
-				TrajectoryID: session.config.ID,
-				EntryID:      head,
-				EntryKind:    sdk.TrajectoryKindRestore,
-				From:         trajectory.Head,
-				To:           checkpointID,
-			},
-		)
-	}
-	session.head = head
-	session.messages = cloneMessages(checkpointMessages(checkpoint))
-	if checkpoint != nil {
-		session.config.System = checkpoint.System
-		if checkpoint.Provider != "" {
-			session.config.Provider = checkpoint.Provider
-		}
-	}
-	return nil
 }

@@ -40,28 +40,34 @@ type RuntimeConfig struct {
 	HookTimeout         time.Duration
 	OperationPoll       time.Duration
 	OperationLease      time.Duration
+	TrajectoryLease     time.Duration
 }
 
 type Runtime struct {
-	mu           sync.Mutex
-	current      atomic.Pointer[registrySnapshot]
-	closed       bool
-	closeDone    chan struct{}
-	closeErr     error
-	nextSequence uint64
-	version      string
-	logger       *slog.Logger
-	tracer       trace.Tracer
-	mounts       metric.Int64Counter
-	unmounts     metric.Int64Counter
-	events       metric.Int64Counter
-	hooks        metric.Int64Counter
-	hookTimeout  time.Duration
-	storage      sdk.StateBackend
-	closeStorage bool
-	trajectories sdk.TrajectoryStore
-	operation    operationRuntime
-	delivery     deliveryRuntime
+	mu                 sync.Mutex
+	current            atomic.Pointer[registrySnapshot]
+	closed             bool
+	closeDone          chan struct{}
+	closeErr           error
+	nextSequence       uint64
+	version            string
+	logger             *slog.Logger
+	tracer             trace.Tracer
+	mounts             metric.Int64Counter
+	unmounts           metric.Int64Counter
+	events             metric.Int64Counter
+	hooks              metric.Int64Counter
+	hookTimeout        time.Duration
+	storage            sdk.StateBackend
+	closeStorage       bool
+	trajectories       sdk.TrajectoryStore
+	trajectoryLease    time.Duration
+	trajectoryWorkerID string
+	trajectoryContext  context.Context
+	cancelTrajectories context.CancelFunc
+	trajectoryWait     sync.WaitGroup
+	operation          operationRuntime
+	delivery           deliveryRuntime
 }
 
 func normalizeRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
@@ -115,10 +121,14 @@ func normalizeRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 	if config.OperationLease == 0 {
 		config.OperationLease = 30 * time.Second
 	}
+	if config.TrajectoryLease == 0 {
+		config.TrajectoryLease = 30 * time.Second
+	}
 	if config.DeliveryWorkers < 1 || config.DeliveryLease <= 0 ||
 		config.DeliveryPoll <= 0 || config.DeliveryTimeout <= 0 ||
 		config.DeliveryMaxAttempts < 1 || config.HookTimeout <= 0 ||
-		config.OperationPoll <= 0 || config.OperationLease <= 0 {
+		config.OperationPoll <= 0 || config.OperationLease <= 0 ||
+		config.TrajectoryLease <= 0 {
 		return RuntimeConfig{}, errors.New(
 			"delivery and operation settings must be positive",
 		)
@@ -169,6 +179,13 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	if err := config.Storage.Health(context.Background()); err != nil {
 		return nil, fmt.Errorf("state backend health: %w", err)
 	}
+	if config.Storage.Capabilities().AtomicState {
+		if _, ok := config.Storage.(sdk.AtomicStateBackend); !ok {
+			return nil, errors.New(
+				"state backend advertises atomic state without implementing AtomicStateBackend",
+			)
+		}
+	}
 	trajectories := config.Storage.Trajectories()
 	operations := config.Storage.Operations()
 	deliveryStore, err := config.Storage.Deliveries(sdk.HostOutboxQueue)
@@ -180,19 +197,25 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	}
 	deliveryContext, cancelDeliveries := context.WithCancel(context.Background())
 	operationContext, cancelOperations := context.WithCancel(context.Background())
+	trajectoryContext, cancelTrajectories :=
+		context.WithCancel(context.Background())
 	runtime := &Runtime{
-		version:      config.RuntimeVersion,
-		logger:       config.Logger,
-		tracer:       config.Tracer,
-		closeDone:    make(chan struct{}),
-		mounts:       mounts,
-		unmounts:     unmounts,
-		events:       events,
-		hooks:        hooks,
-		hookTimeout:  config.HookTimeout,
-		storage:      config.Storage,
-		closeStorage: config.StorageOwnership == StorageOwned,
-		trajectories: trajectories,
+		version:            config.RuntimeVersion,
+		logger:             config.Logger,
+		tracer:             config.Tracer,
+		closeDone:          make(chan struct{}),
+		mounts:             mounts,
+		unmounts:           unmounts,
+		events:             events,
+		hooks:              hooks,
+		hookTimeout:        config.HookTimeout,
+		storage:            config.Storage,
+		closeStorage:       config.StorageOwnership == StorageOwned,
+		trajectories:       trajectories,
+		trajectoryLease:    config.TrajectoryLease,
+		trajectoryWorkerID: "trajectory-runtime-" + sdk.NewID(),
+		trajectoryContext:  trajectoryContext,
+		cancelTrajectories: cancelTrajectories,
 		operation: operationRuntime{
 			store:    operations,
 			context:  operationContext,
@@ -242,6 +265,7 @@ func (runtime *Runtime) Close(ctx context.Context) error {
 	runtime.mu.Unlock()
 
 	if states != nil {
+		runtime.cancelTrajectories()
 		runtime.delivery.cancel()
 		runtime.operation.cancel()
 		go runtime.finishClose(states)
@@ -263,6 +287,7 @@ func (runtime *Runtime) Close(ctx context.Context) error {
 func (runtime *Runtime) finishClose(states []*mountState) {
 	runtime.delivery.wait.Wait()
 	runtime.operation.wait.Wait()
+	runtime.trajectoryWait.Wait()
 	var errs []error
 	for _, state := range states {
 		<-state.done

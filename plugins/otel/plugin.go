@@ -207,7 +207,10 @@ func (plugin *plugin) receive(ctx context.Context, delivery sdk.Delivery) error 
 		plugin.trajectoryEntries.Add(
 			ctx,
 			1,
-			metric.WithAttributes(attribute.String("agentm.trajectory.entry.kind", payload.EntryKind)),
+			metric.WithAttributes(attribute.String(
+				"agentm.trajectory.entry.kind",
+				string(payload.EntryKind),
+			)),
 		)
 	case sdk.EventTrajectoryRestore, sdk.EventTrajectoryRollback:
 		plugin.logger.InfoContext(ctx, "trajectory lifecycle", "event", event.Name, "trajectory_id", event.SessionID)
