@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -434,20 +435,23 @@ func TestProgressReporterExplainsRuntimeEvents(t *testing.T) {
 	if reporter == nil {
 		t.Fatal("progress reporter was not created")
 	}
-	reporter.observe(context.Background(), sdk.Event{
+	reporter.Observe(context.Background(), sdk.Event{
 		Name:      sdk.EventBeforeTool,
 		SessionID: "session-1",
 		Payload: json.RawMessage(
 			`{"turn":0,"call":{"id":"call-1","name":"custom_tool","arguments":{"path":"README.md","limit":3,"nested":{"owner":"me"}}}}`,
 		),
 	})
-	reporter.observe(context.Background(), sdk.Event{
+	reporter.Observe(context.Background(), sdk.Event{
 		Name:      sdk.EventAfterTool,
 		SessionID: "session-1",
 		Payload: json.RawMessage(
 			`{"turn":0,"call":{"id":"call-1","name":"custom_tool"},"result":{"content":"first line\nsecond line","is_error":false}}`,
 		),
 	})
+	if err := reporter.stop(); err != nil {
+		t.Fatal(err)
+	}
 	got := stderr.String()
 	for _, expected := range []string{
 		"Using",
@@ -468,6 +472,126 @@ func TestProgressReporterExplainsRuntimeEvents(t *testing.T) {
 	if !strings.ContainsRune(got, '\x1b') {
 		t.Fatalf("progress output is not colored: %q", got)
 	}
+}
+
+func TestProgressReporterObserveDoesNotBlockOnSlowWriter(t *testing.T) {
+	t.Parallel()
+	writer := &blockingProgressWriter{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	reporter := newProgressReporter(writer, nil, false, false, false)
+	if err := reporter.start(func() {}); err != nil {
+		t.Fatal(err)
+	}
+	reporter.Observe(context.Background(), sdk.Event{
+		Name:      sdk.EventBeforeTool,
+		SessionID: "session-1",
+		Payload: json.RawMessage(
+			`{"turn":0,"call":{"id":"call-1","name":"slow_tool","arguments":{"path":"README.md"}}}`,
+		),
+	})
+	select {
+	case <-writer.entered:
+	case <-time.After(time.Second):
+		t.Fatal("progress writer was not reached")
+	}
+	observed := make(chan struct{})
+	go func() {
+		defer close(observed)
+		reporter.Observe(context.Background(), sdk.Event{
+			Name:      sdk.EventAfterTool,
+			SessionID: "session-1",
+			Payload: json.RawMessage(
+				`{"turn":0,"call":{"id":"call-1","name":"slow_tool"},"result":{"content":"done","is_error":false}}`,
+			),
+		})
+	}()
+	select {
+	case <-observed:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Observe blocked on slow progress writer")
+	}
+	close(writer.release)
+	if err := reporter.stop(); err != nil {
+		t.Fatal(err)
+	}
+	got := writer.String()
+	if !strings.Contains(got, "Using") || !strings.Contains(got, "Used") {
+		t.Fatalf("drained progress output = %q", got)
+	}
+}
+
+func TestProgressReporterReportsDroppedUpdates(t *testing.T) {
+	t.Parallel()
+	writer := &blockingProgressWriter{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	reporter := newProgressReporter(writer, nil, false, false, false)
+	if err := reporter.start(func() {}); err != nil {
+		t.Fatal(err)
+	}
+	reporter.Observe(context.Background(), sdk.Event{
+		Name:      sdk.EventBeforeTool,
+		SessionID: "session-1",
+		Payload: json.RawMessage(
+			`{"turn":0,"call":{"id":"call-1","name":"slow_tool","arguments":{"path":"README.md"}}}`,
+		),
+	})
+	select {
+	case <-writer.entered:
+	case <-time.After(time.Second):
+		t.Fatal("progress writer was not reached")
+	}
+	for range progressQueueSize + 4 {
+		reporter.Observe(context.Background(), sdk.Event{
+			Name:      sdk.EventAfterTool,
+			SessionID: "session-1",
+			Payload: json.RawMessage(
+				`{"turn":0,"call":{"id":"call-1","name":"slow_tool"},"result":{"content":"done","is_error":false}}`,
+			),
+		})
+	}
+	close(writer.release)
+	if err := reporter.stop(); err != nil {
+		t.Fatal(err)
+	}
+	got := writer.String()
+	for _, expected := range []string{
+		"Progress limited",
+		"dropped",
+		"progress_queue_dropped=",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("progress output %q missing dropped-update detail %q", got, expected)
+		}
+	}
+}
+
+type blockingProgressWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	buffer  bytes.Buffer
+}
+
+func (writer *blockingProgressWriter) Write(data []byte) (int, error) {
+	select {
+	case <-writer.entered:
+	default:
+		close(writer.entered)
+	}
+	<-writer.release
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	return writer.buffer.Write(data)
+}
+
+func (writer *blockingProgressWriter) String() string {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	return writer.buffer.String()
 }
 
 func TestProgressModelRendersInlineStatus(t *testing.T) {

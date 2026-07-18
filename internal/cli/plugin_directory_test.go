@@ -5,12 +5,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lincyaw/ag/internal/bootstrap"
 	appconfig "github.com/lincyaw/ag/internal/config"
 )
 
 func TestOpenPluginDirectoryDoesNotEchoCredentials(t *testing.T) {
 	t.Parallel()
-	_, err := openPluginDirectory(
+	_, err := bootstrap.OpenPluginDirectory(
 		context.Background(),
 		appconfig.Plugins{
 			RegistryURI: "grpc://user:secret@registry.example",

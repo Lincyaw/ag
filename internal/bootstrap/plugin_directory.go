@@ -1,4 +1,4 @@
-package cli
+package bootstrap
 
 import (
 	"context"
@@ -13,22 +13,22 @@ import (
 	"github.com/lincyaw/ag/sdk"
 )
 
-type pluginSelector struct {
+type PluginSelector struct {
 	Name       string
 	InstanceID string
 }
 
-func parsePluginSelector(raw string) (pluginSelector, error) {
+func ParsePluginSelector(raw string) (PluginSelector, error) {
 	value := strings.TrimSpace(raw)
 	name, instanceID, hasInstance := strings.Cut(value, "@")
 	name = strings.TrimSpace(name)
 	instanceID = strings.TrimSpace(instanceID)
 	if err := sdk.ValidateResourceName("plugin", name); err != nil {
-		return pluginSelector{}, err
+		return PluginSelector{}, err
 	}
 	if hasInstance {
 		if instanceID == "" {
-			return pluginSelector{}, errors.New(
+			return PluginSelector{}, errors.New(
 				"plugin selector instance ID is empty",
 			)
 		}
@@ -36,13 +36,13 @@ func parsePluginSelector(raw string) (pluginSelector, error) {
 			"plugin instance",
 			instanceID,
 		); err != nil {
-			return pluginSelector{}, err
+			return PluginSelector{}, err
 		}
 	}
-	return pluginSelector{Name: name, InstanceID: instanceID}, nil
+	return PluginSelector{Name: name, InstanceID: instanceID}, nil
 }
 
-func openPluginDirectory(
+func OpenPluginDirectory(
 	ctx context.Context,
 	config appconfig.Plugins,
 ) (registry.Directory, error) {
@@ -63,7 +63,7 @@ func openPluginDirectory(
 	return directory, nil
 }
 
-func listPluginInstances(
+func ListPluginInstances(
 	ctx context.Context,
 	directory registry.Directory,
 	query registry.DiscoveryQuery,
@@ -83,13 +83,13 @@ func listPluginInstances(
 	}
 }
 
-func selectPluginInstance(
+func SelectPluginInstance(
 	ctx context.Context,
 	directory registry.Directory,
 	namespace string,
 	rawSelector string,
 ) (registry.PluginInstance, error) {
-	selector, err := parsePluginSelector(rawSelector)
+	selector, err := ParsePluginSelector(rawSelector)
 	if err != nil {
 		return registry.PluginInstance{}, err
 	}
@@ -112,7 +112,7 @@ func selectPluginInstance(
 		}
 		return instance, nil
 	}
-	instances, err := listPluginInstances(
+	instances, err := ListPluginInstances(
 		ctx,
 		directory,
 		registry.DiscoveryQuery{

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lincyaw/ag/gateway"
+	"github.com/lincyaw/ag/internal/bootstrap"
 	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/lincyaw/ag/pluginrpc"
 	"github.com/lincyaw/ag/registry"
@@ -129,7 +130,7 @@ func TestGatewayCancelsChangesPluginAndResumesDurableContext(t *testing.T) {
 	executions, err := gateway.NewRuntimeExecutionBackend(
 		gateway.RuntimeExecutionConfig{
 			States: stateFactory,
-			Build: gatewayRuntimeBuilder(
+			Build: bootstrap.GatewayRuntimeBuilder(
 				appconfig.Config{},
 				slog.New(slog.NewTextHandler(io.Discard, nil)),
 				nil,

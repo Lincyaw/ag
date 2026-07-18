@@ -1,4 +1,4 @@
-package cli
+package bootstrap
 
 import (
 	"context"
@@ -11,17 +11,13 @@ import (
 	"github.com/lincyaw/ag/gateway"
 	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/lincyaw/ag/pluginrpc"
-	"github.com/lincyaw/ag/plugins/bash"
-	fileplugin "github.com/lincyaw/ag/plugins/file"
-	"github.com/lincyaw/ag/plugins/openai"
-	otelplugin "github.com/lincyaw/ag/plugins/otel"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
-func gatewayRuntimeBuilder(
+func GatewayRuntimeBuilder(
 	config appconfig.Config,
 	logger *slog.Logger,
 	tracer trace.Tracer,
@@ -73,45 +69,12 @@ func gatewayRuntimeBuilder(
 			_, err := runtime.Mount(ctx, sdk.Local(plugin))
 			return err
 		}
-		if config.Observability.Enabled {
-			plugin, err := otelplugin.New(otelplugin.Config{
-				Logger: logger, Tracer: tracer, Meter: meter,
-			})
-			if err != nil {
-				return fail(err)
-			}
+		localPlugins, err := configuredLocalPlugins(config, logger, tracer, meter)
+		if err != nil {
+			return fail(err)
+		}
+		for _, plugin := range localPlugins {
 			if err := mountLocal(plugin); err != nil {
-				return fail(err)
-			}
-		}
-		if config.OpenAI.Enabled {
-			if err := mountLocal(openai.New(openai.Config{
-				Model: config.OpenAI.Model, APIKey: config.OpenAI.APIKey,
-				BaseURL:    config.OpenAI.BaseURL,
-				MaxRetries: config.OpenAI.MaxRetries,
-			})); err != nil {
-				return fail(err)
-			}
-		}
-		if config.Workspace.Enabled {
-			if err := mountLocal(fileplugin.New(fileplugin.Config{
-				Root:          config.Workspace.Root,
-				EnableWrite:   config.Workspace.EnableWrite,
-				MaxReadBytes:  config.Workspace.MaxReadBytes,
-				MaxWriteBytes: config.Workspace.MaxWriteBytes,
-				MaxEntries:    config.Workspace.MaxEntries,
-			})); err != nil {
-				return fail(err)
-			}
-		}
-		if config.Bash.Enabled {
-			if err := mountLocal(bash.New(bash.Config{
-				Root: config.Workspace.Root, Shell: config.Bash.Shell,
-				DefaultTimeout: config.Bash.DefaultTimeout,
-				MaxTimeout:     config.Bash.MaxTimeout,
-				MaxOutputBytes: config.Bash.MaxOutputBytes,
-				Environment:    config.Bash.Environment,
-			})); err != nil {
 				return fail(err)
 			}
 		}

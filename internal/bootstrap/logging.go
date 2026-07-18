@@ -1,4 +1,4 @@
-package cli
+package bootstrap
 
 import (
 	"io"
@@ -8,7 +8,7 @@ import (
 	"github.com/lincyaw/ag/internal/logging"
 )
 
-func openConfiguredLogger(
+func OpenConfiguredLogger(
 	config appconfig.Logging,
 	stderr io.Writer,
 ) (*slog.Logger, io.Closer, error) {

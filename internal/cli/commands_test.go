@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lincyaw/ag/internal/bootstrap"
 	"github.com/lincyaw/ag/registry"
 	"github.com/lincyaw/ag/sdk"
 )
@@ -35,7 +36,7 @@ func TestSelectPluginInstanceRequiresExplicitReplica(t *testing.T) {
 		}
 	}
 
-	_, err := selectPluginInstance(
+	_, err := bootstrap.SelectPluginInstance(
 		context.Background(),
 		directory,
 		registry.DefaultNamespace,
@@ -46,7 +47,7 @@ func TestSelectPluginInstanceRequiresExplicitReplica(t *testing.T) {
 		!strings.Contains(err.Error(), "shared@node-b=") {
 		t.Fatalf("ambiguous replica error = %v", err)
 	}
-	selected, err := selectPluginInstance(
+	selected, err := bootstrap.SelectPluginInstance(
 		context.Background(),
 		directory,
 		registry.DefaultNamespace,

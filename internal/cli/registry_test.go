@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lincyaw/ag/internal/bootstrap"
 	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/lincyaw/ag/pluginrpc"
 	"github.com/lincyaw/ag/registry"
@@ -142,7 +143,7 @@ func TestRegistryServeCommandPublishesReadyDirectory(t *testing.T) {
 		cancel()
 		t.Fatal(err)
 	}
-	selected, err := resolvePluginSelection(
+	selected, err := bootstrap.ResolvePluginSelection(
 		context.Background(),
 		selectionCatalog,
 		appconfig.Plugins{
@@ -156,7 +157,7 @@ func TestRegistryServeCommandPublishesReadyDirectory(t *testing.T) {
 		cancel()
 		t.Fatalf("selected source = %v, %v", selected, err)
 	}
-	catalog, names, err := buildRegistry(
+	plan, err := bootstrap.BuildPluginPlan(
 		context.Background(),
 		appconfig.Config{
 			Plugins: appconfig.Plugins{
@@ -174,19 +175,19 @@ func TestRegistryServeCommandPublishesReadyDirectory(t *testing.T) {
 		cancel()
 		t.Fatal(err)
 	}
-	descriptors, err := catalog.Discover(
+	descriptors, err := plan.Catalog.Discover(
 		context.Background(),
 		sdk.DiscoveryQuery{},
 	)
-	if err != nil || len(names) != 1 ||
-		names[0] != "cli-registry-test" ||
+	if err != nil || len(plan.Mounts) != 1 ||
+		plan.Mounts[0] != "cli-registry-test" ||
 		len(descriptors) != 1 ||
 		descriptors[0].URI != "grpc://127.0.0.1:9999" {
 		_ = client.Close(context.Background())
 		cancel()
 		t.Fatalf(
 			"selected catalog names=%#v descriptors=%#v err=%v",
-			names,
+			plan.Mounts,
 			descriptors,
 			err,
 		)

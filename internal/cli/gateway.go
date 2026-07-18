@@ -8,12 +8,10 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 
 	"github.com/lincyaw/ag/gateway"
+	"github.com/lincyaw/ag/internal/bootstrap"
 	appconfig "github.com/lincyaw/ag/internal/config"
-	"github.com/lincyaw/ag/internal/logging"
-	"github.com/lincyaw/ag/internal/telemetry"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -113,104 +111,14 @@ func (application *app) serveGateway(
 	ctx context.Context,
 	config appconfig.Config,
 ) (returnErr error) {
-	if config.Plugins.RegistryURI == "" {
-		return errors.New(
-			"gateway requires a plugin registry; set plugins.registry_uri or --registry-uri",
-		)
-	}
-	logger, logFile, err := openConfiguredLogger(
-		config.Logging,
+	running, err := bootstrap.StartGateway(
+		ctx,
+		config,
 		application.stderr,
+		application.version,
 	)
 	if err != nil {
-		return fmt.Errorf("configure logging: %w", err)
-	}
-	defer func() {
-		returnErr = errors.Join(returnErr, logFile.Close())
-	}()
-	observability, err := telemetry.Setup(ctx, telemetry.Config{
-		ServiceName:    "ag-gateway",
-		ServiceVersion: application.version,
-		Logger:         logger,
-	})
-	if err != nil {
-		return fmt.Errorf("configure OpenTelemetry: %w", err)
-	}
-	logger = logging.WithHandler(logger, observability.LogHandler)
-	directory, err := openPluginDirectory(ctx, config.Plugins)
-	if err != nil {
-		return errors.Join(err, shutdownTelemetry(observability))
-	}
-	root, err := filepath.Abs(config.Gateway.Directory)
-	if err != nil {
-		return errors.Join(
-			fmt.Errorf("resolve gateway directory: %w", err),
-			directory.Close(context.Background()),
-			shutdownTelemetry(observability),
-		)
-	}
-	sessionStore, err := gateway.NewFileSessionStore(
-		filepath.Join(root, "control"),
-	)
-	if err != nil {
-		return errors.Join(
-			err,
-			directory.Close(context.Background()),
-			shutdownTelemetry(observability),
-		)
-	}
-	stateFactory, err := gateway.NewFileSessionStateFactory(
-		filepath.Join(root, "state"),
-	)
-	if err != nil {
-		return errors.Join(
-			err,
-			sessionStore.Close(context.Background()),
-			directory.Close(context.Background()),
-			shutdownTelemetry(observability),
-		)
-	}
-	executions, err := gateway.NewRuntimeExecutionBackend(
-		gateway.RuntimeExecutionConfig{
-			States: stateFactory,
-			Build: gatewayRuntimeBuilder(
-				config,
-				logger,
-				observability.Tracer,
-				observability.Meter,
-				application.version,
-			),
-		},
-	)
-	if err != nil {
-		return errors.Join(
-			err,
-			sessionStore.Close(context.Background()),
-			directory.Close(context.Background()),
-			shutdownTelemetry(observability),
-		)
-	}
-	service, err := gateway.NewService(gateway.ServiceConfig{
-		Store: sessionStore, Directory: directory,
-		Executions:       executions,
-		DefaultNamespace: config.Plugins.RegistryNamespace,
-		DefaultProvider:  config.Agent.Provider,
-		DefaultSystem:    config.Agent.System,
-		DefaultMaxTurns:  config.Agent.MaxTurns,
-	})
-	if err != nil {
-		closeCtx, cancel := context.WithTimeout(
-			context.Background(),
-			config.Gateway.ShutdownTimeout,
-		)
-		closeErr := errors.Join(
-			executions.Close(closeCtx),
-			sessionStore.Close(closeCtx),
-			directory.Close(closeCtx),
-			observability.Shutdown(closeCtx),
-		)
-		cancel()
-		return errors.Join(err, closeErr)
+		return err
 	}
 	var (
 		listener      net.Listener
@@ -251,23 +159,14 @@ func (application *app) serveGateway(
 		)
 		cleanupErr = errors.Join(
 			cleanupErr,
-			service.Close(closeCtx),
-		)
-		cancel()
-		closeCtx, cancel = context.WithTimeout(
-			context.Background(),
-			config.Gateway.ShutdownTimeout,
-		)
-		cleanupErr = errors.Join(
-			cleanupErr,
-			observability.Shutdown(closeCtx),
+			running.Close(closeCtx),
 		)
 		cancel()
 		returnErr = errors.Join(returnErr, cleanupErr)
 	}()
 
 	handler, err := gateway.NewHTTPHandler(
-		service,
+		running.Service,
 		gateway.HeaderAuthenticator,
 	)
 	if err != nil {
@@ -300,9 +199,9 @@ func (application *app) serveGateway(
 	default:
 	}
 
-	recovered, recoverErr := service.RecoverSessions(ctx)
+	recovered, recoverErr := running.Service.RecoverSessions(ctx)
 	if recoverErr != nil {
-		logger.WarnContext(
+		running.Logger.WarnContext(
 			ctx,
 			"some gateway executions could not be scheduled for recovery",
 			"scheduled",
@@ -313,15 +212,15 @@ func (application *app) serveGateway(
 	}
 	ready := gatewayReady{
 		URL:    "http://" + listener.Addr().String(),
-		Listen: listener.Addr().String(), Directory: root,
-		Registry:            config.Plugins.RegistryURI,
+		Listen: listener.Addr().String(), Directory: running.Root,
+		Registry:            running.RegistryURI,
 		RecoveredExecutions: len(recovered),
 		PID:                 os.Getpid(),
 	}
 	if err := application.writeGatewayReady(ready); err != nil {
 		return fmt.Errorf("write gateway ready record: %w", err)
 	}
-	logger.InfoContext(
+	running.Logger.InfoContext(
 		ctx,
 		"gateway ready",
 		"url",

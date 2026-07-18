@@ -46,17 +46,17 @@ idempotent; the SDK does not claim exactly-once execution.
 
 Requires the Go version declared in `go.mod`.
 
-Build `ag` and link it to the executable used by `~/.ag/ag`:
+Build `ag` and link it as the `ag` executable:
 
 ```bash
 make
 ```
 
-This produces `bin/ag` and links `~/.ag/bin/ag-core` to it. The paths can be
+This produces `bin/ag` and links `~/.local/bin/ag` to it. The paths can be
 overridden when needed:
 
 ```bash
-make AG_HOME=/custom/ag-home
+make AG_EXEC=/custom/bin/ag
 make build
 make test
 make clean

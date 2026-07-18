@@ -87,7 +87,7 @@ execution backend and does not own the agent turn loop.
 ```text
 cmd/ag
   -> internal/cli
-  -> application composition
+  -> internal/bootstrap
   -> sdk/runtime
 
 cmd/agentm-plugin-file
@@ -97,9 +97,32 @@ cmd/agentm-plugin-bash
 ```
 
 The CLI is a presenter. Runtime, storage, telemetry, and selected plugin
-sources are composition decisions, not CLI domain behavior. New composition
-logic should move toward an application bootstrap boundary rather than
-expanding command handlers.
+sources are composition decisions, not CLI domain behavior. `internal/bootstrap`
+owns that application composition boundary: opening state backends, configuring
+runtime observability, building plugin plans, selecting discovered plugin
+instances, opening plugin inspection catalogs, producing gateway runtime
+builders, and wrapping short-lived runtime actions. CLI command handlers should
+remain focused on arguments, confirmation, progress presentation, and rendering.
+
+Gateway serving follows the same split. `internal/cli` owns the command process,
+HTTP listener lifecycle, and ready output; `internal/bootstrap` owns the
+gateway service host, telemetry, durable stores, plugin directory, and runtime
+execution backend composition.
+
+Registry serving mirrors that host split: `internal/cli` owns the gRPC listener,
+transport flags, advertise URI, and ready output; `internal/bootstrap` owns the
+registry backend, telemetry, logger wiring, and host cleanup.
+
+The local CLI progress UI implements `bootstrap.EventSink`; bootstrap adapts it
+to `runtime.RuntimeConfig.EventObserver`. This is a host-side diagnostics path:
+the runtime sends cloned events after dispatch, while `internal/cli` translates
+those events into text, plain progress lines, or the interactive terminal
+dashboard. Event interpretation belongs to the presenter; event production and
+subscriber delivery remain runtime/plugin concerns. The CLI sink uses a bounded
+in-process queue and drains it on shutdown, so terminal rendering does not pace
+runtime execution. If local rendering falls behind, the sink reports dropped
+progress updates rather than hiding overload. Durable, retryable event delivery
+belongs to runtime subscribers, not to the local host UI callback.
 
 ## Dependency rules
 

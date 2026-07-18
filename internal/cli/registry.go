@@ -11,9 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lincyaw/ag/internal/bootstrap"
 	appconfig "github.com/lincyaw/ag/internal/config"
-	"github.com/lincyaw/ag/internal/logging"
-	"github.com/lincyaw/ag/internal/telemetry"
 	"github.com/lincyaw/ag/pluginrpc"
 	"github.com/lincyaw/ag/registry"
 	"github.com/spf13/cobra"
@@ -75,34 +74,14 @@ func (application *app) serveRegistry(
 	ctx context.Context,
 	config appconfig.Config,
 ) (returnErr error) {
-	logger, logFile, err := openConfiguredLogger(
-		config.Logging,
-		application.stderr,
-	)
-	if err != nil {
-		return fmt.Errorf("configure logging: %w", err)
-	}
-	defer func() {
-		returnErr = errors.Join(returnErr, logFile.Close())
-	}()
-	observability, err := telemetry.Setup(ctx, telemetry.Config{
-		ServiceName:    "ag-registry",
-		ServiceVersion: application.version,
-		Logger:         logger,
-	})
-	if err != nil {
-		return fmt.Errorf("configure OpenTelemetry: %w", err)
-	}
-	logger = logging.WithHandler(logger, observability.LogHandler)
-	directory, err := registry.NewDefaultBackendRegistry().Open(
+	running, err := bootstrap.StartRegistry(
 		ctx,
-		config.Registry.BackendURI,
+		config,
+		application.stderr,
+		application.version,
 	)
 	if err != nil {
-		return errors.Join(
-			fmt.Errorf("open registry backend: %w", err),
-			shutdownTelemetry(observability),
-		)
+		return err
 	}
 	var (
 		listener      net.Listener
@@ -134,8 +113,7 @@ func (application *app) serveRegistry(
 		)
 		cleanupErr = errors.Join(
 			cleanupErr,
-			directory.Close(closeCtx),
-			observability.Shutdown(closeCtx),
+			running.Close(closeCtx),
 		)
 		cancel()
 		returnErr = errors.Join(returnErr, cleanupErr)
@@ -158,7 +136,7 @@ func (application *app) serveRegistry(
 		return err
 	}
 	server, err = pluginrpc.NewRegistryGRPCServer(
-		directory,
+		running.Directory,
 		config.Registry.MaxMessageBytes,
 		serverOptions...,
 	)
@@ -183,20 +161,20 @@ func (application *app) serveRegistry(
 	ready := registryReady{
 		URI:          uri,
 		Listen:       listener.Addr().String(),
-		Backend:      directory.String(),
-		Capabilities: directory.Capabilities(),
+		Backend:      running.Backend,
+		Capabilities: running.Capabilities,
 		PID:          os.Getpid(),
 	}
 	if err := application.writeRegistryReady(ready); err != nil {
 		return fmt.Errorf("write registry ready record: %w", err)
 	}
-	logger.InfoContext(
+	running.Logger.InfoContext(
 		ctx,
 		"plugin registry ready",
 		"uri",
 		uri,
 		"backend",
-		directory.String(),
+		running.Backend,
 	)
 
 	select {
@@ -286,10 +264,4 @@ func stopGRPCServer(server *grpc.Server) {
 		server.Stop()
 		<-done
 	}
-}
-
-func shutdownTelemetry(runtime *telemetry.Runtime) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return runtime.Shutdown(ctx)
 }

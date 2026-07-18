@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -185,8 +186,31 @@ func standaloneFileRevision(t *testing.T, content string) string {
 type childProcess struct {
 	command *exec.Cmd
 	ready   pluginhost.Ready
-	stderr  *bytes.Buffer
+	stderr  *safeBuffer
 	home    string
+}
+
+type safeBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (buffer *safeBuffer) Write(data []byte) (int, error) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.Write(data)
+}
+
+func (buffer *safeBuffer) Len() int {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.Len()
+}
+
+func (buffer *safeBuffer) String() string {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.String()
 }
 
 func startPluginProcess(t *testing.T, binary string, arguments ...string) *childProcess {
@@ -213,7 +237,7 @@ func startPluginProcessEnv(
 		cancel()
 		t.Fatal(err)
 	}
-	stderr := &bytes.Buffer{}
+	stderr := &safeBuffer{}
 	command.Stderr = stderr
 	if err := command.Start(); err != nil {
 		cancel()
