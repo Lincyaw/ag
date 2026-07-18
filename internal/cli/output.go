@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,10 @@ import (
 	"time"
 	"unicode"
 
+	"charm.land/glamour/v2"
+	"charm.land/glamour/v2/styles"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 	"github.com/spf13/cobra"
 )
@@ -20,6 +25,8 @@ import (
 const (
 	outputText = "text"
 	outputJSON = "json"
+
+	defaultMarkdownWidth = 80
 )
 
 type runOutput struct {
@@ -178,7 +185,7 @@ func (application *app) writeRun(sessionID string, result agentruntime.Result) e
 	value := runOutput{SessionID: sessionID, Result: result}
 	return application.render(value, func(writer io.Writer) error {
 		if result.Output != "" {
-			if _, err := fmt.Fprintln(writer, humanContent(result.Output)); err != nil {
+			if err := application.writeHumanContent(writer, result.Output); err != nil {
 				return err
 			}
 			if _, err := fmt.Fprintln(writer); err != nil {
@@ -196,6 +203,114 @@ func (application *app) writeRun(sessionID string, result agentruntime.Result) e
 		)
 		return table.Flush()
 	})
+}
+
+func (application *app) writeHumanContent(writer io.Writer, value string) error {
+	content := humanContent(value)
+	if looksLikeMarkdown(content) {
+		content = renderMarkdownContent(writer, content)
+	}
+	if err := application.writeStyledContent(writer, content); err != nil {
+		return err
+	}
+	if !strings.HasSuffix(content, "\n") {
+		_, err := fmt.Fprintln(writer)
+		return err
+	}
+	return nil
+}
+
+func (application *app) writeStyledContent(writer io.Writer, content string) error {
+	switch application.color {
+	case colorAlways:
+		_, err := (&colorprofile.Writer{
+			Forward: writer,
+			Profile: colorprofile.TrueColor,
+		}).WriteString(content)
+		return err
+	case colorNever:
+		_, err := (&colorprofile.Writer{
+			Forward: writer,
+			Profile: colorprofile.NoTTY,
+		}).WriteString(content)
+		return err
+	default:
+		_, err := lipgloss.Fprint(writer, content)
+		return err
+	}
+}
+
+func renderMarkdownContent(writer io.Writer, value string) string {
+	width := terminalWidth(writer)
+	if width <= 0 {
+		width = defaultMarkdownWidth
+	}
+	style := styles.DarkStyleConfig
+	style.H2.Prefix = ""
+	style.H3.Prefix = ""
+	style.H4.Prefix = ""
+	style.H5.Prefix = ""
+	style.H6.Prefix = ""
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStyles(style),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return value
+	}
+	rendered, err := renderer.Render(value)
+	if err != nil {
+		return value
+	}
+	return strings.Trim(rendered, "\n")
+}
+
+func looksLikeMarkdown(value string) bool {
+	scanner := bufio.NewScanner(strings.NewReader(value))
+	for scanner.Scan() {
+		if markdownLine(scanner.Text()) {
+			return true
+		}
+	}
+	return strings.Contains(value, "**") ||
+		strings.Contains(value, "__") ||
+		strings.Contains(value, "`") ||
+		(strings.Contains(value, "[") && strings.Contains(value, "]("))
+}
+
+func markdownLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(trimmed, "```"),
+		strings.HasPrefix(trimmed, "~~~"),
+		strings.HasPrefix(trimmed, "> "):
+		return true
+	case strings.HasPrefix(trimmed, "- "),
+		strings.HasPrefix(trimmed, "* "),
+		strings.HasPrefix(trimmed, "+ "):
+		return true
+	case strings.Contains(trimmed, "|") && strings.Contains(trimmed, "---"):
+		return true
+	}
+	if strings.HasPrefix(trimmed, "#") {
+		trimmed = strings.TrimLeft(trimmed, "#")
+		return strings.HasPrefix(trimmed, " ")
+	}
+	return orderedMarkdownLine(trimmed)
+}
+
+func orderedMarkdownLine(line string) bool {
+	index := 0
+	for index < len(line) && line[index] >= '0' && line[index] <= '9' {
+		index++
+	}
+	return index > 0 &&
+		index+1 < len(line) &&
+		(line[index] == '.' || line[index] == ')') &&
+		line[index+1] == ' '
 }
 
 func (application *app) writePath(path string) error {

@@ -39,6 +39,10 @@ empty and stderr ends with this error document:
 Runtime logs do not precede the error on stderr unless console logging was
 explicitly enabled.
 
+In text mode, `ag run` renders Markdown-looking final answers for terminal
+reading, including headings, lists, emphasis, links, tables, and fenced code
+blocks. Use `-o json` when a program needs the exact raw answer string.
+
 Human progress is separate from runtime logs. In text mode, `--progress auto`
 opens a transient inline Bubble Tea dashboard on stderr when stderr is a
 terminal. The dashboard shows the task, current phase, turn, tool progress, and
@@ -57,8 +61,9 @@ dashboard without stopping the run, and `ctrl+c` cancels the run.
 Use `--progress plain` for append-only progress lines, `--progress always` to
 force progress even when stderr is not a terminal, `--progress tui` to prefer
 the inline terminal panel, or `--progress never` for fully quiet text output.
-`--color auto` colors human progress only on a terminal; use `--color always`
-or `--color never` to override that. JSON mode never emits progress records.
+`--color auto` colors human progress and rendered answers only on a terminal;
+use `--color always` or `--color never` to override that. JSON mode never emits
+progress records or rendered answers.
 
 `ag registry serve -o json` is a long-running exception: it emits one complete
 ready document after the listener and backend are ready, then keeps stdout

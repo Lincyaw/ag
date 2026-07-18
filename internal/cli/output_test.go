@@ -195,6 +195,22 @@ func TestJSONOnlyChangesRepresentation(t *testing.T) {
 	if path["path"] != "/tmp/config.toml" {
 		t.Fatalf("path = %#v", path)
 	}
+
+	stdout.Reset()
+	rawMarkdown := "# Title\n\nThis is **bold**."
+	if err := application.writeRun("session-1", agentruntime.Result{
+		Output: rawMarkdown,
+		Cause:  sdk.Cause{Code: "model_end"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var run runOutput
+	if err := json.Unmarshal(stdout.Bytes(), &run); err != nil {
+		t.Fatal(err)
+	}
+	if run.Result.Output != rawMarkdown {
+		t.Fatalf("run output = %q, want raw markdown %q", run.Result.Output, rawMarkdown)
+	}
 }
 
 func TestConfigOutputRedactsURISecretsWithoutMutation(t *testing.T) {
@@ -331,6 +347,77 @@ func TestHumanRunSummaryEscapesUntrustedFields(t *testing.T) {
 	}
 	if strings.ContainsRune(stdout.String(), '\x1b') {
 		t.Fatalf("human output contains terminal escape: %q", stdout.String())
+	}
+}
+
+func TestHumanRunRendersMarkdownAnswer(t *testing.T) {
+	t.Parallel()
+	var stdout bytes.Buffer
+	application := &app{stdout: &stdout, output: outputText, color: colorNever}
+	err := application.writeRun(
+		"session-1",
+		agentruntime.Result{
+			Output: strings.Join([]string{
+				"# Title",
+				"",
+				"## Details",
+				"",
+				"This is **bold** and `code`.",
+				"",
+				"- first",
+				"- second",
+				"",
+				"```go",
+				"fmt.Println(\"ok\")",
+				"```",
+			}, "\n"),
+			Cause: sdk.Cause{Code: "model_end"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := stdout.String()
+	for _, expected := range []string{
+		"Title",
+		"Details",
+		"bold",
+		"code",
+		"first",
+		"second",
+		`fmt.Println("ok")`,
+		"Session:",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("rendered output %q missing %q", rendered, expected)
+		}
+	}
+	for _, raw := range []string{
+		"# Title",
+		"## Details",
+		"**bold**",
+		"- first",
+		"```go",
+		"```",
+	} {
+		if strings.Contains(rendered, raw) {
+			t.Fatalf("rendered output still contains raw markdown %q: %q", raw, rendered)
+		}
+	}
+	if strings.ContainsRune(rendered, '\x1b') {
+		t.Fatalf("human output contains terminal escape: %q", rendered)
+	}
+
+	stdout.Reset()
+	application.color = colorAlways
+	if err := application.writeRun("session-2", agentruntime.Result{
+		Output: "# Colored\n\nThis is **bold**.",
+		Cause:  sdk.Cause{Code: "model_end"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.ContainsRune(stdout.String(), '\x1b') {
+		t.Fatalf("forced-color markdown output is not styled: %q", stdout.String())
 	}
 }
 
