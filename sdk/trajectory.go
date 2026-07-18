@@ -143,6 +143,7 @@ type TrajectoryEnvironment struct {
 	ParentSessionID        string             `json:"parent_session_id,omitempty"`
 	OriginInvocationID     string             `json:"origin_invocation_id,omitempty"`
 	OriginInvocationRootID string             `json:"origin_invocation_root_id,omitempty"`
+	OriginForkInvocationID string             `json:"origin_fork_invocation_id,omitempty"`
 	OriginMode             AgentSessionMode   `json:"origin_mode,omitempty"`
 	RequestedProvider      string             `json:"requested_provider,omitempty"`
 	SystemDigest           string             `json:"system_digest,omitempty"`

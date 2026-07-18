@@ -515,6 +515,16 @@ func (execution *promptExecution) decide(
 		return sdk.Action{}, err
 	}
 	action := resolveAction(defaultAction, decision.Actions)
+	if turn+1 >= execution.session.config.MaxTurns &&
+		action.Kind != sdk.ActionStop {
+		action = sdk.Action{
+			Kind: sdk.ActionStop,
+			Cause: &sdk.Cause{
+				Code:  "max_turns",
+				Final: true,
+			},
+		}
+	}
 	if err := execution.session.appendTrajectory(
 		ctx,
 		sdk.TrajectoryKindDecision,

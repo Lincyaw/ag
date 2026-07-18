@@ -53,6 +53,7 @@ type scopedAgentInvoker struct {
 	parentProvider   string
 	parentMessages   []sdk.Message
 	forkHead         string
+	forkInvocationID string
 }
 
 func (invoker *scopedAgentInvoker) InvokeAgent(
@@ -92,8 +93,8 @@ func (invoker *scopedAgentInvoker) InvokeAgent(
 	if err != nil {
 		return sdk.AgentResult{}, err
 	}
-	if request.IdempotencyKey == "" {
-		request.IdempotencyKey = sdk.NewID()
+	if err := ensureAgentIdempotencyKey(&request); err != nil {
+		return sdk.AgentResult{}, err
 	}
 	invocationID := invoker.parentSession.executionOperationKey(
 		"agent",
@@ -274,6 +275,21 @@ func validateAgentRequest(request *sdk.AgentRequest) error {
 	return nil
 }
 
+func ensureAgentIdempotencyKey(request *sdk.AgentRequest) error {
+	if request.IdempotencyKey == "" {
+		if request.SessionID == "" {
+			return errors.New(
+				"agent idempotency key is required unless session ID is provided",
+			)
+		}
+		request.IdempotencyKey = request.SessionID
+	}
+	return sdk.ValidateResourceName(
+		"agent idempotency key",
+		request.IdempotencyKey,
+	)
+}
+
 func narrowAgentSnapshot(
 	parent *registrySnapshot,
 	parentProvider string,
@@ -361,6 +377,12 @@ func (invoker *scopedAgentInvoker) newAgentSession(
 	environment.OriginInvocationID = invocation.ID
 	environment.OriginInvocationRootID = invocation.RootID
 	environment.OriginMode = request.Mode
+	if request.Mode == sdk.AgentSessionFork {
+		environment.OriginForkInvocationID = invoker.forkInvocationID
+		if environment.OriginForkInvocationID == "" {
+			environment.OriginForkInvocationID = invocation.ParentID
+		}
+	}
 	trajectory := sdk.Trajectory{
 		ID:          config.ID,
 		Environment: environment,
@@ -437,6 +459,29 @@ func (invoker *scopedAgentInvoker) executeAgentSession(
 			metadata.Environment.OriginInvocationID,
 			metadata.Environment.ParentSessionID,
 		)
+	}
+	if metadata.Environment.OriginMode != "" &&
+		metadata.Environment.OriginMode != request.Mode {
+		return Result{}, fmt.Errorf(
+			"agent session %q already belongs to %q mode",
+			request.SessionID,
+			metadata.Environment.OriginMode,
+		)
+	}
+	if request.Mode == sdk.AgentSessionFork {
+		expectedForkInvocationID := invoker.forkInvocationID
+		if expectedForkInvocationID == "" {
+			expectedForkInvocationID = invocation.ParentID
+		}
+		if metadata.Environment.OriginForkInvocationID != "" &&
+			metadata.Environment.OriginForkInvocationID !=
+				expectedForkInvocationID {
+			return Result{}, fmt.Errorf(
+				"agent session %q already forks from invocation %q",
+				request.SessionID,
+				metadata.Environment.OriginForkInvocationID,
+			)
+		}
 	}
 	if metadata.Execution != nil {
 		if !metadata.Execution.Terminal() {

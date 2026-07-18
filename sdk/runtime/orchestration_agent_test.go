@@ -169,6 +169,77 @@ func TestAgentCannotExpandInheritedTurnLimit(t *testing.T) {
 	}
 }
 
+func TestAgentInvocationRequiresStableIdentity(t *testing.T) {
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: testStateBackendWithStores(nil, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			time.Second,
+		)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	provider := &nestedAgentProvider{}
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "agent-stable-identity",
+			Version:     "1.0.0",
+			Description: "tests child agent identity validation",
+			APIVersion:  sdk.APIVersion,
+			Registers: []string{
+				sdk.ProviderResource("nested-model"),
+				sdk.AgentResource("researcher"),
+			},
+		},
+		InstallFunc: func(
+			_ context.Context,
+			registrar sdk.Registrar,
+		) error {
+			if err := registrar.RegisterProvider(provider); err != nil {
+				return err
+			}
+			return sdk.RegisterAgent(registrar, sdk.AgentSpec{
+				Name:        "researcher",
+				Description: "requires a stable invocation coordinate",
+			})
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "identity-parent",
+		Provider: "nested-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invoker := &scopedAgentInvoker{
+		runtime:        runtime,
+		snapshot:       runtime.current.Load(),
+		parentSession:  session,
+		parentProvider: "nested-model",
+	}
+
+	if _, err := invoker.InvokeAgent(ctx, sdk.AgentRequest{
+		Agent:  "researcher",
+		Prompt: "inspect",
+	}); err == nil || !strings.Contains(
+		err.Error(),
+		"agent idempotency key is required",
+	) {
+		t.Fatalf("invoke error = %v", err)
+	}
+}
+
 func (*nestedAgentProvider) Spec() sdk.ProviderSpec {
 	return sdk.ProviderSpec{Name: "nested-model", Model: "test"}
 }
@@ -396,6 +467,8 @@ func TestToolCanInvokeForkedAgentWithRecursiveInvocationGraph(
 		child.Environment.OriginInvocationID != agent.Invocation.ID ||
 		child.Environment.OriginInvocationRootID !=
 			agent.Invocation.RootID ||
+		child.Environment.OriginForkInvocationID !=
+			rootTool.Invocation.ID ||
 		child.Environment.OriginMode != sdk.AgentSessionFork {
 		t.Fatalf(
 			"child structured lineage = %#v",

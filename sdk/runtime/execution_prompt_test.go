@@ -5,6 +5,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -184,6 +185,75 @@ func TestPromptBlockCommitsWithoutCallingProvider(t *testing.T) {
 				want,
 			)
 		}
+	}
+}
+
+func TestDecideInjectCannotOverrideFinalTurnLimit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{Storage: newTestStateBackend()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	hook := sdk.TypedHook[sdk.DecidePayload](
+		sdk.HookSpec{
+			Name:  "inject-on-final-turn",
+			Event: sdk.EventDecide,
+		},
+		func(context.Context, sdk.DecidePayload) (sdk.Effect, error) {
+			return sdk.Inject(sdk.Message{
+				Role:    sdk.RoleUser,
+				Content: "continue past the cap",
+			}), nil
+		},
+	)
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "final-turn-policy",
+			Version:     "1.0.0",
+			Description: "tests final turn action precedence",
+			APIVersion:  sdk.APIVersion,
+			Registers: []string{
+				sdk.ProviderResource("observer-provider"),
+				sdk.HookResource("inject-on-final-turn"),
+			},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return errors.Join(
+				registrar.RegisterProvider(observerProvider{}),
+				registrar.RegisterHook(hook),
+			)
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "final-turn-inject",
+		Provider: "observer-provider",
+		MaxTurns: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := session.Prompt(ctx, "stop cleanly")
+	if err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	if result.Cause.Code != "max_turns" || !result.Cause.Final {
+		t.Fatalf("result cause = %#v", result.Cause)
+	}
+	if len(result.Messages) != 2 ||
+		result.Messages[1].Content != "observer result" {
+		t.Fatalf("result messages = %#v", result.Messages)
 	}
 }
 

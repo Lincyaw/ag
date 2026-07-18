@@ -27,7 +27,9 @@ func (invoker *scopedAgentInvoker) ExecuteWorkflow(
 		return sdk.WorkflowResult{}, err
 	}
 	if request.IdempotencyKey == "" {
-		request.IdempotencyKey = sdk.NewID()
+		return sdk.WorkflowResult{}, errors.New(
+			"workflow idempotency key is required",
+		)
 	}
 	invocationID := invoker.parentSession.executionOperationKey(
 		"workflow",

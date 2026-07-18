@@ -255,6 +255,7 @@ func (session *Session) submitToolCall(
 		parentProvider:   providerName,
 		parentMessages:   cloneMessages(messages),
 		forkHead:         call.forkHead,
+		forkInvocationID: call.invocation.ID,
 	}
 	ctx = sdk.WithAgentInvoker(ctx, invoker)
 	ctx = sdk.WithWorkflowInvoker(ctx, invoker)

@@ -51,6 +51,53 @@ func TestValidateWorkflowRejectsCycleBeforeSubmission(t *testing.T) {
 	}
 }
 
+func TestWorkflowInvocationRequiresStableIdentity(t *testing.T) {
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: testStateBackendWithStores(nil, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			time.Second,
+		)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID: "workflow-identity-parent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invoker := &scopedAgentInvoker{
+		runtime:       runtime,
+		snapshot:      runtime.current.Load(),
+		parentSession: session,
+	}
+
+	if _, err := invoker.ExecuteWorkflow(ctx, sdk.WorkflowRequest{
+		Name: "fanout",
+		Nodes: []sdk.WorkflowNode{{
+			ID: "worker",
+			Agent: sdk.AgentRequest{
+				Agent:  "worker",
+				Prompt: "work",
+			},
+		}},
+	}); err == nil || !strings.Contains(
+		err.Error(),
+		"workflow idempotency key is required",
+	) {
+		t.Fatalf("workflow error = %v", err)
+	}
+}
+
 func (*workflowProvider) Spec() sdk.ProviderSpec {
 	return sdk.ProviderSpec{Name: "workflow-model", Model: "test"}
 }
