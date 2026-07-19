@@ -26,6 +26,11 @@ type agentSessionBinding struct {
 	invocation sdk.Invocation
 }
 
+type agentSessionOpen struct {
+	session *Session
+	result  *Result
+}
+
 func (invoker *scopedAgentInvoker) InvokeAgent(
 	ctx context.Context,
 	request sdk.AgentRequest,
@@ -322,6 +327,64 @@ func (binding agentSessionBinding) validateExisting(
 	)
 }
 
+func (binding agentSessionBinding) openExisting(
+	ctx context.Context,
+	runtime *Runtime,
+	createErr error,
+) (agentSessionOpen, error) {
+	if runtime == nil {
+		return agentSessionOpen{}, errors.New("agent session runtime is nil")
+	}
+	releaseWork, err := runtime.beginTrajectoryWork()
+	if err != nil {
+		return agentSessionOpen{}, err
+	}
+	defer releaseWork()
+	metadata, loadErr := runtime.trajectories.LoadMetadata(
+		ctx,
+		binding.request.SessionID,
+	)
+	if loadErr != nil {
+		return agentSessionOpen{}, errors.Join(createErr, loadErr)
+	}
+	if err := binding.validateExisting(metadata); err != nil {
+		return agentSessionOpen{}, err
+	}
+	if result, handled, err := runtime.continueExistingExecution(
+		ctx,
+		metadata,
+	); handled || err != nil {
+		return agentSessionOpen{result: &result}, err
+	}
+	session, err := binding.resume(ctx, runtime)
+	if err != nil {
+		return agentSessionOpen{}, err
+	}
+	return agentSessionOpen{session: session}, nil
+}
+
+func (binding agentSessionBinding) resume(
+	ctx context.Context,
+	runtime *Runtime,
+) (*Session, error) {
+	config := binding.config
+	config.ResumePolicy = ResumeExact
+	session, err := runtime.ResumeSession(
+		ctx,
+		binding.request.SessionID,
+		config,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"resume agent session trajectory %q: %w",
+			binding.request.SessionID,
+			err,
+		)
+	}
+	session.applyInvocationScope(binding.invocation)
+	return session, nil
+}
+
 func (invoker *scopedAgentInvoker) newAgentSession(
 	ctx context.Context,
 	request sdk.AgentRequest,
@@ -362,6 +425,21 @@ func (invoker *scopedAgentInvoker) createAgentSession(
 	)
 }
 
+func (invoker *scopedAgentInvoker) openAgentSession(
+	ctx context.Context,
+	snapshot *registrySnapshot,
+	binding agentSessionBinding,
+) (agentSessionOpen, error) {
+	child, err := invoker.createAgentSession(ctx, snapshot, binding)
+	if err == nil {
+		return agentSessionOpen{session: child}, nil
+	}
+	if !errors.Is(err, sdk.ErrTrajectoryExists) {
+		return agentSessionOpen{}, err
+	}
+	return binding.openExisting(ctx, invoker.runtime, err)
+}
+
 func (invoker *scopedAgentInvoker) executeAgentSession(
 	ctx context.Context,
 	request sdk.AgentRequest,
@@ -383,37 +461,17 @@ func (invoker *scopedAgentInvoker) executeAgentSession(
 	if err != nil {
 		return Result{}, err
 	}
-	child, err := invoker.createAgentSession(ctx, snapshot, binding)
-	if err == nil {
-		return child.Prompt(ctx, request.Prompt)
-	}
-	if !errors.Is(err, sdk.ErrTrajectoryExists) {
-		return Result{}, err
-	}
-	metadata, loadErr := invoker.runtime.trajectories.LoadMetadata(
-		ctx,
-		request.SessionID,
-	)
-	if loadErr != nil {
-		return Result{}, errors.Join(err, loadErr)
-	}
-	if err := binding.validateExisting(metadata); err != nil {
-		return Result{}, err
-	}
-	if result, handled, err := invoker.runtime.continueExistingExecution(
-		ctx,
-		metadata,
-	); handled || err != nil {
-		return result, err
-	}
-	child, err = invoker.resumeAgentSession(
-		ctx,
-		binding,
-	)
+	opened, err := invoker.openAgentSession(ctx, snapshot, binding)
 	if err != nil {
 		return Result{}, err
 	}
-	return child.Prompt(ctx, request.Prompt)
+	if opened.result != nil {
+		return *opened.result, nil
+	}
+	if opened.session == nil {
+		return Result{}, errors.New("opened agent session is nil")
+	}
+	return opened.session.Prompt(ctx, request.Prompt)
 }
 
 func (invoker *scopedAgentInvoker) agentSessionConfig(
@@ -434,28 +492,6 @@ func (invoker *scopedAgentInvoker) agentSessionConfig(
 		config.MaxTurns = invoker.parentSession.config.MaxTurns
 	}
 	return config
-}
-
-func (invoker *scopedAgentInvoker) resumeAgentSession(
-	ctx context.Context,
-	binding agentSessionBinding,
-) (*Session, error) {
-	config := binding.config
-	config.ResumePolicy = ResumeExact
-	session, err := invoker.runtime.ResumeSession(
-		ctx,
-		binding.request.SessionID,
-		config,
-	)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"resume agent session trajectory %q: %w",
-			binding.request.SessionID,
-			err,
-		)
-	}
-	session.applyInvocationScope(binding.invocation)
-	return session, nil
 }
 
 func agentRuntimeResult(
