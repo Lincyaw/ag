@@ -13,6 +13,7 @@ func (application *app) writeInvocationGraph(
 	graph sdk.InvocationGraph,
 ) error {
 	return application.render(graph, func(writer io.Writer) error {
+		operations := graph.OrderedOperations()
 		table := tabwriter.NewWriter(writer, 0, 4, 2, ' ', 0)
 		fmt.Fprintf(
 			table,
@@ -22,9 +23,9 @@ func (application *app) writeInvocationGraph(
 		fmt.Fprintf(
 			table,
 			"Operations:\t%d\n\n",
-			len(graph.Operations),
+			len(operations),
 		)
-		if len(graph.Operations) == 0 {
+		if len(operations) == 0 {
 			fmt.Fprintln(table, "No durable child operations.")
 			return table.Flush()
 		}
@@ -32,7 +33,7 @@ func (application *app) writeInvocationGraph(
 			table,
 			"KIND\tRESOURCE\tSTATE\tINVOCATION\tPARENT\tDEPENDS ON\tGROUP\tSESSION\tTARGET SESSION",
 		)
-		for _, record := range graph.Operations {
+		for _, record := range operations {
 			fmt.Fprintf(
 				table,
 				"%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",

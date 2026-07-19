@@ -28,6 +28,13 @@ type Manifest struct {
 	Registers     []string `json:"registers,omitempty"`
 }
 
+func CloneManifest(manifest Manifest) Manifest {
+	manifest.Requires = slices.Clone(manifest.Requires)
+	manifest.Conflicts = slices.Clone(manifest.Conflicts)
+	manifest.Registers = slices.Clone(manifest.Registers)
+	return manifest
+}
+
 func (manifest Manifest) Validate() error {
 	if err := ValidateResourceName("plugin", manifest.Name); err != nil {
 		return err
@@ -133,44 +140,89 @@ type Source interface {
 	String() string
 }
 
-func ProviderResource(name string) string { return "provider:" + name }
+type ResourceKind string
 
-func ToolResource(name string) string { return "tool:" + name }
+const (
+	ResourceKindPlugin     ResourceKind = "plugin"
+	ResourceKindProvider   ResourceKind = "provider"
+	ResourceKindTool       ResourceKind = "tool"
+	ResourceKindAgent      ResourceKind = "agent"
+	ResourceKindHook       ResourceKind = "hook"
+	ResourceKindSubscriber ResourceKind = "subscriber"
+	ResourceKindCapability ResourceKind = "capability"
+	ResourceKindEvent      ResourceKind = "event"
+)
 
-func AgentResource(name string) string { return "agent:" + name }
+func (kind ResourceKind) ResourceName(name string) string {
+	return string(kind) + ":" + name
+}
 
-func HookResource(name string) string { return "hook:" + name }
+func ProviderResource(name string) string {
+	return ResourceKindProvider.ResourceName(name)
+}
 
-func SubscriberResource(name string) string { return "subscriber:" + name }
+func ToolResource(name string) string { return ResourceKindTool.ResourceName(name) }
 
-func CapabilityResource(name string) string { return "capability:" + name }
+func AgentResource(name string) string {
+	return ResourceKindAgent.ResourceName(name)
+}
 
-func EventResource(name string) string { return "event:" + name }
+func HookResource(name string) string { return ResourceKindHook.ResourceName(name) }
 
-func PluginResource(name string) string { return "plugin:" + name }
+func SubscriberResource(name string) string {
+	return ResourceKindSubscriber.ResourceName(name)
+}
 
-func ResourceRevision(manifest Manifest, kind, name string, spec any) string {
-	raw, err := json.Marshal(struct {
-		Plugin  string `json:"plugin"`
-		Version string `json:"version"`
-		Kind    string `json:"kind"`
-		Name    string `json:"name"`
-		Spec    any    `json:"spec"`
-	}{
-		Plugin:  manifest.Name,
-		Version: manifest.Version,
-		Kind:    kind,
-		Name:    name,
-		Spec:    spec,
-	})
+func CapabilityResource(name string) string {
+	return ResourceKindCapability.ResourceName(name)
+}
+
+func EventResource(name string) string { return ResourceKindEvent.ResourceName(name) }
+
+func PluginResource(name string) string { return ResourceKindPlugin.ResourceName(name) }
+
+type ResourceIdentity struct {
+	Plugin        string       `json:"plugin"`
+	PluginVersion string       `json:"version"`
+	Kind          ResourceKind `json:"kind"`
+	Name          string       `json:"name"`
+	Spec          any          `json:"spec"`
+}
+
+func NewResourceIdentity(
+	manifest Manifest,
+	kind ResourceKind,
+	name string,
+	spec any,
+) ResourceIdentity {
+	return ResourceIdentity{
+		Plugin:        manifest.Name,
+		PluginVersion: manifest.Version,
+		Kind:          kind,
+		Name:          name,
+		Spec:          spec,
+	}
+}
+
+func (identity ResourceIdentity) Revision() string {
+	raw, err := json.Marshal(identity)
 	if err != nil {
 		raw = []byte(
-			manifest.Name + "\x00" + manifest.Version + "\x00" +
-				kind + "\x00" + name,
+			identity.Plugin + "\x00" + identity.PluginVersion + "\x00" +
+				string(identity.Kind) + "\x00" + identity.Name,
 		)
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
+}
+
+func ResourceRevision(manifest Manifest, kind, name string, spec any) string {
+	return NewResourceIdentity(
+		manifest,
+		ResourceKind(kind),
+		name,
+		spec,
+	).Revision()
 }
 
 func ValidateResourceName(kind, name string) error {

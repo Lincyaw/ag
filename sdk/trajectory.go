@@ -23,7 +23,7 @@ var (
 )
 
 const (
-	TrajectorySchemaVersion  uint32 = 2
+	TrajectorySchemaVersion  uint32 = 3
 	TrajectoryPayloadVersion uint32 = 1
 )
 
@@ -436,6 +436,9 @@ type TrajectoryStore interface {
 		context.Context,
 		TrajectoryExecutionCommit,
 	) (TrajectoryMetadata, error)
+	// CancelExecution durably cancels the current execution. Entries, when
+	// present, are committed with the cancellation so runtime-owned terminal and
+	// restore records remain part of the trajectory aggregate.
 	CancelExecution(
 		context.Context,
 		TrajectoryExecutionCancelCommit,
@@ -507,9 +510,7 @@ func (trajectory Trajectory) Branch(head string) ([]TrajectoryEntry, error) {
 				cursor,
 			)
 		}
-		entry.Payload = append(json.RawMessage(nil), entry.Payload...)
-		entry.Attributes = maps.Clone(entry.Attributes)
-		result = append(result, entry)
+		result = append(result, CloneTrajectoryEntry(entry))
 		cursor = entry.ParentID
 	}
 	slices.Reverse(result)

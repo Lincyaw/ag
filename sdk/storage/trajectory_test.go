@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -199,6 +200,84 @@ func TestTrajectoryStoresPreserveBranchesAndRejectConcurrentLostUpdates(
 			}
 			if after.Head != before || len(after.Entries) != len(trajectory.Entries) {
 				t.Fatal("cancelled append mutated trajectory")
+			}
+		})
+	}
+}
+
+func TestTrajectoryStoresRoundTripEntryAudit(t *testing.T) {
+	t.Parallel()
+	for name, factory := range trajectoryStoreFactories() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			store := factory(t)
+			if err := store.Create(ctx, sdk.Trajectory{ID: "audit-roundtrip"}); err != nil {
+				t.Fatal(err)
+			}
+			blockStep := 0
+			entry := trajectoryTestEntry(
+				"audited-entry",
+				"",
+				sdk.TrajectoryKindProviderRequest,
+				`{"request":"detail"}`,
+			)
+			entry.Audit = []sdk.EventAudit{{
+				EventID:    "event-1",
+				EventName:  sdk.EventBeforeProvider,
+				Generation: 3,
+				InputHash:  "sha256:input",
+				OutputHash: "sha256:output",
+				Steps: []sdk.HookAuditStep{{
+					Index:         0,
+					Plugin:        "policy",
+					PluginVersion: "1.0.0",
+					Hook:          "rewrite-system",
+					Priority:      sdk.PriorityPre,
+					Sequence:      7,
+					FailurePolicy: sdk.FailurePolicyFailClosed,
+					Duration:      time.Millisecond,
+					InputHash:     "sha256:input",
+					OutputHash:    "sha256:output",
+					PatchFields:   []string{"system"},
+					Overwrites:    []string{"system"},
+					Block: &sdk.BlockSummary{
+						Reason: "blocked",
+						Kind:   "policy",
+					},
+					Action: &sdk.ActionSummary{
+						Kind:         sdk.ActionStop,
+						CauseCode:    "policy_stop",
+						CauseFinal:   true,
+						MessageCount: 2,
+					},
+					Outcome: sdk.HookAuditBlocked,
+				}},
+				Resolution: sdk.EffectResolution{
+					Outcome:     sdk.EffectResolutionBlocked,
+					Block:       &sdk.BlockSummary{Reason: "blocked", Kind: "policy"},
+					BlockStep:   &blockStep,
+					PatchFields: []string{"system"},
+				},
+			}}
+			wantAudit := sdk.CloneEventAudits(entry.Audit)
+			if _, err := store.Append(ctx, "audit-roundtrip", "", entry); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := store.LoadEntry(ctx, "audit-roundtrip", entry.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(loaded.Audit, wantAudit) {
+				t.Fatalf("loaded audit = %#v, want %#v", loaded.Audit, wantAudit)
+			}
+			loaded.Audit[0].Steps[0].PatchFields[0] = "mutated"
+			reloaded, err := store.LoadEntry(ctx, "audit-roundtrip", entry.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(reloaded.Audit, wantAudit) {
+				t.Fatalf("reloaded audit after caller mutation = %#v", reloaded.Audit)
 			}
 		})
 	}

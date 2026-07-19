@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"context"
-	"encoding/json"
 	"net/url"
 	"time"
 )
@@ -38,34 +37,12 @@ type PruneResult struct {
 	Trajectories int `json:"trajectories"`
 }
 
-// ExecutionStepOperation completes one previously claimed external operation
-// as part of the same durable commit as its trajectory and delivery changes.
-type ExecutionStepOperation struct {
-	ID         string          `json:"id"`
-	LeaseToken string          `json:"lease_token"`
-	State      OperationState  `json:"state"`
-	Output     json.RawMessage `json:"output,omitempty"`
-	Error      string          `json:"error,omitempty"`
-}
-
-// ExecutionStepDeliveryAck acknowledges a leased inbox delivery in an atomic
-// execution-step commit.
-type ExecutionStepDeliveryAck struct {
-	Queue      string    `json:"queue"`
-	ID         string    `json:"id"`
-	LeaseToken string    `json:"lease_token"`
-	At         time.Time `json:"at,omitempty"`
-}
-
-// ExecutionStepDeliveries appends deliveries to one named outbox queue.
-type ExecutionStepDeliveries struct {
+// StateMutationDeliveries appends deliveries to one named outbox queue as part
+// of the same durable state mutation as trajectory or execution updates.
+type StateMutationDeliveries struct {
 	Queue      string     `json:"queue"`
 	Deliveries []Delivery `json:"deliveries"`
 }
-
-// StateMutationDeliveries appends deliveries to one named outbox queue as part
-// of the same durable state mutation as trajectory or execution updates.
-type StateMutationDeliveries = ExecutionStepDeliveries
 
 func CloneStateMutationDeliveries(
 	group StateMutationDeliveries,
@@ -87,18 +64,20 @@ func CloneStateMutationOutbox(
 	return result
 }
 
-// ExecutionStepCommit is the durable boundary after an external LLM or tool
-// call. Implementations must commit every requested mutation or none of them.
-type ExecutionStepCommit struct {
-	Trajectory TrajectoryExecutionCommit `json:"trajectory"`
-	Operation  *ExecutionStepOperation   `json:"operation,omitempty"`
-	InboxAck   *ExecutionStepDeliveryAck `json:"inbox_ack,omitempty"`
-	Outbox     []ExecutionStepDeliveries `json:"outbox,omitempty"`
+// ExecutionStepDeliveries is kept as a source-compatible alias for older
+// callers. New atomic state APIs should use StateMutationDeliveries.
+type ExecutionStepDeliveries = StateMutationDeliveries
+
+func CloneExecutionStepDeliveries(
+	group ExecutionStepDeliveries,
+) ExecutionStepDeliveries {
+	return CloneStateMutationDeliveries(group)
 }
 
-type ExecutionStepResult struct {
-	Trajectory TrajectoryMetadata `json:"trajectory"`
-	Operation  *OperationRecord   `json:"operation,omitempty"`
+func CloneExecutionStepOutbox(
+	outbox []ExecutionStepDeliveries,
+) []ExecutionStepDeliveries {
+	return CloneStateMutationOutbox(outbox)
 }
 
 // TrajectoryAppendCommit is the durable boundary for appending trajectory
@@ -137,6 +116,14 @@ type ExecutionMutationCommit struct {
 type ExecutionMutationResult struct {
 	Trajectory TrajectoryMetadata `json:"trajectory"`
 }
+
+// ExecutionStepCommit is kept as a source-compatible alias for older callers.
+// New atomic state APIs should use ExecutionMutationCommit.
+type ExecutionStepCommit = ExecutionMutationCommit
+
+// ExecutionStepResult is kept as a source-compatible alias for older callers.
+// New atomic state APIs should use ExecutionMutationResult.
+type ExecutionStepResult = ExecutionMutationResult
 
 // ExecutionCancelCommit is the durable boundary for externally cancelling one
 // active execution. Implementations must commit the cancellation state,

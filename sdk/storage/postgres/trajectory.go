@@ -31,21 +31,11 @@ func (store *TrajectoryStore) Create(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	normalizeTrajectory(&trajectory)
-	if err := validateNewTrajectory(trajectory); err != nil {
+	prepared, err := prepareNewTrajectory(trajectory, time.Now().UTC())
+	if err != nil {
 		return err
 	}
-	now := time.Now().UTC()
-	if trajectory.CreatedAt.IsZero() {
-		trajectory.CreatedAt = now
-	} else {
-		trajectory.CreatedAt = trajectory.CreatedAt.UTC()
-	}
-	if trajectory.UpdatedAt.IsZero() {
-		trajectory.UpdatedAt = trajectory.CreatedAt
-	} else {
-		trajectory.UpdatedAt = trajectory.UpdatedAt.UTC()
-	}
+	trajectory = prepared.Trajectory
 	environmentJSON, err := trajectoryEnvironmentJSON(
 		trajectory.Environment,
 	)
@@ -72,14 +62,12 @@ func (store *TrajectoryStore) Create(
 				err,
 			)
 		}
-		inheritedCount = uint64(len(branch))
-		trajectory.Head = trajectory.ParentEntryID
-		if checkpoint, found := findLatestInBranch(
-			branch,
-			sdk.TrajectoryKindCheckpoint,
-		); found {
-			trajectory.Checkpoint = checkpoint.ID
+		prepared, err = prepareNewTrajectoryFork(prepared, branch)
+		if err != nil {
+			return err
 		}
+		trajectory = prepared.Trajectory
+		inheritedCount = prepared.InheritedEntryCount
 	}
 	_, err = tx.Exec(
 		ctx,

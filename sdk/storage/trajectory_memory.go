@@ -54,25 +54,17 @@ func (store *memoryTrajectoryStore) Create(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	normalizeTrajectory(&trajectory)
-	if err := validateNewTrajectory(trajectory); err != nil {
+	prepared, err := prepareNewTrajectory(trajectory, time.Now().UTC())
+	if err != nil {
 		return err
 	}
-	now := time.Now().UTC()
-	if trajectory.CreatedAt.IsZero() {
-		trajectory.CreatedAt = now
-	}
-	if trajectory.UpdatedAt.IsZero() {
-		trajectory.UpdatedAt = trajectory.CreatedAt
-	}
-	trajectory.Entries = []sdk.TrajectoryEntry{}
+	trajectory = prepared.Trajectory
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if _, exists := store.trajectories[trajectory.ID]; exists {
 		return fmt.Errorf("%w: %s", sdk.ErrTrajectoryExists, trajectory.ID)
 	}
-	inheritedCount := 0
 	if trajectory.ParentID != "" {
 		branch, err := store.branchLocked(
 			trajectory.ParentID,
@@ -85,19 +77,16 @@ func (store *memoryTrajectoryStore) Create(
 				err,
 			)
 		}
-		inheritedCount = len(branch)
-		trajectory.Head = trajectory.ParentEntryID
-		if checkpoint, found := findLatestInBranch(
-			branch,
-			sdk.TrajectoryKindCheckpoint,
-		); found {
-			trajectory.Checkpoint = checkpoint.ID
+		prepared, err = prepareNewTrajectoryFork(prepared, branch)
+		if err != nil {
+			return err
 		}
+		trajectory = prepared.Trajectory
 	}
 	store.trajectories[trajectory.ID] = &memoryTrajectory{
 		trajectory:     cloneTrajectory(trajectory),
 		entries:        make(map[string]sdk.TrajectoryEntry),
-		inheritedCount: inheritedCount,
+		inheritedCount: int(prepared.InheritedEntryCount),
 	}
 	return nil
 }
@@ -368,10 +357,7 @@ func (store *memoryTrajectoryStore) ListRecoverable(
 	result := make([]sdk.TrajectoryMetadata, 0)
 	for _, trajectory := range store.trajectories {
 		execution := trajectory.trajectory.Execution
-		if execution == nil ||
-			execution.Terminal() ||
-			(execution.State == sdk.TrajectoryExecutionRunning &&
-				execution.LeaseExpiresAt.After(now)) {
+		if execution == nil || !execution.RecoverableAt(now) {
 			continue
 		}
 		result = append(result, trajectoryMetadata(

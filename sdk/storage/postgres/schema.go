@@ -87,12 +87,15 @@ var postgresStateSchemaStatements = []string{
 		payload_version INTEGER NOT NULL,
 		payload BYTEA NOT NULL,
 		attributes JSONB,
+		audit JSONB,
 		PRIMARY KEY (namespace, trajectory_id, entry_id),
 		UNIQUE (namespace, trajectory_id, ordinal),
 		FOREIGN KEY (namespace, trajectory_id)
 			REFERENCES ag_trajectories (namespace, id)
 			ON DELETE CASCADE
 	)`,
+	`ALTER TABLE ag_trajectory_entries
+		ADD COLUMN IF NOT EXISTS audit JSONB`,
 	`CREATE TABLE IF NOT EXISTS ag_operations (
 		namespace TEXT NOT NULL,
 		id TEXT NOT NULL,
@@ -222,12 +225,8 @@ func initPostgresStateSchema(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 ) error {
-	ready, err := postgresStateSchemaReady(ctx, pool)
-	if err != nil {
+	if _, err := postgresStateSchemaReady(ctx, pool); err != nil {
 		return err
-	}
-	if ready {
-		return nil
 	}
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -241,12 +240,8 @@ func initPostgresStateSchema(
 	); err != nil {
 		return fmt.Errorf("lock PostgreSQL state schema: %w", err)
 	}
-	ready, err = postgresStateSchemaReady(ctx, tx)
-	if err != nil {
+	if _, err = postgresStateSchemaReady(ctx, tx); err != nil {
 		return err
-	}
-	if ready {
-		return nil
 	}
 	for _, statement := range postgresStateSchemaStatements {
 		if _, err := tx.Exec(ctx, statement); err != nil {

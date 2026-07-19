@@ -36,7 +36,8 @@ const trajectoryEntryColumns = `
 	action_kind,
 	payload_version,
 	payload,
-	attributes`
+	attributes,
+	audit`
 
 func (store *TrajectoryStore) loadStoredTrajectory(
 	ctx context.Context,
@@ -196,6 +197,7 @@ func scanPostgresTrajectoryEntry(scanner interface {
 	var turn sql.NullInt64
 	var isError sql.NullBool
 	var attributesJSON []byte
+	var auditJSON []byte
 	if err := scanner.Scan(
 		&entry.TrajectoryID,
 		&entry.ID,
@@ -222,6 +224,7 @@ func scanPostgresTrajectoryEntry(scanner interface {
 		&entry.PayloadVersion,
 		&entry.Payload,
 		&attributesJSON,
+		&auditJSON,
 	); err != nil {
 		return sdk.TrajectoryEntry{}, err
 	}
@@ -249,7 +252,31 @@ func scanPostgresTrajectoryEntry(scanner interface {
 			)
 		}
 	}
+	if len(auditJSON) != 0 {
+		if err := json.Unmarshal(
+			auditJSON,
+			&entry.Audit,
+		); err != nil {
+			return sdk.TrajectoryEntry{}, fmt.Errorf(
+				"decode trajectory entry %q audit: %w",
+				entry.ID,
+				err,
+			)
+		}
+		entry.Audit = sdk.CloneEventAudits(entry.Audit)
+	}
 	return entry, nil
+}
+
+func trajectoryAuditJSON(audits []sdk.EventAudit) (any, error) {
+	if len(audits) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(audits)
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
 
 func trajectoryAttributesJSON(

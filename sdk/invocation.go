@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 )
 
 type invocationContextKey struct{}
@@ -130,84 +129,4 @@ func ValidateInvocation(invocation Invocation) error {
 func CloneInvocation(invocation Invocation) Invocation {
 	invocation.Dependencies = slices.Clone(invocation.Dependencies)
 	return invocation
-}
-
-type InvocationGraph struct {
-	RootID     string            `json:"root_id"`
-	Operations []OperationRecord `json:"operations"`
-}
-
-type InvocationOperationStore interface {
-	ListByInvocationRoot(
-		context.Context,
-		string,
-	) ([]OperationRecord, error)
-}
-
-// LoadInvocationGraph projects durable operation records into one causal
-// invocation graph. The root agent trajectory execution may not itself have an
-// operation record; RootID still identifies it and every child node points to
-// it through Invocation.RootID.
-func LoadInvocationGraph(
-	ctx context.Context,
-	store OperationStore,
-	rootID string,
-) (InvocationGraph, error) {
-	if store == nil {
-		return InvocationGraph{}, errors.New("operation store is nil")
-	}
-	if err := ValidateResourceName(
-		"invocation root",
-		rootID,
-	); err != nil {
-		return InvocationGraph{}, err
-	}
-	var records []OperationRecord
-	var err error
-	if indexed, ok := store.(InvocationOperationStore); ok {
-		records, err = indexed.ListByInvocationRoot(ctx, rootID)
-	} else {
-		records, err = store.List(ctx)
-	}
-	if err != nil {
-		return InvocationGraph{}, err
-	}
-	graph := InvocationGraph{RootID: rootID}
-	for _, record := range records {
-		if record.Invocation.RootID == rootID {
-			graph.Operations = append(
-				graph.Operations,
-				cloneInvocationGraphRecord(record),
-			)
-		}
-	}
-	slices.SortFunc(
-		graph.Operations,
-		func(left, right OperationRecord) int {
-			if order := left.Operation.SubmittedAt.Compare(
-				right.Operation.SubmittedAt,
-			); order != 0 {
-				return order
-			}
-			return strings.Compare(
-				left.Operation.ID,
-				right.Operation.ID,
-			)
-		},
-	)
-	return graph, nil
-}
-
-func cloneInvocationGraphRecord(record OperationRecord) OperationRecord {
-	record.Input = append([]byte(nil), record.Input...)
-	record.Invocation = CloneInvocation(record.Invocation)
-	record.Operation.Output = append(
-		[]byte(nil),
-		record.Operation.Output...,
-	)
-	if record.Execution != nil {
-		execution := *record.Execution
-		record.Execution = &execution
-	}
-	return record
 }

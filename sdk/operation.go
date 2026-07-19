@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -58,6 +59,11 @@ type Operation struct {
 	UpdatedAt      time.Time       `json:"updated_at,omitempty"`
 }
 
+func CloneOperation(operation Operation) Operation {
+	operation.Output = append(json.RawMessage(nil), operation.Output...)
+	return operation
+}
+
 func (operation Operation) Terminal() bool {
 	switch operation.State {
 	case OperationSucceeded, OperationFailed, OperationCancelled:
@@ -65,11 +71,6 @@ func (operation Operation) Terminal() bool {
 	default:
 		return false
 	}
-}
-
-func CloneOperation(operation Operation) Operation {
-	operation.Output = append(json.RawMessage(nil), operation.Output...)
-	return operation
 }
 
 // ValidateOperationTransition validates one aggregate state transition.
@@ -100,6 +101,64 @@ func ValidateOperationTransition(current, next OperationState) error {
 		)
 	}
 	return fmt.Errorf("invalid operation transition %q -> %q", current, next)
+}
+
+// ValidateOperationProgress validates that two observed operation snapshots
+// describe the same operation moving forward through a reachable state path.
+func ValidateOperationProgress(current Operation, next Operation) error {
+	if err := ValidateOperation(current); err != nil {
+		return err
+	}
+	if err := ValidateOperation(next); err != nil {
+		return err
+	}
+	if next.ID != current.ID {
+		return fmt.Errorf(
+			"operation poll returned ID %q, expected %q",
+			next.ID,
+			current.ID,
+		)
+	}
+	if next.IdempotencyKey != current.IdempotencyKey {
+		return fmt.Errorf(
+			"operation %q idempotency key changed during poll",
+			current.ID,
+		)
+	}
+	if next.Revision < current.Revision {
+		return fmt.Errorf(
+			"operation %q revision regressed from %d to %d",
+			current.ID,
+			current.Revision,
+			next.Revision,
+		)
+	}
+	if next.Revision == current.Revision {
+		if next.State != current.State {
+			return fmt.Errorf(
+				"operation %q changed state without a revision increment",
+				current.ID,
+			)
+		}
+		if next.Error != current.Error ||
+			!bytes.Equal(next.Output, current.Output) {
+			return fmt.Errorf(
+				"operation %q changed result without a revision increment",
+				current.ID,
+			)
+		}
+		return nil
+	}
+	if err := ValidateOperationTransition(current.State, next.State); err != nil {
+		return fmt.Errorf(
+			"invalid operation progress %q -> %q over %d revisions: %w",
+			current.State,
+			next.State,
+			next.Revision-current.Revision,
+			err,
+		)
+	}
+	return nil
 }
 
 func ValidateOperation(operation Operation) error {

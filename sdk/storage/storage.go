@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lincyaw/ag/internal/lifecycle"
 	sdk "github.com/lincyaw/ag/sdk"
 )
 
@@ -82,7 +83,7 @@ func (registry *StorageRegistry) Open(
 		return nil, fmt.Errorf("storage driver %q returned a nil backend", scheme)
 	}
 	if err := backend.Health(ctx); err != nil {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		closeCtx, cancel := lifecycle.WithDetachedTimeout(ctx, 5*time.Second)
 		closeErr := backend.Close(closeCtx)
 		cancel()
 		return nil, fmt.Errorf(

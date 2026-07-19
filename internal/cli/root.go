@@ -108,7 +108,7 @@ func New(stdout, stderr io.Writer, version string) *cobra.Command {
 	root.PersistentFlags().String(
 		"storage",
 		"",
-		"State backend URI (memory://, file://, duckdb://, or an application-registered scheme).",
+		"State backend URI (memory://, file://, duckdb://, postgres://, postgresql://, or an application-registered scheme).",
 	)
 	root.PersistentFlags().String(
 		"state-namespace",

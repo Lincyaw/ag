@@ -119,6 +119,14 @@ func (store *TrajectoryStore) insertEntry(
 			err,
 		)
 	}
+	auditJSON, err := trajectoryAuditJSON(entry.Audit)
+	if err != nil {
+		return fmt.Errorf(
+			"encode trajectory entry %q audit: %w",
+			entry.ID,
+			err,
+		)
+	}
 	_, err = tx.Exec(
 		ctx,
 		`INSERT INTO ag_trajectory_entries (
@@ -147,12 +155,14 @@ func (store *TrajectoryStore) insertEntry(
 			action_kind,
 			payload_version,
 			payload,
-			attributes
+			attributes,
+			audit
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7,
 			$8, $9, $10, $11, $12, $13,
 			$14, $15, $16, $17, $18, $19,
-			$20, $21, $22, $23, $24, $25, $26
+			$20, $21, $22, $23, $24, $25, $26,
+			$27
 		)`,
 		store.namespace,
 		entry.TrajectoryID,
@@ -180,6 +190,7 @@ func (store *TrajectoryStore) insertEntry(
 		entry.PayloadVersion,
 		[]byte(entry.Payload),
 		attributesJSON,
+		auditJSON,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -375,7 +386,11 @@ func (store *TrajectoryStore) beginExecutionInTx(
 	if err := store.replaceExecution(ctx, tx, id, execution); err != nil {
 		return sdk.TrajectoryMetadata{}, err
 	}
-	return store.metadataInTx(ctx, tx, id)
+	metadata, err := store.metadataInTx(ctx, tx, id)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	return metadata, nil
 }
 
 func (store *TrajectoryStore) ClaimExecution(

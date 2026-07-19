@@ -188,7 +188,7 @@ func normalizeRegistration(
 			return PluginRegistration{}, err
 		}
 	}
-	registration.Manifest = cloneManifest(registration.Manifest)
+	registration.Manifest = sdk.CloneManifest(registration.Manifest)
 	registration.Labels = maps.Clone(registration.Labels)
 	return registration, nil
 }
@@ -342,15 +342,8 @@ func matches(instance PluginInstance, query DiscoveryQuery) bool {
 	return true
 }
 
-func cloneManifest(manifest sdk.Manifest) sdk.Manifest {
-	manifest.Requires = slices.Clone(manifest.Requires)
-	manifest.Conflicts = slices.Clone(manifest.Conflicts)
-	manifest.Registers = slices.Clone(manifest.Registers)
-	return manifest
-}
-
 func cloneRegistration(registration PluginRegistration) PluginRegistration {
-	registration.Manifest = cloneManifest(registration.Manifest)
+	registration.Manifest = sdk.CloneManifest(registration.Manifest)
 	registration.Labels = maps.Clone(registration.Labels)
 	return registration
 }

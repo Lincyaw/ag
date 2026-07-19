@@ -39,18 +39,11 @@ func (store *fileTrajectoryStore) Create(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	normalizeTrajectory(&trajectory)
-	if err := validateNewTrajectory(trajectory); err != nil {
+	prepared, err := prepareNewTrajectory(trajectory, time.Now().UTC())
+	if err != nil {
 		return err
 	}
-	now := time.Now().UTC()
-	if trajectory.CreatedAt.IsZero() {
-		trajectory.CreatedAt = now
-	}
-	if trajectory.UpdatedAt.IsZero() {
-		trajectory.UpdatedAt = trajectory.CreatedAt
-	}
-	trajectory.Entries = []sdk.TrajectoryEntry{}
+	trajectory = prepared.Trajectory
 
 	return filestate.WithExclusiveLock(store.lockPath, func() error {
 		path := store.path(trajectory.ID)
@@ -76,13 +69,14 @@ func (store *fileTrajectoryStore) Create(
 					branchErr,
 				)
 			}
-			trajectory.Head = trajectory.ParentEntryID
-			if checkpoint, found := findLatestInBranch(
+			prepared, branchErr = prepareNewTrajectoryFork(
+				prepared,
 				branch,
-				sdk.TrajectoryKindCheckpoint,
-			); found {
-				trajectory.Checkpoint = checkpoint.ID
+			)
+			if branchErr != nil {
+				return branchErr
 			}
+			trajectory = prepared.Trajectory
 		}
 		return store.writeLocked(ctx, trajectory)
 	})
@@ -419,10 +413,7 @@ func (store *fileTrajectoryStore) ListRecoverable(
 				return readErr
 			}
 			execution := stored.Execution
-			if execution == nil ||
-				execution.Terminal() ||
-				(execution.State == sdk.TrajectoryExecutionRunning &&
-					execution.LeaseExpiresAt.After(now)) {
+			if execution == nil || !execution.RecoverableAt(now) {
 				continue
 			}
 			materialized, materializeErr := store.materializeStoredLocked(stored)

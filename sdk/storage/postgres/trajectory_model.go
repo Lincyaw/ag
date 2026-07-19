@@ -4,6 +4,8 @@ import trajectorymodel "github.com/lincyaw/ag/sdk/storage/internal/trajectorymod
 
 var (
 	validateNewTrajectory           = trajectorymodel.ValidateNewTrajectory
+	prepareNewTrajectory            = trajectorymodel.PrepareNewTrajectory
+	prepareNewTrajectoryFork        = trajectorymodel.PrepareNewTrajectoryFork
 	prepareTrajectoryEntries        = trajectorymodel.PrepareTrajectoryEntries
 	trajectoryMetadata              = trajectorymodel.TrajectoryMetadata
 	summarizeTrajectory             = trajectorymodel.SummarizeTrajectory
