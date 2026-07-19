@@ -5,6 +5,10 @@ import (
 	"sync"
 )
 
+// ErrRuntimeClosed means a runtime lifecycle gate has already started closing
+// and cannot accept new work.
+var ErrRuntimeClosed = errors.New("runtime is closed")
+
 // beginRuntimeWork enters the runtime-wide close gate and registers work that
 // Close must wait for before plugin/storage cleanup is allowed to finish.
 func (runtime *Runtime) beginRuntimeWork(wait *sync.WaitGroup) (func(), bool) {
@@ -24,7 +28,7 @@ func (runtime *Runtime) beginRuntimeWork(wait *sync.WaitGroup) (func(), bool) {
 func (runtime *Runtime) beginTrajectoryWork() (func(), error) {
 	release, ok := runtime.trajectoryExecution.beginWork(runtime)
 	if !ok {
-		return nil, errors.New("runtime is closed")
+		return nil, ErrRuntimeClosed
 	}
 	return release, nil
 }

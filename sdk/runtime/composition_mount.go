@@ -130,7 +130,7 @@ func (runtime *Runtime) Mount(
 	runtime.mu.Lock()
 	if runtime.closed {
 		runtime.mu.Unlock()
-		return closeOnError(errors.New("runtime is closed"))
+		return closeOnError(ErrRuntimeClosed)
 	}
 	next := runtime.current.Load().clone()
 	if err := next.add(
@@ -290,7 +290,7 @@ func (runtime *Runtime) acquireSnapshot() (*snapshotLease, error) {
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	if runtime.closed {
-		return nil, errors.New("runtime is closed")
+		return nil, ErrRuntimeClosed
 	}
 	// Current snapshot reads are linearized with composition mutations so new
 	// callers cannot retain a snapshot that has just been unpublished.
@@ -304,7 +304,7 @@ func (runtime *Runtime) acquireRegistrySnapshot(
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	if runtime.closed {
-		return nil, errors.New("runtime is closed")
+		return nil, ErrRuntimeClosed
 	}
 	return acquireRegistrySnapshotLocked(snapshot)
 }
@@ -329,7 +329,7 @@ func (runtime *Runtime) acquireMounts(
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	if runtime.closed {
-		return nil, errors.New("runtime is closed")
+		return nil, ErrRuntimeClosed
 	}
 	index := make(map[string]*mountState, len(states))
 	for _, state := range states {

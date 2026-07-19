@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"sync"
 	"time"
 
@@ -330,7 +329,7 @@ func (runtime *Runtime) submitLocalOperation(
 	releaseOperationWork, ok := runtime.operation.beginWork(runtime)
 	if !ok {
 		releaseExecutionLease()
-		return sdk.Operation{}, errors.New("runtime is closed")
+		return sdk.Operation{}, ErrRuntimeClosed
 	}
 
 	identity := target.identity()
