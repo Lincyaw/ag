@@ -51,6 +51,60 @@ func TestValidateWorkflowRejectsCycleBeforeSubmission(t *testing.T) {
 	}
 }
 
+func TestValidateWorkflowRejectsNodeOwnedAgentSchedulingFields(
+	t *testing.T,
+) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		agent sdk.AgentRequest
+		want  string
+	}{
+		{
+			name: "group",
+			agent: sdk.AgentRequest{
+				Agent:  "worker",
+				Prompt: "work",
+				Group:  "manual-group",
+			},
+			want: "agent group is owned by workflow scheduling",
+		},
+		{
+			name: "dependencies",
+			agent: sdk.AgentRequest{
+				Agent:        "worker",
+				Prompt:       "work",
+				Dependencies: []string{"manual-dependency"},
+			},
+			want: "agent dependencies are owned by workflow scheduling",
+		},
+		{
+			name: "ordinal",
+			agent: sdk.AgentRequest{
+				Agent:   "worker",
+				Prompt:  "work",
+				Ordinal: 7,
+			},
+			want: "agent ordinal is owned by workflow scheduling",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := sdk.WorkflowRequest{
+				Name: "reserved-agent-fields",
+				Nodes: []sdk.WorkflowNode{{
+					ID:    "worker",
+					Agent: test.agent,
+				}},
+			}
+			err := validateWorkflowRequest(&request)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validation error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestWorkflowInvocationRequiresStableIdentity(t *testing.T) {
 	ctx := context.Background()
 	runtime, err := NewRuntime(RuntimeConfig{

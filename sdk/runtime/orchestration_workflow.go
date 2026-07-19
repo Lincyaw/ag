@@ -184,6 +184,13 @@ func validateWorkflowRequest(request *sdk.WorkflowRequest) error {
 				err,
 			)
 		}
+		if err := validateWorkflowNodeAgentRequest(node); err != nil {
+			return fmt.Errorf(
+				"workflow node %q: %w",
+				node.ID,
+				err,
+			)
+		}
 	}
 	for _, node := range request.Nodes {
 		seen := make(map[string]struct{}, len(node.DependsOn))
@@ -244,6 +251,25 @@ func validateWorkflowRequest(request *sdk.WorkflowRequest) error {
 		return fmt.Errorf(
 			"workflow %q dependency graph contains a cycle",
 			request.Name,
+		)
+	}
+	return nil
+}
+
+func validateWorkflowNodeAgentRequest(node *sdk.WorkflowNode) error {
+	if node.Agent.Group != "" {
+		return errors.New(
+			"agent group is owned by workflow scheduling",
+		)
+	}
+	if len(node.Agent.Dependencies) != 0 {
+		return errors.New(
+			"agent dependencies are owned by workflow scheduling",
+		)
+	}
+	if node.Agent.Ordinal != 0 {
+		return errors.New(
+			"agent ordinal is owned by workflow scheduling",
 		)
 	}
 	return nil
