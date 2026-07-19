@@ -43,6 +43,7 @@ type Session struct {
 	contextInjections []sdk.ContextInjection
 	pinnedSnapshot    *registrySnapshot
 	causal            causalInvocationScope
+	originMode        sdk.AgentSessionMode
 }
 
 type Result struct {
@@ -81,6 +82,7 @@ func (runtime *Runtime) projectTrajectorySession(
 		messages:       sdk.CloneMessages(projection.Messages),
 		head:           projection.Head,
 		pinnedSnapshot: projection.PinnedSnapshot,
+		originMode:     trajectorySessionOriginMode(projection.Metadata),
 	}
 	session.applyTrajectoryOrigin(projection.Metadata.Environment)
 	return session

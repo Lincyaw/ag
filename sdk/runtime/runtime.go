@@ -48,6 +48,19 @@ const (
 	StorageBorrowed StorageOwnership = "borrowed"
 )
 
+// AgentForkPolicy controls whether a forked agent session may create another
+// forked child session.
+type AgentForkPolicy string
+
+const (
+	// AgentForkPolicyAllowNested keeps nested forked sessions available as a
+	// general SDK extension.
+	AgentForkPolicyAllowNested AgentForkPolicy = "allow_nested"
+	// AgentForkPolicyDenyNested rejects fork requests issued from a forked
+	// child session, matching Claude Code's recursive fork policy.
+	AgentForkPolicyDenyNested AgentForkPolicy = "deny_nested"
+)
+
 type RuntimeConfig struct {
 	RuntimeVersion   string
 	Logger           *slog.Logger
@@ -55,6 +68,10 @@ type RuntimeConfig struct {
 	Meter            metric.Meter
 	Storage          sdk.StateBackend
 	StorageOwnership StorageOwnership
+	// AgentForkPolicy controls runtime policy for forked child agents. The
+	// default keeps the SDK trajectory model general; hosts that need exact
+	// Claude Code compatibility can deny nested forks without changing storage.
+	AgentForkPolicy AgentForkPolicy
 	// EventObserver receives a cloned copy of each dispatched event after
 	// hooks and subscriber enqueueing. It is for host-side UI/diagnostics and
 	// does not participate in the runtime composition contract. Runtime close
@@ -90,6 +107,7 @@ type Runtime struct {
 	hooks               metric.Int64Counter
 	pluginCloseTimeout  time.Duration
 	hookTimeout         time.Duration
+	agentForkPolicy     AgentForkPolicy
 	storage             sdk.StateBackend
 	atomicState         sdk.AtomicStateBackend
 	closeStorage        bool
@@ -134,6 +152,17 @@ func normalizeRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 		return RuntimeConfig{}, fmt.Errorf(
 			"unknown storage ownership %q",
 			config.StorageOwnership,
+		)
+	}
+	if config.AgentForkPolicy == "" {
+		config.AgentForkPolicy = AgentForkPolicyAllowNested
+	}
+	switch config.AgentForkPolicy {
+	case AgentForkPolicyAllowNested, AgentForkPolicyDenyNested:
+	default:
+		return RuntimeConfig{}, fmt.Errorf(
+			"unknown agent fork policy %q",
+			config.AgentForkPolicy,
 		)
 	}
 	if config.DeliveryWorkers == 0 {
@@ -258,6 +287,7 @@ func NewRuntimeContext(
 		hooks:              hooks,
 		pluginCloseTimeout: config.PluginCloseTimeout,
 		hookTimeout:        config.HookTimeout,
+		agentForkPolicy:    config.AgentForkPolicy,
 		storage:            config.Storage,
 		atomicState:        storage.atomicState,
 		closeStorage:       config.StorageOwnership == StorageOwned,

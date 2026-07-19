@@ -44,6 +44,9 @@ func (invoker *scopedAgentInvoker) InvokeAgent(
 	if err := validateAgentRequest(&request); err != nil {
 		return sdk.AgentResult{}, err
 	}
+	if err := invoker.validateAgentForkPolicy(request.Mode); err != nil {
+		return sdk.AgentResult{}, err
+	}
 	owned, exists := invoker.snapshot.agents[request.Agent]
 	if !exists {
 		return sdk.AgentResult{}, fmt.Errorf(
@@ -242,6 +245,19 @@ func validateAgentRequest(request *sdk.AgentRequest) error {
 		}
 	}
 	return nil
+}
+
+func (invoker *scopedAgentInvoker) validateAgentForkPolicy(
+	mode sdk.AgentSessionMode,
+) error {
+	if mode != sdk.AgentSessionFork ||
+		invoker.runtime.agentForkPolicy != AgentForkPolicyDenyNested ||
+		invoker.parentSession.originMode != sdk.AgentSessionFork {
+		return nil
+	}
+	return errors.New(
+		"nested agent forks are disabled by runtime policy",
+	)
 }
 
 func ensureAgentIdempotencyKey(

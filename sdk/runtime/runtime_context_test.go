@@ -52,3 +52,14 @@ func TestNewRuntimeContextPreservesValuesForOwnedAsyncWork(t *testing.T) {
 		t.Fatal("observer did not run")
 	}
 }
+
+func TestNewRuntimeRejectsUnknownAgentForkPolicy(t *testing.T) {
+	t.Parallel()
+	_, err := NewRuntime(RuntimeConfig{
+		Storage:         sdkstorage.NewMemoryStateBackend(),
+		AgentForkPolicy: AgentForkPolicy("surprise"),
+	})
+	if err == nil || err.Error() != `unknown agent fork policy "surprise"` {
+		t.Fatalf("runtime config error = %v", err)
+	}
+}

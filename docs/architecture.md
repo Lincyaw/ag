@@ -125,6 +125,10 @@ Forked agent sessions are trajectory forks first and invocation nodes second.
 Retrying or resuming an existing fork must validate `ParentID` and
 `ParentEntryID`; environment origin fields explain why the fork exists, but
 they are not a substitute for trajectory ancestry.
+Nested fork allowance is runtime policy, not a trajectory storage constraint:
+the default runtime keeps nested forks available as an SDK extension, while
+`AgentForkPolicyDenyNested` gives Claude-compatible hosts an explicit guard
+before a forked child can fork again.
 Existing agent sessions resume through the same trajectory-backed session
 projection as top-level sessions; orchestration may only apply the current
 invocation parent/root after resume, not reconstruct `head`, messages, or

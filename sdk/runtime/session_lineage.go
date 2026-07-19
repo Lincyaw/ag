@@ -214,3 +214,15 @@ func (lineage trajectorySessionLineage) validateExistingResumeFork(
 	}
 	return nil
 }
+
+func trajectorySessionOriginMode(
+	metadata sdk.TrajectoryMetadata,
+) sdk.AgentSessionMode {
+	if metadata.Environment.OriginMode != "" {
+		return metadata.Environment.OriginMode
+	}
+	if metadata.ParentID != "" || metadata.ParentEntryID != "" {
+		return sdk.AgentSessionFork
+	}
+	return ""
+}

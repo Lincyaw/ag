@@ -177,6 +177,58 @@ func TestAgentCannotExpandInheritedTurnLimit(t *testing.T) {
 	}
 }
 
+func TestAgentForkPolicyCanDenyNestedForks(t *testing.T) {
+	t.Parallel()
+	invoker := &scopedAgentInvoker{
+		runtime: &Runtime{
+			agentForkPolicy: AgentForkPolicyDenyNested,
+		},
+		parentSession: &Session{
+			originMode: sdk.AgentSessionFork,
+		},
+	}
+	if err := invoker.validateAgentForkPolicy(
+		sdk.AgentSessionFork,
+	); err == nil || !strings.Contains(
+		err.Error(),
+		"nested agent forks are disabled by runtime policy",
+	) {
+		t.Fatalf("nested fork policy error = %v", err)
+	}
+	if err := invoker.validateAgentForkPolicy(
+		sdk.AgentSessionResume,
+	); err != nil {
+		t.Fatalf("resume under fork policy: %v", err)
+	}
+	invoker.runtime.agentForkPolicy = AgentForkPolicyAllowNested
+	if err := invoker.validateAgentForkPolicy(
+		sdk.AgentSessionFork,
+	); err != nil {
+		t.Fatalf("allow nested fork policy: %v", err)
+	}
+}
+
+func TestTrajectorySessionOriginModeInfersLegacyFork(t *testing.T) {
+	t.Parallel()
+	mode := trajectorySessionOriginMode(sdk.TrajectoryMetadata{
+		ParentID:      "parent-session",
+		ParentEntryID: "parent-entry",
+	})
+	if mode != sdk.AgentSessionFork {
+		t.Fatalf("legacy fork origin mode = %q", mode)
+	}
+	mode = trajectorySessionOriginMode(sdk.TrajectoryMetadata{
+		Environment: sdk.TrajectoryEnvironment{
+			OriginMode: sdk.AgentSessionNew,
+		},
+		ParentID:      "parent-session",
+		ParentEntryID: "parent-entry",
+	})
+	if mode != sdk.AgentSessionNew {
+		t.Fatalf("explicit origin mode = %q", mode)
+	}
+}
+
 func TestAgentInvocationRequiresStableIdentity(t *testing.T) {
 	ctx := context.Background()
 	runtime, err := NewRuntime(RuntimeConfig{

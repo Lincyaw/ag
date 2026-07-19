@@ -25,7 +25,7 @@ line-by-line emulation of Claude Code's JSONL or UI implementation.
 | Auto-compact and reactive compact | Trajectory/checkpoint policy | Not yet first-class | Checkpoints and branch projection can host compacted state, but there is no SDK compact scheduler, compact boundary entry, or retry policy. |
 | Content replacement state for large tool results | Checkpoint/resume metadata | Not yet covered | This should be durable checkpoint/resume state so fork/resume stay prompt-cache stable. |
 | Streaming provider deltas and early tool execution | Provider completion + tool scheduler | Not yet covered | The current public provider contract returns a completed `ModelResponse`; the runtime now has an internal provider completion boundary that can be extended into streamed outcomes. |
-| Recursive fork ban | Runtime policy | Policy gap | The SDK can represent nested forks. Exact Claude Code compatibility needs a policy guard, not a storage limitation. |
+| Recursive fork ban | Runtime policy | Covered by configuration | The SDK can represent nested forks by default, and `AgentForkPolicyDenyNested` lets Claude-compatible hosts reject fork-child fork requests without weakening trajectory storage. |
 
 ## Covered By The SDK Kernel
 
@@ -226,9 +226,11 @@ whether to continue, stop, or escalate output limits.
 ### Recursive fork policy
 
 Claude Code forbids fork children from forking again. The SDK trajectory model
-can represent nested forks. This is more general, but exact compatibility needs
-an explicit policy decision: either keep nested forks as an SDK extension, or
-add a runtime policy guard for Claude-Code-compatible agents.
+can represent nested forks, which remains the default general-purpose SDK
+behavior. Hosts that need exact Claude Code compatibility can configure
+`AgentForkPolicyDenyNested`; the runtime then rejects fork-child fork requests
+while leaving the trajectory model capable of representing nested forks for
+other hosts.
 
 ## Boundary Rule
 
