@@ -13,6 +13,8 @@ var (
 	prepareTrajectoryEntries        = trajectorymodel.PrepareTrajectoryEntries
 	trajectoryMetadata              = trajectorymodel.TrajectoryMetadata
 	findLatestInBranch              = trajectorymodel.FindLatestInBranch
+	findEntryOnBranch               = trajectorymodel.FindEntryOnBranch
+	resolveBranch                   = trajectorymodel.ResolveBranch
 	latestEntry                     = trajectorymodel.LatestEntry
 	latestCheckpointAfterAppend     = trajectorymodel.LatestCheckpointAfterAppend
 	normalizeTrajectory             = trajectorymodel.NormalizeTrajectory

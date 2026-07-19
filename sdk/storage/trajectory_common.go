@@ -11,6 +11,8 @@ var (
 	trajectoryMetadata              = trajectorymodel.TrajectoryMetadata
 	summarizeTrajectory             = trajectorymodel.SummarizeTrajectory
 	findLatestInBranch              = trajectorymodel.FindLatestInBranch
+	findEntryOnBranch               = trajectorymodel.FindEntryOnBranch
+	resolveBranch                   = trajectorymodel.ResolveBranch
 	latestEntry                     = trajectorymodel.LatestEntry
 	latestCheckpointAfterAppend     = trajectorymodel.LatestCheckpointAfterAppend
 	cloneTrajectory                 = trajectorymodel.CloneTrajectory

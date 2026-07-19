@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -297,6 +298,87 @@ func FindLatestInBranch(
 		}
 	}
 	return sdk.TrajectoryEntry{}, false
+}
+
+func FindEntryOnBranch(
+	trajectoryID string,
+	head string,
+	entryID string,
+	lookup EntryLookup,
+) (sdk.TrajectoryEntry, bool, error) {
+	var result sdk.TrajectoryEntry
+	var found bool
+	err := walkBranch(trajectoryID, head, lookup, func(
+		cursor string,
+		entry sdk.TrajectoryEntry,
+	) (bool, error) {
+		if cursor == entryID {
+			result = CloneTrajectoryEntry(entry)
+			found = true
+			return false, nil
+		}
+		return true, nil
+	})
+	return result, found, err
+}
+
+func ResolveBranch(
+	trajectoryID string,
+	head string,
+	lookup EntryLookup,
+) ([]sdk.TrajectoryEntry, error) {
+	result := make([]sdk.TrajectoryEntry, 0)
+	err := walkBranch(trajectoryID, head, lookup, func(
+		_ string,
+		entry sdk.TrajectoryEntry,
+	) (bool, error) {
+		result = append(result, CloneTrajectoryEntry(entry))
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	slices.Reverse(result)
+	return result, nil
+}
+
+func walkBranch(
+	trajectoryID string,
+	head string,
+	lookup EntryLookup,
+	visit func(string, sdk.TrajectoryEntry) (bool, error),
+) error {
+	seen := make(map[string]struct{})
+	for cursor := head; cursor != ""; {
+		if _, cycle := seen[cursor]; cycle {
+			return fmt.Errorf(
+				"trajectory %q contains a cycle at %q",
+				trajectoryID,
+				cursor,
+			)
+		}
+		seen[cursor] = struct{}{}
+		entry, found, err := lookup(cursor)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf(
+				"trajectory %q branch references unknown entry %q",
+				trajectoryID,
+				cursor,
+			)
+		}
+		keepGoing, err := visit(cursor, entry)
+		if err != nil {
+			return err
+		}
+		if !keepGoing {
+			return nil
+		}
+		cursor = entry.ParentID
+	}
+	return nil
 }
 
 func LatestEntry(

@@ -126,6 +126,9 @@ composition from caller-local state.
 Storage backends share the trajectory model's fork preparation rule: a fork's
 initial head is its accepted fork point, its checkpoint is inherited from the
 parent branch, and it owns no copied entries until the first append.
+They also share the trajectory model's branch projection rule: backend code
+supplies entry lookup, while the model owns parent-chain traversal, cycle
+detection, unknown-entry failures, and root-to-head ordering.
 Runtime initializes a new forked agent session from the created child
 trajectory metadata and projects messages through the child trajectory's
 copy-on-write branch view; caller-local session messages are not part of the
@@ -293,10 +296,10 @@ The public durability ports remain in `sdk`; concrete memory, file, DuckDB,
 and PostgreSQL adapters live in `sdk/storage`.
 Storage adapters own locks, transactions, query shape, serialization, and
 driver-specific pagination. They must not own durable aggregate state machines.
-Trajectory fork preparation, operation lifecycle transitions, and delivery
-preparation/lease completion are shared storage model rules; backend code calls
-those rules and persists their result instead of reinterpreting them in SQL,
-file mutation code, or gateway presentation code.
+Trajectory fork preparation, branch projection, operation lifecycle transitions,
+and delivery preparation/lease completion are shared storage model rules;
+backend code calls those rules and persists their result instead of
+reinterpreting them in SQL, file mutation code, or gateway presentation code.
 The file backend is retained for local inspection and compatibility, not as the
 high-throughput state path; embedded/database backends should own hot queues and
 indexed trajectory and operation access.

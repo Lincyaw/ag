@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -606,38 +605,11 @@ func (store *TrajectoryStore) entryOnBranch(
 	head string,
 	entryID string,
 ) (sdk.TrajectoryEntry, bool, error) {
-	seen := make(map[string]struct{})
-	for cursor := head; cursor != ""; {
-		if _, cycle := seen[cursor]; cycle {
-			return sdk.TrajectoryEntry{}, false, fmt.Errorf(
-				"trajectory %q contains a cycle at %q",
-				id,
-				cursor,
-			)
-		}
-		seen[cursor] = struct{}{}
-		entry, found, err := store.loadEntry(
-			ctx,
-			query,
-			id,
-			cursor,
-		)
-		if err != nil {
-			return sdk.TrajectoryEntry{}, false, err
-		}
-		if !found {
-			return sdk.TrajectoryEntry{}, false, fmt.Errorf(
-				"trajectory %q branch references unknown entry %q",
-				id,
-				cursor,
-			)
-		}
-		if cursor == entryID {
-			return entry, true, nil
-		}
-		cursor = entry.ParentID
-	}
-	return sdk.TrajectoryEntry{}, false, nil
+	return findEntryOnBranch(id, head, entryID, func(
+		cursor string,
+	) (sdk.TrajectoryEntry, bool, error) {
+		return store.loadEntry(ctx, query, id, cursor)
+	})
 }
 
 func (store *TrajectoryStore) loadBranch(
@@ -654,36 +626,9 @@ func (store *TrajectoryStore) loadBranch(
 	); err != nil {
 		return nil, err
 	}
-	result := make([]sdk.TrajectoryEntry, 0)
-	seen := make(map[string]struct{})
-	for cursor := head; cursor != ""; {
-		if _, cycle := seen[cursor]; cycle {
-			return nil, fmt.Errorf(
-				"trajectory %q contains a cycle at %q",
-				id,
-				cursor,
-			)
-		}
-		seen[cursor] = struct{}{}
-		entry, found, err := store.loadEntry(
-			ctx,
-			query,
-			id,
-			cursor,
-		)
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			return nil, fmt.Errorf(
-				"trajectory %q branch references unknown entry %q",
-				id,
-				cursor,
-			)
-		}
-		result = append(result, entry)
-		cursor = entry.ParentID
-	}
-	slices.Reverse(result)
-	return result, nil
+	return resolveBranch(id, head, func(
+		cursor string,
+	) (sdk.TrajectoryEntry, bool, error) {
+		return store.loadEntry(ctx, query, id, cursor)
+	})
 }
