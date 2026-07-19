@@ -151,7 +151,7 @@ type preparedToolCall struct {
 	correlationID string
 	asynchronous  sdk.AsyncTool
 	initial       sdk.Operation
-	failureKind   string
+	failureKind   sdk.ToolErrorKind
 	failureReason string
 	forkAnchor    trajectoryForkAnchor
 	interrupt     sdk.ToolInterruptBehavior
@@ -231,14 +231,14 @@ func (session *Session) prepareToolCall(
 		originForkInvocationID: invocation.ID,
 	}
 	if before.Block != nil {
-		prepared.failureKind = before.Block.Kind
+		prepared.failureKind = sdk.ToolErrorKind(before.Block.Kind)
 		prepared.failureReason = before.Block.Reason
 		return prepared, nil
 	}
 
 	tool, exists := toolIndex[call.Name]
 	if !exists {
-		prepared.failureKind = "unknown_tool"
+		prepared.failureKind = sdk.ToolErrorUnknownTool
 		prepared.failureReason = fmt.Sprintf(
 			"unknown or unavailable tool %q",
 			call.Name,
@@ -322,11 +322,11 @@ func (session *Session) submitToolCall(
 	)
 	if err != nil {
 		if errors.Is(context.Cause(ctx), errContextInjectionInterrupt) {
-			call.failureKind = "interrupted"
+			call.failureKind = sdk.ToolErrorInterrupted
 			call.failureReason = errContextInjectionInterrupt.Error()
 			return
 		}
-		call.failureKind = "execution_failed"
+		call.failureKind = sdk.ToolErrorExecutionFailed
 		call.failureReason = fmt.Sprintf(
 			"submit tool %q call: %v",
 			call.call.Name,
@@ -366,7 +366,7 @@ func (session *Session) submitToolCalls(
 		if err == nil {
 			continue
 		}
-		calls[index].failureKind = "execution_failed"
+		calls[index].failureKind = sdk.ToolErrorExecutionFailed
 		calls[index].failureReason = fmt.Sprintf(
 			"submit tool %q call: %v",
 			calls[index].call.Name,
@@ -447,7 +447,7 @@ func (session *Session) finalizeToolCall(
 				snapshot,
 				turn,
 				call,
-				"interrupted",
+				sdk.ToolErrorInterrupted,
 				outcome.err.Error(),
 				outcome.result,
 			)
@@ -457,7 +457,7 @@ func (session *Session) finalizeToolCall(
 			snapshot,
 			turn,
 			call,
-			"execution_failed",
+			sdk.ToolErrorExecutionFailed,
 			outcome.err.Error(),
 			outcome.result,
 		)
@@ -487,7 +487,7 @@ func (session *Session) afterToolError(
 	snapshot *registrySnapshot,
 	turn int,
 	call preparedToolCall,
-	kind string,
+	kind sdk.ToolErrorKind,
 	reason string,
 	result sdk.ToolResult,
 ) (sdk.ToolCall, sdk.ToolResult, error) {

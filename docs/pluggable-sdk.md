@@ -354,6 +354,11 @@ zero uses the runtime default (one second unless configured). Hooks on events
 that allow patches, blocking, or actions default to `fail_closed`, so a broken
 permission or mutation policy cannot silently disappear or block the runtime
 indefinitely.
+Hooks that deny a tool permission should use `sdk.DenyToolPermission` instead
+of hand-rolling a tool-result string. The helper returns a blocking effect with
+`ToolErrorPermissionDenied`, keeps foreground/subagent/policy-neutral wording
+separate, and lets telemetry or presenters classify the denial without parsing
+the message.
 
 Passive observation is not a Hook. A `Subscriber` receives an immutable event
 from a durable delivery queue through its inbox. Subscriber execution is

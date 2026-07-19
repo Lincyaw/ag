@@ -85,18 +85,20 @@ outcome as an ad hoc message.
 
 ## Partial Compatibility
 
-### Permission and rejection wording
+### Permission and rejection policy
 
 The SDK has the mechanics to express permission rejection:
 
 - `before_tool` hooks can block or patch a tool call.
 - `tool_error` can produce an `is_error` tool result.
 - `ContextInjectionModePermission` can inject model-visible permission context.
+- `PermissionRejection` and `DenyToolPermission` give hooks and gateways one
+  standard way to produce foreground, subagent, or policy-neutral denial text
+  with `ToolErrorPermissionDenied` as the structured error kind.
 
-What is not yet standardized is the policy text split that Claude Code applies
-between foreground agents and subagents. If exact Claude Code UX compatibility
-is required, the SDK should add a small permission-decision message policy
-layer instead of letting every gateway/plugin invent its own rejection strings.
+Exact Claude Code UI wording remains a presenter concern, but the control
+semantics no longer require every gateway/plugin to invent its own rejection
+strings.
 
 ### Task notifications and inter-agent messages
 

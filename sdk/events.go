@@ -53,12 +53,21 @@ type BeforeToolPayload struct {
 	Call ToolCall `json:"call"`
 }
 
+type ToolErrorKind string
+
+const (
+	ToolErrorUnknownTool      ToolErrorKind = "unknown_tool"
+	ToolErrorExecutionFailed  ToolErrorKind = "execution_failed"
+	ToolErrorInterrupted      ToolErrorKind = "interrupted"
+	ToolErrorPermissionDenied ToolErrorKind = "permission_denied"
+)
+
 type ToolErrorPayload struct {
-	Turn   int        `json:"turn"`
-	Call   ToolCall   `json:"call"`
-	Kind   string     `json:"kind"`
-	Reason string     `json:"reason"`
-	Result ToolResult `json:"result"`
+	Turn   int           `json:"turn"`
+	Call   ToolCall      `json:"call"`
+	Kind   ToolErrorKind `json:"kind"`
+	Reason string        `json:"reason"`
+	Result ToolResult    `json:"result"`
 }
 
 type AfterToolPayload struct {

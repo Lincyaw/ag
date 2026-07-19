@@ -330,7 +330,7 @@ func (plugin *plugin) markToolError(event sdk.Event, payload sdk.ToolErrorPayloa
 	if span := plugin.toolSpans[toolKey(event.SessionID, payload.Call.ID)]; span != nil {
 		err := errors.New(payload.Reason)
 		span.RecordError(err)
-		span.SetStatus(codes.Error, payload.Kind)
+		span.SetStatus(codes.Error, string(payload.Kind))
 	}
 }
 
