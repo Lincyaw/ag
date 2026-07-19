@@ -20,9 +20,8 @@ const (
 )
 
 type queuedContextInjection struct {
-	injection   sdk.ContextInjection
-	executionID string
-	sequence    uint64
+	injection sdk.ContextInjection
+	sequence  uint64
 }
 
 type contextInjectionQueue struct {
@@ -58,15 +57,16 @@ func (session *Session) EnqueueContextInjection(
 		return err
 	}
 	defer releaseWork()
-	queued, err := session.contextQueue.enqueue(
+	executionID, _ := session.activeExecution()
+	queued, err := session.contextQueue.enqueueForExecution(
 		session.config.ID,
+		executionID,
 		injection,
 	)
 	if err != nil {
 		return err
 	}
 	if queued.Priority == sdk.ContextInjectionNow {
-		executionID, _ := session.activeExecution()
 		session.signalContextInjectionInterrupt(executionID)
 	}
 	return nil
@@ -148,13 +148,6 @@ func (session *Session) enqueueHostedContextInjection(
 	return nil
 }
 
-func (queue *contextInjectionQueue) enqueue(
-	sessionID string,
-	injection sdk.ContextInjection,
-) (sdk.ContextInjection, error) {
-	return queue.enqueueForExecution(sessionID, "", injection)
-}
-
 func (queue *contextInjectionQueue) enqueueForExecution(
 	sessionID string,
 	executionID string,
@@ -167,13 +160,26 @@ func (queue *contextInjectionQueue) enqueueForExecution(
 	if err := validateContextInjectionTarget(sessionID, normalized); err != nil {
 		return sdk.ContextInjection{}, err
 	}
+	if normalized.TargetSessionID == "" {
+		normalized.TargetSessionID = sessionID
+	}
+	if executionID != "" {
+		if normalized.TargetExecutionID == "" {
+			normalized.TargetExecutionID = executionID
+		} else if normalized.TargetExecutionID != executionID {
+			return sdk.ContextInjection{}, fmt.Errorf(
+				"context injection targets execution %q, not %q",
+				normalized.TargetExecutionID,
+				executionID,
+			)
+		}
+	}
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
 	queue.sequence++
 	queue.items = append(queue.items, queuedContextInjection{
-		injection:   normalized,
-		executionID: executionID,
-		sequence:    queue.sequence,
+		injection: normalized,
+		sequence:  queue.sequence,
 	})
 	return sdk.CloneContextInjection(normalized), nil
 }
@@ -230,9 +236,8 @@ func (queue *contextInjectionQueue) restoreFront(
 	for index, injection := range injections {
 		queue.sequence++
 		restored[index] = queuedContextInjection{
-			injection:   sdk.CloneContextInjection(injection.injection),
-			executionID: injection.executionID,
-			sequence:    queue.sequence,
+			injection: sdk.CloneContextInjection(injection.injection),
+			sequence:  queue.sequence,
 		}
 	}
 	queue.items = append(restored, queue.items...)
@@ -249,7 +254,7 @@ func (queue *contextInjectionQueue) discardExecution(executionID string) {
 	}
 	kept := make([]queuedContextInjection, 0, len(queue.items))
 	for _, item := range queue.items {
-		if item.executionID == executionID {
+		if item.injection.TargetExecutionID == executionID {
 			continue
 		}
 		kept = append(kept, item)
@@ -350,9 +355,8 @@ func cloneQueuedContextInjections(
 	result := make([]queuedContextInjection, len(injections))
 	for index, injection := range injections {
 		result[index] = queuedContextInjection{
-			injection:   sdk.CloneContextInjection(injection.injection),
-			executionID: injection.executionID,
-			sequence:    injection.sequence,
+			injection: sdk.CloneContextInjection(injection.injection),
+			sequence:  injection.sequence,
 		}
 	}
 	return result
@@ -362,7 +366,8 @@ func contextInjectionMatchesExecution(
 	injection queuedContextInjection,
 	executionID string,
 ) bool {
-	return injection.executionID == "" || injection.executionID == executionID
+	target := injection.injection.TargetExecutionID
+	return target == "" || target == executionID
 }
 
 func contextInjectionMatchesSession(

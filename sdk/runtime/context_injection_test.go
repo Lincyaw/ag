@@ -45,3 +45,50 @@ func TestContextInjectionRejectsWrongTargetSession(t *testing.T) {
 		t.Fatalf("wrong target error = %v", err)
 	}
 }
+
+func TestContextInjectionRejectsWrongTargetExecution(t *testing.T) {
+	t.Parallel()
+	queue := contextInjectionQueue{}
+	_, err := queue.enqueueForExecution(
+		"target-session",
+		"execution-a",
+		sdk.ContextInjection{
+			TargetExecutionID: "execution-b",
+			Messages: []sdk.Message{{
+				Role:    sdk.RoleUser,
+				Content: "wrong execution",
+			}},
+		},
+	)
+	if err == nil {
+		t.Fatal("enqueueForExecution accepted wrong target execution")
+	}
+	if !strings.Contains(
+		err.Error(),
+		`context injection targets execution "execution-b", not "execution-a"`,
+	) {
+		t.Fatalf("wrong target execution error = %v", err)
+	}
+}
+
+func TestContextInjectionStampsQueueTargets(t *testing.T) {
+	t.Parallel()
+	queue := contextInjectionQueue{}
+	queued, err := queue.enqueueForExecution(
+		"target-session",
+		"execution-a",
+		sdk.ContextInjection{
+			Messages: []sdk.Message{{
+				Role:    sdk.RoleUser,
+				Content: "targeted context",
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.TargetSessionID != "target-session" ||
+		queued.TargetExecutionID != "execution-a" {
+		t.Fatalf("queued context target = %#v", queued)
+	}
+}

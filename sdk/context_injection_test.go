@@ -59,3 +59,17 @@ func TestNormalizeContextInjectionValidatesTargetSession(t *testing.T) {
 		t.Fatal("NormalizeContextInjection accepted invalid target session")
 	}
 }
+
+func TestNormalizeContextInjectionValidatesTargetExecution(t *testing.T) {
+	t.Parallel()
+	_, err := NormalizeContextInjection(ContextInjection{
+		TargetExecutionID: "not a resource name",
+		Messages: []Message{{
+			Role:    RoleUser,
+			Content: "queued context",
+		}},
+	}, time.Time{})
+	if err == nil {
+		t.Fatal("NormalizeContextInjection accepted invalid target execution")
+	}
+}

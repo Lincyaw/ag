@@ -835,6 +835,34 @@ func TestRuntimeEnqueuesContextIntoHostedExecution(t *testing.T) {
 	if len(second) < 4 || second[len(second)-1].Content != "live hosted context" {
 		t.Fatalf("second provider messages = %#v", second)
 	}
+	trajectory, err := trajectories.Load(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch, err := trajectory.Branch(trajectory.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var injection sdk.ContextInjection
+	for _, entry := range branch {
+		if entry.Kind != sdk.TrajectoryKindCheckpoint {
+			continue
+		}
+		checkpoint, err := durability.DecodeCheckpoint(session.ID(), entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, candidate := range checkpoint.ContextInjections {
+			if len(candidate.Messages) == 1 &&
+				candidate.Messages[0].Content == "live hosted context" {
+				injection = candidate
+			}
+		}
+	}
+	if injection.TargetSessionID != session.ID() ||
+		injection.TargetExecutionID != metadata.Execution.ID {
+		t.Fatalf("hosted context checkpoint target = %#v", injection)
+	}
 }
 
 func TestNowContextInjectionBlocksDefaultToolUntilCompletion(t *testing.T) {
