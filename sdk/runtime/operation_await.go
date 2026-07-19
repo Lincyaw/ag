@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -118,14 +119,15 @@ func (runtime *Runtime) observeOperation(
 	if await.watch != nil {
 		next, err := await.watch(ctx, current.ID, current.Revision)
 		if err == nil {
-			if next.Revision == current.Revision && !next.Terminal() {
-				if err := runtime.waitOrCancelAwaitedOperation(
-					ctx,
-					await,
-					current,
-				); err != nil {
-					return sdk.Operation{}, err
+			if sameOperationObservation(current, next) && !next.Terminal() {
+				if err := ctx.Err(); err != nil {
+					return sdk.Operation{}, runtime.cancelAwaitedOperation(
+						ctx,
+						await,
+						current,
+					)
 				}
+				return runtime.pollAfterUnchangedWatch(ctx, await, current)
 			}
 			return next, nil
 		}
@@ -138,6 +140,23 @@ func (runtime *Runtime) observeOperation(
 		}
 		return sdk.Operation{}, err
 	}
+	return runtime.waitAndPollAwaitedOperation(ctx, await, current)
+}
+
+func sameOperationObservation(left sdk.Operation, right sdk.Operation) bool {
+	return left.ID == right.ID &&
+		left.IdempotencyKey == right.IdempotencyKey &&
+		left.State == right.State &&
+		left.Revision == right.Revision &&
+		left.Error == right.Error &&
+		bytes.Equal(left.Output, right.Output)
+}
+
+func (runtime *Runtime) waitAndPollAwaitedOperation(
+	ctx context.Context,
+	await operationAwait,
+	current sdk.Operation,
+) (sdk.Operation, error) {
 	if err := runtime.waitOrCancelAwaitedOperation(
 		ctx,
 		await,
@@ -145,6 +164,14 @@ func (runtime *Runtime) observeOperation(
 	); err != nil {
 		return sdk.Operation{}, err
 	}
+	return runtime.pollAwaitedOperation(ctx, await, current)
+}
+
+func (runtime *Runtime) pollAwaitedOperation(
+	ctx context.Context,
+	await operationAwait,
+	current sdk.Operation,
+) (sdk.Operation, error) {
 	next, err := await.poll(ctx, current.ID, current.Revision)
 	if err != nil && ctx.Err() != nil {
 		return sdk.Operation{}, runtime.cancelAwaitedOperation(
@@ -154,6 +181,27 @@ func (runtime *Runtime) observeOperation(
 		)
 	}
 	return next, err
+}
+
+func (runtime *Runtime) pollAfterUnchangedWatch(
+	ctx context.Context,
+	await operationAwait,
+	current sdk.Operation,
+) (sdk.Operation, error) {
+	next, err := runtime.pollAwaitedOperation(ctx, await, current)
+	if err != nil {
+		return sdk.Operation{}, err
+	}
+	if sameOperationObservation(current, next) && !next.Terminal() {
+		if err := runtime.waitOrCancelAwaitedOperation(
+			ctx,
+			await,
+			current,
+		); err != nil {
+			return sdk.Operation{}, err
+		}
+	}
+	return next, nil
 }
 
 func (runtime *Runtime) waitOrCancelAwaitedOperation(

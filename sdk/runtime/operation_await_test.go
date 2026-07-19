@@ -107,6 +107,115 @@ func TestAwaitOperationUsesWatcherBeforePollDelay(t *testing.T) {
 	}
 }
 
+func TestAwaitOperationWatcherFallbackPollsUnchangedSnapshot(t *testing.T) {
+	t.Parallel()
+	runtime := &Runtime{operation: operationRuntime{poll: time.Hour}}
+	initial := sdk.Operation{
+		ID:             "operation-watch-unchanged",
+		IdempotencyKey: "entry-watch-unchanged",
+		State:          sdk.OperationRunning,
+		Revision:       11,
+	}
+	var watches atomic.Int64
+	var polls atomic.Int64
+	result, err := runtime.awaitOperation(
+		context.Background(),
+		operationAwait{
+			expectedIdempotencyKey: initial.IdempotencyKey,
+			initial:                initial,
+			poll: func(_ context.Context, id string, revision uint64) (sdk.Operation, error) {
+				if id != initial.ID || revision != initial.Revision {
+					t.Fatalf("poll(%q, %d)", id, revision)
+				}
+				polls.Add(1)
+				return sdk.Operation{
+					ID:             initial.ID,
+					IdempotencyKey: initial.IdempotencyKey,
+					State:          sdk.OperationSucceeded,
+					Revision:       initial.Revision + 1,
+					Output:         []byte(`{"content":"polled"}`),
+				}, nil
+			},
+			watch: func(_ context.Context, id string, revision uint64) (sdk.Operation, error) {
+				if id != initial.ID || revision != initial.Revision {
+					t.Fatalf("watch(%q, %d)", id, revision)
+				}
+				watches.Add(1)
+				return initial, nil
+			},
+			cancel: func(context.Context, string) (sdk.Operation, error) {
+				t.Fatal("cancel called for successful watched operation")
+				return sdk.Operation{}, nil
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("await watched operation: %v", err)
+	}
+	if result.State != sdk.OperationSucceeded || result.Revision != 12 {
+		t.Fatalf("watched fallback result = %#v", result)
+	}
+	if watches.Load() != 1 || polls.Load() != 1 {
+		t.Fatalf("watches = %d, polls = %d", watches.Load(), polls.Load())
+	}
+}
+
+func TestAwaitOperationWatcherUnchangedPollWaitsBeforeRetry(t *testing.T) {
+	t.Parallel()
+	runtime := &Runtime{operation: operationRuntime{
+		poll:          time.Hour,
+		cancelTimeout: 2500 * time.Millisecond,
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	initial := sdk.Operation{
+		ID:             "operation-watch-still-unchanged",
+		IdempotencyKey: "entry-watch-still-unchanged",
+		State:          sdk.OperationRunning,
+		Revision:       3,
+	}
+	var watches atomic.Int64
+	var polls atomic.Int64
+	var cancelled atomic.Bool
+	_, err := runtime.awaitOperation(
+		ctx,
+		operationAwait{
+			expectedIdempotencyKey: initial.IdempotencyKey,
+			initial:                initial,
+			poll: func(context.Context, string, uint64) (sdk.Operation, error) {
+				polls.Add(1)
+				cancel()
+				return initial, nil
+			},
+			watch: func(context.Context, string, uint64) (sdk.Operation, error) {
+				if watches.Add(1) > 1 {
+					t.Fatal("watch retried before waiting after unchanged poll")
+				}
+				return initial, nil
+			},
+			cancel: func(context.Context, string) (sdk.Operation, error) {
+				cancelled.Store(true)
+				return sdk.Operation{
+					ID:             initial.ID,
+					IdempotencyKey: initial.IdempotencyKey,
+					State:          sdk.OperationCancelled,
+					Revision:       initial.Revision + 1,
+				}, nil
+			},
+		},
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("await error = %v, want context.Canceled", err)
+	}
+	if watches.Load() != 1 || polls.Load() != 1 || !cancelled.Load() {
+		t.Fatalf(
+			"watches = %d, polls = %d, cancelled = %v",
+			watches.Load(),
+			polls.Load(),
+			cancelled.Load(),
+		)
+	}
+}
+
 func TestAwaitOperationCancellationUsesFreshContext(t *testing.T) {
 	t.Parallel()
 	runtime := &Runtime{operation: operationRuntime{

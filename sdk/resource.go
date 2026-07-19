@@ -84,7 +84,8 @@ type AsyncProvider interface {
 
 // OperationWatcher is an optional async-resource optimization. Implementations
 // may block until the operation advances past afterRevision or the context is
-// cancelled. Poll remains the portable baseline.
+// cancelled. Returning the unchanged snapshot is allowed; runtimes may then
+// perform an immediate poll as the portable authoritative read.
 type OperationWatcher interface {
 	WatchOperation(context.Context, string, uint64) (Operation, error)
 }

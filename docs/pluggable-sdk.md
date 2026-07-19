@@ -431,8 +431,8 @@ an asynchronous resource backed by `OperationStore`; the loop never invokes
 those methods directly. Native async plugins retain their own Submit/Poll/Cancel
 implementation. A native async resource may also implement
 `sdk.OperationWatcher`; the runtime then waits on the revision-aware watch path
-before falling back to fixed-interval polling. Short control hooks are the only
-synchronous plugin path.
+and performs an immediate poll if the watch reports no revision change. Short
+control hooks are the only synchronous plugin path.
 
 The host records the provider/tool request and terminal result in trajectory.
 The operation idempotency key is derived from the trajectory execution ID and
