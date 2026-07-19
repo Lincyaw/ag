@@ -31,55 +31,62 @@ func runParallelIndexed(
 	}
 	defer cancel()
 
-	var slots chan struct{}
-	if options.Limit > 0 {
-		slots = make(chan struct{}, options.Limit)
-	}
 	errs := make([]error, count)
 	var wait sync.WaitGroup
 	var cancelOnce sync.Once
-	for index := 0; index < count; index++ {
+	workers := count
+	limited := options.Limit > 0
+	if limited && options.Limit < workers {
+		workers = options.Limit
+	}
+	jobs := make(chan int)
+	for worker := 0; worker < workers; worker++ {
 		wait.Add(1)
-		go func(index int) {
+		go func() {
 			defer wait.Done()
-			var taskErr error
-			defer func() {
-				if recovered := recover(); recovered != nil {
-					taskErr = fmt.Errorf(
-						"parallel task panic: %v\n%s",
-						recovered,
-						debug.Stack(),
-					)
-				}
+			for index := range jobs {
+				taskErr := runParallelIndexedTask(
+					runCtx,
+					index,
+					limited,
+					run,
+				)
 				errs[index] = taskErr
 				if taskErr != nil && options.CancelOnError {
 					cancelOnce.Do(cancel)
 				}
-			}()
-			releaseSlot, err := acquireParallelSlot(runCtx, slots)
-			if err != nil {
-				taskErr = err
-				return
 			}
-			defer releaseSlot()
-			taskErr = run(runCtx, index)
-		}(index)
+		}()
 	}
+	for index := 0; index < count; index++ {
+		jobs <- index
+	}
+	close(jobs)
 	wait.Wait()
 	return errs
 }
 
-func acquireParallelSlot(
+func runParallelIndexedTask(
 	ctx context.Context,
-	slots chan struct{},
-) (func(), error) {
-	if slots == nil {
-		return func() {}, nil
+	index int,
+	limited bool,
+	run func(context.Context, int) error,
+) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf(
+				"parallel task panic: %v\n%s",
+				recovered,
+				debug.Stack(),
+			)
+		}
+	}()
+	if limited {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 	}
-	select {
-	case slots <- struct{}{}:
-		return func() { <-slots }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	return run(ctx, index)
 }
