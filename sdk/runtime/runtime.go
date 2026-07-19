@@ -25,6 +25,22 @@ import (
 
 const instrumentationName = "github.com/lincyaw/ag/sdk"
 
+const (
+	defaultRuntimeVersion           = "development"
+	defaultDeliveryWorkers          = 2
+	defaultDeliveryLease            = 30 * time.Second
+	defaultDeliveryPoll             = 25 * time.Millisecond
+	defaultDeliveryEnqueueTimeout   = 5 * time.Second
+	defaultDeliveryTimeout          = 5 * time.Second
+	defaultDeliveryMaxAttempts      = 8
+	defaultPluginCloseTimeout       = 10 * time.Second
+	defaultHookTimeout              = time.Second
+	defaultOperationPoll            = 100 * time.Millisecond
+	defaultOperationCancelTimeout   = 2 * time.Second
+	defaultOperationLease           = 30 * time.Second
+	defaultTrajectoryExecutionLease = 30 * time.Second
+)
+
 type StorageOwnership string
 
 const (
@@ -95,7 +111,7 @@ type runtimeStoragePorts struct {
 
 func normalizeRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 	if strings.TrimSpace(config.RuntimeVersion) == "" {
-		config.RuntimeVersion = "development"
+		config.RuntimeVersion = defaultRuntimeVersion
 	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
@@ -121,40 +137,40 @@ func normalizeRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 		)
 	}
 	if config.DeliveryWorkers == 0 {
-		config.DeliveryWorkers = 2
+		config.DeliveryWorkers = defaultDeliveryWorkers
 	}
 	if config.DeliveryLease == 0 {
-		config.DeliveryLease = 30 * time.Second
+		config.DeliveryLease = defaultDeliveryLease
 	}
 	if config.DeliveryPoll == 0 {
-		config.DeliveryPoll = 25 * time.Millisecond
+		config.DeliveryPoll = defaultDeliveryPoll
 	}
 	if config.DeliveryEnqueueTimeout == 0 {
-		config.DeliveryEnqueueTimeout = 5 * time.Second
+		config.DeliveryEnqueueTimeout = defaultDeliveryEnqueueTimeout
 	}
 	if config.DeliveryTimeout == 0 {
-		config.DeliveryTimeout = 5 * time.Second
+		config.DeliveryTimeout = defaultDeliveryTimeout
 	}
 	if config.DeliveryMaxAttempts == 0 {
-		config.DeliveryMaxAttempts = 8
+		config.DeliveryMaxAttempts = defaultDeliveryMaxAttempts
 	}
 	if config.PluginCloseTimeout == 0 {
 		config.PluginCloseTimeout = defaultPluginCloseTimeout
 	}
 	if config.HookTimeout == 0 {
-		config.HookTimeout = time.Second
+		config.HookTimeout = defaultHookTimeout
 	}
 	if config.OperationPoll == 0 {
-		config.OperationPoll = 100 * time.Millisecond
+		config.OperationPoll = defaultOperationPoll
 	}
 	if config.OperationCancelTimeout == 0 {
 		config.OperationCancelTimeout = defaultOperationCancelTimeout
 	}
 	if config.OperationLease == 0 {
-		config.OperationLease = 30 * time.Second
+		config.OperationLease = defaultOperationLease
 	}
 	if config.TrajectoryLease == 0 {
-		config.TrajectoryLease = 30 * time.Second
+		config.TrajectoryLease = defaultTrajectoryExecutionLease
 	}
 	if config.DeliveryWorkers < 1 || config.DeliveryLease <= 0 ||
 		config.DeliveryPoll <= 0 || config.DeliveryEnqueueTimeout <= 0 ||

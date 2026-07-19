@@ -22,8 +22,6 @@ type Mount struct {
 	state   *mountState
 }
 
-const defaultPluginCloseTimeout = 10 * time.Second
-
 func (runtime *Runtime) effectivePluginCloseTimeout() time.Duration {
 	if runtime != nil && runtime.pluginCloseTimeout > 0 {
 		return runtime.pluginCloseTimeout

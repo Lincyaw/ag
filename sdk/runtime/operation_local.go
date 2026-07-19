@@ -105,8 +105,6 @@ type operationRuntime struct {
 	workerID      string
 }
 
-const defaultOperationCancelTimeout = 2 * time.Second
-
 func (operation *operationRuntime) effectiveCancelTimeout() time.Duration {
 	if operation == nil {
 		return defaultOperationCancelTimeout
