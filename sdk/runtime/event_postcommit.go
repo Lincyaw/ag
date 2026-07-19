@@ -60,8 +60,8 @@ func (subject postCommitSubject) logArgs() []any {
 
 type postCommitEventBundle []postCommitEventPlan
 
-type stateMutationDeliverySource interface {
-	stateMutationDeliveries() []sdk.Delivery
+type hostOutboxDeliverySource interface {
+	hostOutboxDeliveries() []sdk.Delivery
 }
 
 func (bundle postCommitEventBundle) dispatchAfterCommit(
@@ -74,7 +74,7 @@ func (bundle postCommitEventBundle) dispatchAfterCommit(
 	}
 }
 
-func (bundle postCommitEventBundle) stateMutationDeliveries() []sdk.Delivery {
+func (bundle postCommitEventBundle) hostOutboxDeliveries() []sdk.Delivery {
 	var deliveries []sdk.Delivery
 	for _, plan := range bundle {
 		if plan.event.ID == "" {
@@ -82,31 +82,33 @@ func (bundle postCommitEventBundle) stateMutationDeliveries() []sdk.Delivery {
 		}
 		deliveries = append(
 			deliveries,
-			plan.delivery.stateMutationDeliveries()...,
+			plan.delivery.hostOutboxDeliveries()...,
 		)
 	}
 	return deliveries
 }
 
-type retainedPostCommitEventBundle struct {
+// leasedPostCommitEventBundle keeps the composition snapshot alive until the
+// durable mutation has committed and its post-commit events have dispatched.
+type leasedPostCommitEventBundle struct {
 	events postCommitEventBundle
 	lease  *snapshotLease
 }
 
-func (bundle *retainedPostCommitEventBundle) append(
+func (bundle *leasedPostCommitEventBundle) append(
 	plans ...postCommitEventPlan,
 ) {
 	bundle.events = append(bundle.events, plans...)
 }
 
-func (bundle retainedPostCommitEventBundle) dispatchAfterCommit(
+func (bundle leasedPostCommitEventBundle) dispatchAfterCommit(
 	ctx context.Context,
 	runtime *Runtime,
 ) {
 	bundle.events.dispatchAfterCommit(ctx, runtime)
 }
 
-func (bundle *retainedPostCommitEventBundle) dispatchAfterCommitAndRelease(
+func (bundle *leasedPostCommitEventBundle) dispatchAfterCommitAndRelease(
 	ctx context.Context,
 	runtime *Runtime,
 ) {
@@ -117,11 +119,11 @@ func (bundle *retainedPostCommitEventBundle) dispatchAfterCommitAndRelease(
 	bundle.dispatchAfterCommit(ctx, runtime)
 }
 
-func (bundle retainedPostCommitEventBundle) stateMutationDeliveries() []sdk.Delivery {
-	return bundle.events.stateMutationDeliveries()
+func (bundle leasedPostCommitEventBundle) hostOutboxDeliveries() []sdk.Delivery {
+	return bundle.events.hostOutboxDeliveries()
 }
 
-func (bundle *retainedPostCommitEventBundle) release() {
+func (bundle *leasedPostCommitEventBundle) release() {
 	if bundle == nil || bundle.lease == nil {
 		return
 	}
@@ -147,12 +149,12 @@ func (runtime *Runtime) atomicMutationHostOutbox(
 }
 
 func (runtime *Runtime) stateMutationHostOutbox(
-	source stateMutationDeliverySource,
+	source hostOutboxDeliverySource,
 ) ([]sdk.StateMutationDeliveries, error) {
 	if source == nil {
 		return nil, nil
 	}
-	return runtime.atomicMutationHostOutbox(source.stateMutationDeliveries())
+	return runtime.atomicMutationHostOutbox(source.hostOutboxDeliveries())
 }
 
 // postCommitDeliveryBoundary is the commit-boundary decision for subscriber
@@ -163,12 +165,12 @@ type postCommitDeliveryBoundary uint8
 
 const (
 	postCommitDeliveryBoundaryAfterDispatch postCommitDeliveryBoundary = iota
-	postCommitDeliveryBoundaryStateMutation
+	postCommitDeliveryBoundaryHostOutbox
 )
 
 type postCommitDelivery struct {
 	afterDispatch bool
-	stateMutation []sdk.Delivery
+	hostOutbox    []sdk.Delivery
 }
 
 func newPostCommitDelivery(
@@ -176,10 +178,10 @@ func newPostCommitDelivery(
 	event sdk.Event,
 	boundary postCommitDeliveryBoundary,
 ) postCommitDelivery {
-	if boundary == postCommitDeliveryBoundaryStateMutation &&
+	if boundary == postCommitDeliveryBoundaryHostOutbox &&
 		subscriberDeliveryStableBeforeDispatch(snapshot, event.Name) {
 		return postCommitDelivery{
-			stateMutation: planSubscriberDeliveries(
+			hostOutbox: planSubscriberDeliveries(
 				snapshot,
 				event,
 				time.Now().UTC(),
@@ -193,8 +195,8 @@ func (delivery postCommitDelivery) enqueueAfterDispatch() bool {
 	return delivery.afterDispatch
 }
 
-func (delivery postCommitDelivery) stateMutationDeliveries() []sdk.Delivery {
-	return sdk.CloneDeliveries(delivery.stateMutation)
+func (delivery postCommitDelivery) hostOutboxDeliveries() []sdk.Delivery {
+	return sdk.CloneDeliveries(delivery.hostOutbox)
 }
 
 func preparePostCommitEventPlan(
@@ -256,7 +258,7 @@ func (runtime *Runtime) mutationPostCommitDeliveryBoundary() postCommitDeliveryB
 	if runtime.atomicState == nil {
 		return postCommitDeliveryBoundaryAfterDispatch
 	}
-	return postCommitDeliveryBoundaryStateMutation
+	return postCommitDeliveryBoundaryHostOutbox
 }
 
 func (session *Session) executionPostCommitDeliveryBoundary() postCommitDeliveryBoundary {

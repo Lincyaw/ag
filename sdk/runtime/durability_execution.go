@@ -332,7 +332,7 @@ func (session *Session) commitExecution(
 func (runtime *Runtime) beginTrajectoryExecution(
 	ctx context.Context,
 	commit sdk.ExecutionStartCommit,
-	events stateMutationDeliverySource,
+	events hostOutboxDeliverySource,
 ) (sdk.TrajectoryMetadata, error) {
 	mutationOutbox, err := runtime.stateMutationHostOutbox(events)
 	if err != nil {
@@ -356,7 +356,7 @@ func (runtime *Runtime) beginTrajectoryExecution(
 func (runtime *Runtime) commitTrajectoryExecution(
 	ctx context.Context,
 	commit sdk.TrajectoryExecutionCommit,
-	events stateMutationDeliverySource,
+	events hostOutboxDeliverySource,
 ) (sdk.TrajectoryMetadata, error) {
 	mutationOutbox, err := runtime.stateMutationHostOutbox(events)
 	if err != nil {
@@ -484,7 +484,7 @@ func (runtime *Runtime) cancelTrajectoryExecutionOnce(
 func (runtime *Runtime) cancelTrajectoryExecutionMutation(
 	ctx context.Context,
 	commit sdk.TrajectoryExecutionCancelCommit,
-	events stateMutationDeliverySource,
+	events hostOutboxDeliverySource,
 ) (executionCancelMutationResult, error) {
 	if runtime.atomicState == nil {
 		result, err := runtime.trajectories.CancelExecution(ctx, commit)
@@ -592,7 +592,7 @@ func (session *Session) failExecution(
 
 type executionFailurePlan struct {
 	commit sdk.TrajectoryExecutionCommit
-	events retainedPostCommitEventBundle
+	events leasedPostCommitEventBundle
 }
 
 type executionFailureOutcome struct {

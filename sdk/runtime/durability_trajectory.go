@@ -244,18 +244,18 @@ func (runtime *Runtime) rollbackTrajectory(
 	ctx context.Context,
 	id string,
 	checkpointID string,
-) (string, *durability.Checkpoint, retainedPostCommitEventBundle, error) {
+) (string, *durability.Checkpoint, leasedPostCommitEventBundle, error) {
 	if runtime == nil {
-		return "", nil, retainedPostCommitEventBundle{}, errors.New("runtime is nil")
+		return "", nil, leasedPostCommitEventBundle{}, errors.New("runtime is nil")
 	}
 	releaseWork, err := runtime.beginTrajectoryWork()
 	if err != nil {
-		return "", nil, retainedPostCommitEventBundle{}, err
+		return "", nil, leasedPostCommitEventBundle{}, err
 	}
 	defer releaseWork()
 	lease, err := runtime.acquireSnapshot()
 	if err != nil {
-		return "", nil, retainedPostCommitEventBundle{}, err
+		return "", nil, leasedPostCommitEventBundle{}, err
 	}
 	eventLease := lease
 	defer func() {
@@ -265,21 +265,21 @@ func (runtime *Runtime) rollbackTrajectory(
 	}()
 	metadata, err := runtime.trajectories.LoadMetadata(ctx, id)
 	if err != nil {
-		return "", nil, retainedPostCommitEventBundle{}, err
+		return "", nil, leasedPostCommitEventBundle{}, err
 	}
 	target, err := runtime.trajectories.LoadEntry(ctx, id, checkpointID)
 	if errors.Is(err, sdk.ErrTrajectoryEntryNotFound) {
-		return "", nil, retainedPostCommitEventBundle{}, fmt.Errorf(
+		return "", nil, leasedPostCommitEventBundle{}, fmt.Errorf(
 			"trajectory %q checkpoint %q not found",
 			id,
 			checkpointID,
 		)
 	}
 	if err != nil {
-		return "", nil, retainedPostCommitEventBundle{}, err
+		return "", nil, leasedPostCommitEventBundle{}, err
 	}
 	if target.Kind != sdk.TrajectoryKindCheckpoint {
-		return "", nil, retainedPostCommitEventBundle{}, fmt.Errorf(
+		return "", nil, leasedPostCommitEventBundle{}, fmt.Errorf(
 			"trajectory entry %q is %q, not a checkpoint",
 			checkpointID,
 			target.Kind,
@@ -287,7 +287,7 @@ func (runtime *Runtime) rollbackTrajectory(
 	}
 	checkpoint, err := durability.DecodeCheckpoint(id, target)
 	if err != nil {
-		return "", nil, retainedPostCommitEventBundle{}, err
+		return "", nil, leasedPostCommitEventBundle{}, err
 	}
 	head, events, err := runtime.commitTrajectoryHeadMove(
 		ctx,
@@ -298,7 +298,7 @@ func (runtime *Runtime) rollbackTrajectory(
 		sdk.TrajectoryKindRollback,
 	)
 	if err != nil {
-		return "", nil, retainedPostCommitEventBundle{}, err
+		return "", nil, leasedPostCommitEventBundle{}, err
 	}
 	runtime.logger.InfoContext(
 		ctx,
@@ -310,12 +310,12 @@ func (runtime *Runtime) rollbackTrajectory(
 		"to",
 		checkpointID,
 	)
-	retained := retainedPostCommitEventBundle{
+	leased := leasedPostCommitEventBundle{
 		events: events,
 		lease:  eventLease,
 	}
 	eventLease = nil
-	return head, checkpoint, retained, nil
+	return head, checkpoint, leased, nil
 }
 
 func (session *Session) Rollback(
@@ -525,7 +525,7 @@ func (runtime *Runtime) appendTrajectoryEntries(
 	trajectoryID string,
 	expectedHead string,
 	entries []sdk.TrajectoryEntry,
-	events stateMutationDeliverySource,
+	events hostOutboxDeliverySource,
 ) (string, error) {
 	mutationOutbox, err := runtime.stateMutationHostOutbox(events)
 	if err != nil {

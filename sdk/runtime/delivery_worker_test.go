@@ -567,9 +567,9 @@ func dispatchSubscriberTestPostCommit(
 	postCommitEventBundle{plan}.dispatchAfterCommit(ctx, runtime)
 }
 
-func TestPostCommitStateMutationDeliveriesReturnsOwnedDeliveries(t *testing.T) {
+func TestPostCommitHostOutboxDeliveriesReturnsOwnedDeliveries(t *testing.T) {
 	delivery := postCommitDelivery{
-		stateMutation: []sdk.Delivery{{
+		hostOutbox: []sdk.Delivery{{
 			ID: "delivery-1",
 			Event: sdk.Event{
 				ID:      "event-1",
@@ -578,14 +578,14 @@ func TestPostCommitStateMutationDeliveriesReturnsOwnedDeliveries(t *testing.T) {
 			},
 		}},
 	}
-	first := delivery.stateMutationDeliveries()
+	first := delivery.hostOutboxDeliveries()
 	first[0].ID = "changed"
 	first[0].Event.Payload[0] = '['
 
-	second := delivery.stateMutationDeliveries()
+	second := delivery.hostOutboxDeliveries()
 	if second[0].ID != "delivery-1" ||
 		string(second[0].Event.Payload) != `{"value":1}` {
-		t.Fatalf("state mutation delivery aliased internal delivery: %#v", second)
+		t.Fatalf("host outbox delivery aliased internal delivery: %#v", second)
 	}
 }
 

@@ -19,7 +19,7 @@ func TestEventDispatchRejectsNilSnapshot(t *testing.T) {
 		sdk.EventAgentEnd,
 		postCommitSessionSubject("nil-snapshot"),
 		sdk.AgentEndPayload{},
-		postCommitDeliveryBoundaryStateMutation,
+		postCommitDeliveryBoundaryHostOutbox,
 	); err == nil {
 		t.Fatal("prepare post-commit event with nil snapshot succeeded")
 	}
