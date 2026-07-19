@@ -20,6 +20,22 @@ type PromptSubmission struct {
 	started   bool
 }
 
+// SubmitPrompt resumes an existing trajectory according to config and durably
+// accepts prompt as a new execution. Hosting the accepted execution remains a
+// separate boundary through PromptSubmission.Run.
+func (runtime *Runtime) SubmitPrompt(
+	ctx context.Context,
+	id string,
+	config SessionConfig,
+	prompt string,
+) (*PromptSubmission, error) {
+	session, err := runtime.ResumeSession(ctx, id, config)
+	if err != nil {
+		return nil, err
+	}
+	return session.SubmitPrompt(ctx, prompt)
+}
+
 func (session *Session) SubmitPrompt(
 	ctx context.Context,
 	prompt string,

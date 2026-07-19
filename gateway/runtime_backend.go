@@ -116,7 +116,7 @@ func (backend *runtimeExecutionBackend) Submit(
 	if err != nil {
 		return cleanup(err, agentruntime.ExecutionHost{})
 	}
-	resumed, err := host.Runtime.ResumeSession(
+	submission, err := host.Runtime.SubmitPrompt(
 		setupCtx,
 		session.ID,
 		agentruntime.SessionConfig{
@@ -124,11 +124,8 @@ func (backend *runtimeExecutionBackend) Submit(
 			MaxTurns:     session.MaxTurns,
 			ResumePolicy: agentruntime.ResumeCurrent,
 		},
+		content,
 	)
-	if err != nil {
-		return cleanup(err, host)
-	}
-	submission, err := resumed.SubmitPrompt(setupCtx, content)
 	if err != nil {
 		return cleanup(err, host)
 	}

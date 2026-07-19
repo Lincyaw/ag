@@ -132,6 +132,82 @@ func TestSubmitPromptPersistsBeforeExecutionStarts(t *testing.T) {
 	}
 }
 
+func TestRuntimeSubmitPromptResumesAndAcceptsExecution(t *testing.T) {
+	ctx := t.Context()
+	backend := newTestStateBackend()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:       backend,
+		OperationPoll: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			time.Second,
+		)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	provider := &trajectoryTestProvider{
+		operations: make(map[string]sdk.Operation),
+	}
+	tool := &trajectoryTestTool{
+		operations: make(map[string]sdk.Operation),
+	}
+	if _, err := runtime.Mount(
+		ctx,
+		sdk.Local(trajectoryRecoveryPlugin(provider, tool)),
+	); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID: "runtime-submitted-prompt", Provider: "scripted", MaxTurns: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	submission, err := runtime.SubmitPrompt(
+		ctx,
+		session.ID(),
+		SessionConfig{
+			Provider:     "scripted",
+			MaxTurns:     3,
+			ResumePolicy: ResumeCurrent,
+		},
+		"resume and accept",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := submission.ExecutionView()
+	if view.TrajectoryID != session.ID() ||
+		view.Execution.ID == "" ||
+		view.Execution.State != sdk.TrajectoryExecutionPending ||
+		provider.submissions != 0 {
+		t.Fatalf(
+			"submission view=%#v provider submissions=%d",
+			view,
+			provider.submissions,
+		)
+	}
+	metadata, err := backend.Trajectories().LoadMetadata(
+		ctx,
+		session.ID(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Execution == nil ||
+		metadata.Execution.ID != view.Execution.ID ||
+		metadata.Execution.State != sdk.TrajectoryExecutionPending {
+		t.Fatalf("persisted execution = %#v", metadata.Execution)
+	}
+}
+
 func TestPromptSubmissionRunUsesAcceptedInputBaseMessages(t *testing.T) {
 	ctx := t.Context()
 	backend := newTestStateBackend()
