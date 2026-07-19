@@ -159,6 +159,39 @@ func (tool *hostedContextInjectionTool) Call(
 	}
 }
 
+func mountHostedContextPlugin(
+	t *testing.T,
+	ctx context.Context,
+	runtime *Runtime,
+	name string,
+	description string,
+	provider *hostedContextInjectionProvider,
+	tool *hostedContextInjectionTool,
+) {
+	t.Helper()
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        name,
+			Version:     "1.0.0",
+			Description: description,
+			APIVersion:  sdk.APIVersion,
+			Registers: []string{
+				sdk.ProviderResource("hosted-context"),
+				sdk.ToolResource("wait_for_context"),
+			},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return errors.Join(
+				registrar.RegisterProvider(provider),
+				registrar.RegisterTool(tool),
+			)
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEventObserverDoesNotAffectExecution(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -512,6 +545,100 @@ func TestQueuedContextInjectionCheckpointsBeforeProvider(t *testing.T) {
 	}
 }
 
+func TestLaterContextInjectionDrainsAfterToolTurn(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	trajectories := sdkstorage.NewMemoryTrajectoryStore()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:       testStateBackendWithStores(trajectories, nil),
+		OperationPoll: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	provider := &hostedContextInjectionProvider{}
+	release := make(chan struct{})
+	close(release)
+	tool := &hostedContextInjectionTool{
+		entered: make(chan struct{}),
+		release: release,
+	}
+	mountHostedContextPlugin(
+		t,
+		ctx,
+		runtime,
+		"later-context-plugin",
+		"drains later context after a completed tool turn",
+		provider,
+		tool,
+	)
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "later-context-after-tool-session",
+		Provider: "hosted-context",
+		MaxTurns: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.EnqueueContextInjection(ctx, sdk.ContextInjection{
+		Priority: sdk.ContextInjectionLater,
+		Mode:     sdk.ContextInjectionTaskNotification,
+		Origin:   "test",
+		Messages: []sdk.Message{{
+			Role:    sdk.RoleUser,
+			Content: "later context",
+		}},
+	}); err != nil {
+		t.Fatalf("enqueue later context: %v", err)
+	}
+
+	result, err := session.Prompt(ctx, "base prompt")
+	if err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	if result.Output != "hosted context accepted" {
+		t.Fatalf("result output = %q", result.Output)
+	}
+	requests := provider.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %#v", requests)
+	}
+	if first := requests[0].Messages; len(first) != 1 ||
+		first[0].Content != "base prompt" {
+		t.Fatalf("first provider messages = %#v", first)
+	}
+	second := requests[1].Messages
+	if len(second) < 4 || second[len(second)-1].Content != "later context" {
+		t.Fatalf("second provider messages = %#v", second)
+	}
+	trajectory, err := trajectories.Load(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch, err := trajectory.Branch(trajectory.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injectBeforeSecondProvider := false
+	for index, entry := range branch {
+		if entry.Kind == sdk.TrajectoryKindProviderRequest &&
+			index > 0 &&
+			branch[index-1].Kind == sdk.TrajectoryKindCheckpoint {
+			injectBeforeSecondProvider = true
+		}
+	}
+	if !injectBeforeSecondProvider {
+		t.Fatalf("trajectory branch did not inject later context before second provider: %#v", branch)
+	}
+}
+
 func TestRuntimeEnqueuesContextIntoHostedExecution(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -535,27 +662,15 @@ func TestRuntimeEnqueuesContextIntoHostedExecution(t *testing.T) {
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	plugin := sdk.PluginFunc{
-		PluginManifest: sdk.Manifest{
-			Name:        "hosted-context-plugin",
-			Version:     "1.0.0",
-			Description: "captures live execution context injection",
-			APIVersion:  sdk.APIVersion,
-			Registers: []string{
-				sdk.ProviderResource("hosted-context"),
-				sdk.ToolResource("wait_for_context"),
-			},
-		},
-		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
-			return errors.Join(
-				registrar.RegisterProvider(provider),
-				registrar.RegisterTool(tool),
-			)
-		},
-	}
-	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
-		t.Fatal(err)
-	}
+	mountHostedContextPlugin(
+		t,
+		ctx,
+		runtime,
+		"hosted-context-plugin",
+		"captures live execution context injection",
+		provider,
+		tool,
+	)
 	session, err := runtime.NewSession(ctx, SessionConfig{
 		ID:       "hosted-context-session",
 		Provider: "hosted-context",
@@ -648,27 +763,15 @@ func TestNowContextInjectionInterruptsToolAndContinues(t *testing.T) {
 		entered:   make(chan struct{}),
 		cancelled: make(chan struct{}),
 	}
-	plugin := sdk.PluginFunc{
-		PluginManifest: sdk.Manifest{
-			Name:        "now-context-interrupt-plugin",
-			Version:     "1.0.0",
-			Description: "interrupts live tool wait with queued context",
-			APIVersion:  sdk.APIVersion,
-			Registers: []string{
-				sdk.ProviderResource("hosted-context"),
-				sdk.ToolResource("wait_for_context"),
-			},
-		},
-		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
-			return errors.Join(
-				registrar.RegisterProvider(provider),
-				registrar.RegisterTool(tool),
-			)
-		},
-	}
-	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
-		t.Fatal(err)
-	}
+	mountHostedContextPlugin(
+		t,
+		ctx,
+		runtime,
+		"now-context-interrupt-plugin",
+		"interrupts live tool wait with queued context",
+		provider,
+		tool,
+	)
 	session, err := runtime.NewSession(ctx, SessionConfig{
 		ID:       "now-context-interrupt-session",
 		Provider: "hosted-context",

@@ -587,11 +587,11 @@ func (execution *promptExecution) applyAction(
 			action.Kind,
 		)
 	}
-	if action.Kind == sdk.ActionStop && !actionFinal(action) {
+	if actionDrainsAfterTurn(action) {
 		drained, err := execution.checkpointQueuedContext(
 			ctx,
 			snapshot,
-			contextInjectionBeforeStop,
+			contextInjectionAfterTurn,
 		)
 		if err != nil {
 			return Result{}, false, err

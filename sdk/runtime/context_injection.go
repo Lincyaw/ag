@@ -16,7 +16,7 @@ type contextInjectionDrainBoundary uint8
 
 const (
 	contextInjectionBeforeProvider contextInjectionDrainBoundary = iota
-	contextInjectionBeforeStop
+	contextInjectionAfterTurn
 )
 
 type queuedContextInjection struct {
@@ -410,7 +410,7 @@ func contextInjectionEligible(
 	case contextInjectionBeforeProvider:
 		return injection.Priority == sdk.ContextInjectionNow ||
 			injection.Priority == sdk.ContextInjectionNext
-	case contextInjectionBeforeStop:
+	case contextInjectionAfterTurn:
 		return true
 	default:
 		return false
@@ -486,4 +486,9 @@ func messagesFromContextInjections(
 
 func actionFinal(action sdk.Action) bool {
 	return action.Cause != nil && action.Cause.Final
+}
+
+func actionDrainsAfterTurn(action sdk.Action) bool {
+	return action.Kind == sdk.ActionStep ||
+		(action.Kind == sdk.ActionStop && !actionFinal(action))
 }
