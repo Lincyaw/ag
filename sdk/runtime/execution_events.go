@@ -684,7 +684,7 @@ func (observer *eventObserverRuntime) stop() {
 	}
 }
 
-func (observer *eventObserverRuntime) waitStopped(
+func (observer *eventObserverRuntime) waitBestEffortStopped(
 	ctx context.Context,
 	timeout time.Duration,
 ) error {

@@ -430,10 +430,10 @@ func (runtime *Runtime) finishCloseError(
 		}
 	}()
 	var errs []error
-	runtime.delivery.waitStopped()
-	runtime.operation.waitStopped()
-	runtime.trajectoryExecution.waitStopped()
-	if err := runtime.observer.waitStopped(
+	runtime.delivery.waitDurableStopped()
+	runtime.operation.waitDurableStopped()
+	runtime.trajectoryExecution.waitDurableStopped()
+	if err := runtime.observer.waitBestEffortStopped(
 		ctx,
 		lifecycle.DefaultFinalizationTimeout,
 	); err != nil {

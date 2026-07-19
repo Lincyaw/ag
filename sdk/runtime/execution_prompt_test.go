@@ -185,12 +185,15 @@ func TestEventObserverWaitStoppedIsBounded(t *testing.T) {
 	}()
 	defer close(release)
 
-	err := observer.waitStopped(context.Background(), 10*time.Millisecond)
+	err := observer.waitBestEffortStopped(
+		context.Background(),
+		10*time.Millisecond,
+	)
 	if err == nil || !strings.Contains(
 		err.Error(),
 		"runtime event observers did not stop",
 	) {
-		t.Fatalf("waitStopped() error = %v", err)
+		t.Fatalf("waitBestEffortStopped() error = %v", err)
 	}
 }
 

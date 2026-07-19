@@ -27,7 +27,9 @@ func (trajectory *trajectoryExecutionRuntime) stop() {
 	}
 }
 
-func (trajectory *trajectoryExecutionRuntime) waitStopped() {
+// waitDurableStopped waits for live trajectory execution work to either finish
+// or restore recoverable durable state before runtime-owned cleanup continues.
+func (trajectory *trajectoryExecutionRuntime) waitDurableStopped() {
 	trajectory.wait.Wait()
 }
 

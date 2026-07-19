@@ -58,7 +58,11 @@ func (delivery *deliveryRuntime) stop() {
 	}
 }
 
-func (delivery *deliveryRuntime) waitStopped() {
+// waitDurableStopped waits until subscriber delivery workers have either
+// acknowledged or released every delivery lease they currently own. This wait
+// is intentionally unbounded: delivery handlers hold mount references, so
+// bounding it would allow plugin Close to race an active subscriber callback.
+func (delivery *deliveryRuntime) waitDurableStopped() {
 	delivery.wait.Wait()
 }
 

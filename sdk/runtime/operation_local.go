@@ -124,7 +124,9 @@ func (operation *operationRuntime) beginWork(runtime *Runtime) (func(), bool) {
 	return runtime.beginRuntimeWork(&operation.wait)
 }
 
-func (operation *operationRuntime) waitStopped() {
+// waitDurableStopped waits for runtime-owned operation work to reach its
+// storage finalization boundary before plugin and backend cleanup continue.
+func (operation *operationRuntime) waitDurableStopped() {
 	operation.wait.Wait()
 }
 
