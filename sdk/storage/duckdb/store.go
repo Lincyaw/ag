@@ -323,6 +323,37 @@ func (store *duckDBTrajectoryStore) LoadBranch(
 	return store.loadBranch(ctx, store.db, id, head)
 }
 
+func (store *duckDBTrajectoryStore) LoadBranchView(
+	ctx context.Context,
+	id string,
+	head string,
+) (sdk.Trajectory, error) {
+	if err := sdk.ValidateResourceName("trajectory", id); err != nil {
+		return sdk.Trajectory{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return sdk.Trajectory{}, err
+	}
+	trajectory, inheritedCount, ownedCount, err :=
+		store.loadStoredTrajectory(ctx, store.db, id)
+	if err != nil {
+		return sdk.Trajectory{}, err
+	}
+	branch, err := store.loadBranch(ctx, store.db, id, head)
+	if err != nil {
+		return sdk.Trajectory{}, err
+	}
+	return projectTrajectoryBranch(
+		trajectoryMetadata(
+			trajectory,
+			int(inheritedCount+ownedCount),
+			int(ownedCount),
+		),
+		head,
+		branch,
+	), nil
+}
+
 func (store *duckDBTrajectoryStore) FindLatest(
 	ctx context.Context,
 	id string,

@@ -43,14 +43,7 @@ func (application *app) trajectoryCommand() *cobra.Command {
 			defer backend.Close(context.Background())
 			store := backend.Trajectories()
 			if branchHead != "" {
-				metadata, metadataErr := store.LoadMetadata(
-					command.Context(),
-					args[0],
-				)
-				if metadataErr != nil {
-					return metadataErr
-				}
-				branch, branchErr := store.LoadBranch(
+				trajectory, branchErr := store.LoadBranchView(
 					command.Context(),
 					args[0],
 					branchHead,
@@ -58,27 +51,7 @@ func (application *app) trajectoryCommand() *cobra.Command {
 				if branchErr != nil {
 					return branchErr
 				}
-				checkpoint, found, checkpointErr := store.FindLatest(
-					command.Context(),
-					args[0],
-					branchHead,
-					sdk.TrajectoryKindCheckpoint,
-				)
-				if checkpointErr != nil {
-					return checkpointErr
-				}
-				checkpointID := ""
-				if found {
-					checkpointID = checkpoint.ID
-				}
-				return application.writeTrajectory(
-					trajectoryFromMetadata(
-						metadata,
-						branchHead,
-						checkpointID,
-						branch,
-					),
-				)
+				return application.writeTrajectory(trajectory)
 			}
 			trajectory, err := store.Load(command.Context(), args[0])
 			if err != nil {
@@ -196,25 +169,4 @@ func requireTrajectoryCheckpoint(
 		return fmt.Errorf("checkpoint not found: %s", checkpointID)
 	}
 	return nil
-}
-
-func trajectoryFromMetadata(
-	metadata sdk.TrajectoryMetadata,
-	head string,
-	checkpoint string,
-	entries []sdk.TrajectoryEntry,
-) sdk.Trajectory {
-	return sdk.Trajectory{
-		SchemaVersion: metadata.SchemaVersion,
-		ID:            metadata.ID,
-		ParentID:      metadata.ParentID,
-		ParentEntryID: metadata.ParentEntryID,
-		CreatedAt:     metadata.CreatedAt,
-		UpdatedAt:     metadata.UpdatedAt,
-		Head:          head,
-		Checkpoint:    checkpoint,
-		Execution:     sdk.CloneTrajectoryExecution(metadata.Execution),
-		Environment:   sdk.CloneTrajectoryEnvironment(metadata.Environment),
-		Entries:       sdk.CloneTrajectoryEntries(entries),
-	}
 }

@@ -12,6 +12,7 @@ var (
 	prepareNewTrajectoryFork        = trajectorymodel.PrepareNewTrajectoryFork
 	prepareTrajectoryEntries        = trajectorymodel.PrepareTrajectoryEntries
 	trajectoryMetadata              = trajectorymodel.TrajectoryMetadata
+	projectTrajectoryBranch         = trajectorymodel.ProjectTrajectoryBranch
 	findLatestInBranch              = trajectorymodel.FindLatestInBranch
 	findEntryOnBranch               = trajectorymodel.FindEntryOnBranch
 	resolveBranch                   = trajectorymodel.ResolveBranch

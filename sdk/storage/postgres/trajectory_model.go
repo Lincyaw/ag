@@ -9,6 +9,7 @@ var (
 	prepareTrajectoryEntries        = trajectorymodel.PrepareTrajectoryEntries
 	trajectoryMetadata              = trajectorymodel.TrajectoryMetadata
 	summarizeTrajectory             = trajectorymodel.SummarizeTrajectory
+	projectTrajectoryBranch         = trajectorymodel.ProjectTrajectoryBranch
 	findLatestInBranch              = trajectorymodel.FindLatestInBranch
 	findEntryOnBranch               = trajectorymodel.FindEntryOnBranch
 	resolveBranch                   = trajectorymodel.ResolveBranch

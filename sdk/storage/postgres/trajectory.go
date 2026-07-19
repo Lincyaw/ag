@@ -257,6 +257,34 @@ func (store *TrajectoryStore) LoadBranch(
 	return store.loadBranch(ctx, store.pool, id, head)
 }
 
+func (store *TrajectoryStore) LoadBranchView(
+	ctx context.Context,
+	id string,
+	head string,
+) (sdk.Trajectory, error) {
+	if err := sdk.ValidateResourceName("trajectory", id); err != nil {
+		return sdk.Trajectory{}, err
+	}
+	trajectory, inheritedCount, ownedCount, err :=
+		store.loadStoredTrajectory(ctx, store.pool, id, false)
+	if err != nil {
+		return sdk.Trajectory{}, err
+	}
+	branch, err := store.loadBranch(ctx, store.pool, id, head)
+	if err != nil {
+		return sdk.Trajectory{}, err
+	}
+	return projectTrajectoryBranch(
+		trajectoryMetadata(
+			trajectory,
+			int(inheritedCount+ownedCount),
+			int(ownedCount),
+		),
+		head,
+		branch,
+	), nil
+}
+
 func (store *TrajectoryStore) FindLatest(
 	ctx context.Context,
 	id string,

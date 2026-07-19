@@ -450,6 +450,9 @@ type TrajectoryStore interface {
 	LoadMetadata(context.Context, string) (TrajectoryMetadata, error)
 	LoadEntry(context.Context, string, string) (TrajectoryEntry, error)
 	LoadBranch(context.Context, string, string) ([]TrajectoryEntry, error)
+	// LoadBranchView materializes the trajectory projection visible at head.
+	// Unlike Load, it only includes entries reachable from that branch head.
+	LoadBranchView(context.Context, string, string) (Trajectory, error)
 	FindLatest(
 		context.Context,
 		string,

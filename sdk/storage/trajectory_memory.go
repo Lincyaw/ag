@@ -492,6 +492,35 @@ func (store *memoryTrajectoryStore) LoadBranch(
 	return store.branchLocked(id, head)
 }
 
+func (store *memoryTrajectoryStore) LoadBranchView(
+	ctx context.Context,
+	id string,
+	head string,
+) (sdk.Trajectory, error) {
+	if err := ctx.Err(); err != nil {
+		return sdk.Trajectory{}, err
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	trajectory, err := store.trajectoryLocked(id)
+	if err != nil {
+		return sdk.Trajectory{}, err
+	}
+	branch, err := store.branchLocked(id, head)
+	if err != nil {
+		return sdk.Trajectory{}, err
+	}
+	return projectTrajectoryBranch(
+		trajectoryMetadata(
+			trajectory.trajectory,
+			trajectory.inheritedCount+len(trajectory.order),
+			len(trajectory.order),
+		),
+		head,
+		branch,
+	), nil
+}
+
 func (store *memoryTrajectoryStore) FindLatest(
 	ctx context.Context,
 	id string,

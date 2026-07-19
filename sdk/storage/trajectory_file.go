@@ -547,6 +547,45 @@ func (store *fileTrajectoryStore) LoadBranch(
 	return branch, err
 }
 
+func (store *fileTrajectoryStore) LoadBranchView(
+	ctx context.Context,
+	id string,
+	head string,
+) (sdk.Trajectory, error) {
+	if err := sdk.ValidateResourceName("trajectory", id); err != nil {
+		return sdk.Trajectory{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return sdk.Trajectory{}, err
+	}
+	var view sdk.Trajectory
+	err := filestate.WithSharedLock(store.lockPath, func() error {
+		stored, readErr := store.readStoredLocked(id)
+		if readErr != nil {
+			return readErr
+		}
+		materialized, materializeErr := store.materializeStoredLocked(stored)
+		if materializeErr != nil {
+			return materializeErr
+		}
+		branch, branchErr := branchFromTrajectory(materialized, head)
+		if branchErr != nil {
+			return branchErr
+		}
+		view = projectTrajectoryBranch(
+			trajectoryMetadata(
+				stored,
+				len(materialized.Entries),
+				len(stored.Entries),
+			),
+			head,
+			branch,
+		)
+		return nil
+	})
+	return view, err
+}
+
 func (store *fileTrajectoryStore) FindLatest(
 	ctx context.Context,
 	id string,

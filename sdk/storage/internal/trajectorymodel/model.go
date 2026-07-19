@@ -288,6 +288,33 @@ func SummarizeTrajectory(
 	return summary
 }
 
+func ProjectTrajectoryBranch(
+	metadata sdk.TrajectoryMetadata,
+	head string,
+	branch []sdk.TrajectoryEntry,
+) sdk.Trajectory {
+	checkpointID := ""
+	if checkpoint, found := FindLatestInBranch(
+		branch,
+		sdk.TrajectoryKindCheckpoint,
+	); found {
+		checkpointID = checkpoint.ID
+	}
+	return sdk.Trajectory{
+		SchemaVersion: metadata.SchemaVersion,
+		ID:            metadata.ID,
+		ParentID:      metadata.ParentID,
+		ParentEntryID: metadata.ParentEntryID,
+		CreatedAt:     metadata.CreatedAt,
+		UpdatedAt:     metadata.UpdatedAt,
+		Head:          head,
+		Checkpoint:    checkpointID,
+		Execution:     sdk.CloneTrajectoryExecution(metadata.Execution),
+		Environment:   sdk.CloneTrajectoryEnvironment(metadata.Environment),
+		Entries:       sdk.CloneTrajectoryEntries(branch),
+	}
+}
+
 func FindLatestInBranch(
 	branch []sdk.TrajectoryEntry,
 	kind sdk.TrajectoryKind,
