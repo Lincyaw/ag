@@ -702,17 +702,6 @@ func (session *Session) prepareExecutionFailurePlan(
 		return executionFailurePlan{}, err
 	}
 	plan.commit.Entries = append(plan.commit.Entries, completion.Entries...)
-	events, err := completion.eventBundle(
-		executionCompletionEventSpec{
-			runtime:          session.runtime,
-			trajectoryID:     session.config.ID,
-			skipRestoreEvent: true,
-		},
-	)
-	if err != nil {
-		return executionFailurePlan{}, err
-	}
-	plan.events.append(events...)
 	plan.events.lease = eventLease
 	eventLease = nil
 	return plan, nil
@@ -841,9 +830,6 @@ type executionCompletionEventSpec struct {
 	trajectoryID        string
 	end                 *sdk.AgentEndPayload
 	endDeliveryBoundary postCommitDeliveryBoundary
-	// skipRestoreEvent is used for shutdown restore records that deliberately
-	// leave executions recoverable without touching the closing composition.
-	skipRestoreEvent bool
 }
 
 func newExecutionCompletionEntries(
@@ -908,7 +894,7 @@ func (completion executionCompletionEntries) eventBundle(
 		}
 		events = append(events, appendEvent)
 	}
-	if completion.Restore.Entry.ID != "" && !spec.skipRestoreEvent {
+	if completion.Restore.Entry.ID != "" {
 		if spec.snapshot == nil {
 			return nil, errors.New("execution restore event snapshot is nil")
 		}
