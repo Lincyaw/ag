@@ -441,11 +441,14 @@ func (execution *promptExecution) checkpointQueuedContext(
 	err := execution.session.checkpointTrajectory(
 		ctx,
 		snapshot,
-		execution.messages,
-		execution.result,
-		action,
-		execution.system,
-		execution.dependencies...,
+		trajectoryCheckpointCommit{
+			Messages:          execution.messages,
+			Result:            execution.result,
+			Action:            action,
+			System:            execution.system,
+			ContextInjections: contextInjectionsFromQueued(injections),
+			Dependencies:      execution.dependencies,
+		},
 	)
 	if err != nil {
 		execution.messages = execution.messages[:baseLength]
@@ -454,6 +457,19 @@ func (execution *promptExecution) checkpointQueuedContext(
 	}
 	execution.session.applyMessageProjection(execution.messages)
 	return true, nil
+}
+
+func contextInjectionsFromQueued(
+	injections []queuedContextInjection,
+) []sdk.ContextInjection {
+	if len(injections) == 0 {
+		return nil
+	}
+	result := make([]sdk.ContextInjection, len(injections))
+	for index, injection := range injections {
+		result[index] = sdk.CloneContextInjection(injection.injection)
+	}
+	return result
 }
 
 func messagesFromContextInjections(

@@ -103,14 +103,19 @@ func (execution *promptExecution) start(
 			Code:   sdk.CausePromptBlocked,
 			Detail: startDispatch.Block.Reason,
 		}
-		if err := session.checkpointTrajectoryWithAudit(
+		if err := session.checkpointTrajectory(
 			ctx,
 			lease.snapshot,
-			execution.messages,
-			execution.result,
-			sdk.Action{Kind: sdk.ActionStop, Cause: &cause},
-			execution.system,
-			trajectoryAudits(startDispatch.Audit),
+			trajectoryCheckpointCommit{
+				Messages: execution.messages,
+				Result:   execution.result,
+				Action: sdk.Action{
+					Kind:  sdk.ActionStop,
+					Cause: &cause,
+				},
+				System: execution.system,
+				Audit:  trajectoryAudits(startDispatch.Audit),
+			},
 		); err != nil {
 			return Result{}, false, err
 		}
@@ -607,11 +612,13 @@ func (execution *promptExecution) applyAction(
 	if err := execution.session.checkpointTrajectory(
 		ctx,
 		snapshot,
-		execution.messages,
-		execution.result,
-		action,
-		execution.system,
-		execution.dependencies...,
+		trajectoryCheckpointCommit{
+			Messages:     execution.messages,
+			Result:       execution.result,
+			Action:       action,
+			System:       execution.system,
+			Dependencies: execution.dependencies,
+		},
 	); err != nil {
 		return Result{}, false, err
 	}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lincyaw/ag/sdk"
+	"github.com/lincyaw/ag/sdk/runtime/internal/durability"
 	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 )
 
@@ -490,10 +491,11 @@ func TestQueuedContextInjectionCheckpointsBeforeProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = session.EnqueueContextInjection(ctx, sdk.ContextInjection{
-		Priority: sdk.ContextInjectionNext,
-		Mode:     sdk.ContextInjectionTaskNotification,
-		Origin:   "test",
-		IsMeta:   true,
+		Priority:        sdk.ContextInjectionNext,
+		Mode:            sdk.ContextInjectionTaskNotification,
+		Origin:          "test",
+		TargetSessionID: "queued-context",
+		IsMeta:          true,
 		Messages: []sdk.Message{{
 			Role:    sdk.RoleUser,
 			Content: "queued context",
@@ -534,16 +536,37 @@ func TestQueuedContextInjectionCheckpointsBeforeProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkpointBeforeProvider := false
+	var checkpointEntry sdk.TrajectoryEntry
 	for index, entry := range branch {
 		if entry.Kind == sdk.TrajectoryKindProviderRequest &&
 			index > 0 &&
 			branch[index-1].Kind == sdk.TrajectoryKindCheckpoint {
 			checkpointBeforeProvider = true
+			checkpointEntry = branch[index-1]
 			break
 		}
 	}
 	if !checkpointBeforeProvider {
 		t.Fatalf("trajectory branch did not checkpoint context before provider: %#v", branch)
+	}
+	checkpoint, err := durability.DecodeCheckpoint(
+		session.ID(),
+		checkpointEntry,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checkpoint.ContextInjections) != 1 {
+		t.Fatalf("checkpoint context injections = %#v", checkpoint.ContextInjections)
+	}
+	injection := checkpoint.ContextInjections[0]
+	if injection.Mode != sdk.ContextInjectionTaskNotification ||
+		injection.Origin != "test" ||
+		injection.TargetSessionID != session.ID() ||
+		!injection.IsMeta ||
+		len(injection.Messages) != 1 ||
+		injection.Messages[0].Content != "queued context" {
+		t.Fatalf("checkpoint context injection = %#v", injection)
 	}
 }
 

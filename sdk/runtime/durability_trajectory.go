@@ -551,59 +551,43 @@ func (runtime *Runtime) appendTrajectoryEntries(
 	)
 }
 
+type trajectoryCheckpointCommit struct {
+	Messages          []sdk.Message
+	Result            Result
+	Action            sdk.Action
+	System            string
+	Audit             []sdk.EventAudit
+	ContextInjections []sdk.ContextInjection
+	Dependencies      []string
+}
+
 func (session *Session) checkpointTrajectory(
 	ctx context.Context,
 	snapshot *registrySnapshot,
-	messages []sdk.Message,
-	result Result,
-	action sdk.Action,
-	system string,
-	dependencies ...string,
-) error {
-	return session.checkpointTrajectoryWithAudit(
-		ctx,
-		snapshot,
-		messages,
-		result,
-		action,
-		system,
-		nil,
-		dependencies...,
-	)
-}
-
-func (session *Session) checkpointTrajectoryWithAudit(
-	ctx context.Context,
-	snapshot *registrySnapshot,
-	messages []sdk.Message,
-	result Result,
-	action sdk.Action,
-	system string,
-	audit []sdk.EventAudit,
-	dependencies ...string,
+	commit trajectoryCheckpointCommit,
 ) error {
 	err := session.appendTrajectoryWithAudit(
 		ctx,
 		snapshot,
 		sdk.TrajectoryKindCheckpoint,
 		durability.Checkpoint{
-			Messages:   sdk.CloneMessages(messages),
-			System:     system,
+			Messages:   sdk.CloneMessages(commit.Messages),
+			System:     commit.System,
 			Provider:   session.config.Provider,
-			Output:     result.Output,
-			Turns:      result.Turns,
-			ToolCalls:  result.ToolCalls,
-			Generation: result.Generation,
-			Action:     action,
-			Dependencies: append(
-				[]string(nil),
-				dependencies...,
+			Output:     commit.Result.Output,
+			Turns:      commit.Result.Turns,
+			ToolCalls:  commit.Result.ToolCalls,
+			Generation: commit.Result.Generation,
+			Action:     sdk.CloneAction(commit.Action),
+			ContextInjections: sdk.CloneContextInjections(
+				commit.ContextInjections,
 			),
+			Dependencies: append([]string(nil), commit.Dependencies...),
 		},
-		audit,
+		commit.Audit,
 	)
 	if err == nil {
-		session.config.System = system
+		session.config.System = commit.System
 	}
 	return err
 }

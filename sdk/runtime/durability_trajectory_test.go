@@ -705,10 +705,14 @@ func TestSessionRollbackDoesNotReloadAfterCommit(t *testing.T) {
 	if err := session.checkpointTrajectory(
 		ctx,
 		lease.snapshot,
-		[]sdk.Message{{Role: sdk.RoleUser, Content: "checkpoint"}},
-		Result{},
-		sdk.Action{Kind: sdk.ActionStep},
-		"system",
+		trajectoryCheckpointCommit{
+			Messages: []sdk.Message{{
+				Role:    sdk.RoleUser,
+				Content: "checkpoint",
+			}},
+			Action: sdk.Action{Kind: sdk.ActionStep},
+			System: "system",
+		},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -758,10 +762,14 @@ func TestResumeDoesNotMaterializeTrajectory(t *testing.T) {
 	if err := session.checkpointTrajectory(
 		ctx,
 		lease.snapshot,
-		[]sdk.Message{{Role: sdk.RoleUser, Content: "checkpoint"}},
-		Result{},
-		sdk.Action{Kind: sdk.ActionStep},
-		"system",
+		trajectoryCheckpointCommit{
+			Messages: []sdk.Message{{
+				Role:    sdk.RoleUser,
+				Content: "checkpoint",
+			}},
+			Action: sdk.Action{Kind: sdk.ActionStep},
+			System: "system",
+		},
 	); err != nil {
 		t.Fatal(err)
 	}
