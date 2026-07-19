@@ -63,6 +63,7 @@ func (runtime *Runtime) InvokeCapabilityWithRequest(
 		target.capability.CancelInvoke,
 		fmt.Sprintf("invoke capability %q", name),
 		fmt.Sprintf("capability %q", name),
+		operationWatcher(target.capability),
 	)
 	if err != nil {
 		recordSpanError(span, err)

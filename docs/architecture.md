@@ -98,6 +98,10 @@ Polling and execution validate the recorded resource revision because they read
 or run revision-specific results. Cancellation validates only kind and resource,
 so a caller can still stop or observe a stale-revision operation without
 requiring the old plugin implementation to be mounted.
+Operation awaiting uses polling as the portable baseline and
+`sdk.OperationWatcher` as an optional revision-aware observation path; either
+way, observed snapshots must pass the same operation-progress validation before
+the runtime treats them as durable progress.
 Standalone operation recovery scheduling starts from the store's non-terminal
 view, then the worker layer rechecks lease delay before claiming. Standalone
 presenters must not recover only the records that are claimable at startup,

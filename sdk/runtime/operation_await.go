@@ -12,6 +12,7 @@ import (
 
 // pollOperation is the narrow read boundary used while awaiting async work.
 type pollOperation func(context.Context, string, uint64) (sdk.Operation, error)
+type watchOperation func(context.Context, string, uint64) (sdk.Operation, error)
 type cancelOperation func(context.Context, string) (sdk.Operation, error)
 
 // operationAwait groups one accepted operation snapshot with the resource
@@ -20,6 +21,7 @@ type operationAwait struct {
 	expectedIdempotencyKey string
 	initial                sdk.Operation
 	poll                   pollOperation
+	watch                  watchOperation
 	cancel                 cancelOperation
 }
 
@@ -28,13 +30,27 @@ func operationAwaitForRequest(
 	initial sdk.Operation,
 	poll pollOperation,
 	cancel cancelOperation,
+	watch ...watchOperation,
 ) operationAwait {
+	var watcher watchOperation
+	if len(watch) > 0 {
+		watcher = watch[0]
+	}
 	return operationAwait{
 		expectedIdempotencyKey: request.IdempotencyKey,
 		initial:                initial,
 		poll:                   poll,
+		watch:                  watcher,
 		cancel:                 cancel,
 	}
+}
+
+func operationWatcher(resource any) watchOperation {
+	watcher, ok := resource.(sdk.OperationWatcher)
+	if !ok {
+		return nil
+	}
+	return watcher.WatchOperation
 }
 
 func (runtime *Runtime) awaitOperation(
@@ -65,19 +81,7 @@ func (runtime *Runtime) awaitOperation(
 		return sdk.Operation{}, errors.New("operation cancel function is nil")
 	}
 	for !current.Terminal() {
-		if !waitContext(ctx, runtime.operation.poll) {
-			if runtime.operationRecoveryHandoffActive() {
-				return sdk.Operation{}, ctx.Err()
-			}
-			cancelCtx, cancelFunc := lifecycle.WithDetachedTimeout(
-				ctx,
-				runtime.operation.effectiveCancelTimeout(),
-			)
-			defer cancelFunc()
-			_, cancelErr := await.cancel(cancelCtx, current.ID)
-			return sdk.Operation{}, errors.Join(ctx.Err(), cancelErr)
-		}
-		next, err := await.poll(ctx, current.ID, current.Revision)
+		next, err := runtime.observeOperation(ctx, await, current)
 		if err != nil {
 			return sdk.Operation{}, err
 		}
@@ -104,6 +108,80 @@ func (runtime *Runtime) awaitOperation(
 			current.State,
 		)
 	}
+}
+
+func (runtime *Runtime) observeOperation(
+	ctx context.Context,
+	await operationAwait,
+	current sdk.Operation,
+) (sdk.Operation, error) {
+	if await.watch != nil {
+		next, err := await.watch(ctx, current.ID, current.Revision)
+		if err == nil {
+			if next.Revision == current.Revision && !next.Terminal() {
+				if err := runtime.waitOrCancelAwaitedOperation(
+					ctx,
+					await,
+					current,
+				); err != nil {
+					return sdk.Operation{}, err
+				}
+			}
+			return next, nil
+		}
+		if ctx.Err() != nil {
+			return sdk.Operation{}, runtime.cancelAwaitedOperation(
+				ctx,
+				await,
+				current,
+			)
+		}
+		return sdk.Operation{}, err
+	}
+	if err := runtime.waitOrCancelAwaitedOperation(
+		ctx,
+		await,
+		current,
+	); err != nil {
+		return sdk.Operation{}, err
+	}
+	next, err := await.poll(ctx, current.ID, current.Revision)
+	if err != nil && ctx.Err() != nil {
+		return sdk.Operation{}, runtime.cancelAwaitedOperation(
+			ctx,
+			await,
+			current,
+		)
+	}
+	return next, err
+}
+
+func (runtime *Runtime) waitOrCancelAwaitedOperation(
+	ctx context.Context,
+	await operationAwait,
+	current sdk.Operation,
+) error {
+	if waitContext(ctx, runtime.operation.poll) {
+		return nil
+	}
+	return runtime.cancelAwaitedOperation(ctx, await, current)
+}
+
+func (runtime *Runtime) cancelAwaitedOperation(
+	ctx context.Context,
+	await operationAwait,
+	current sdk.Operation,
+) error {
+	if runtime.operationRecoveryHandoffActive() {
+		return ctx.Err()
+	}
+	cancelCtx, cancelFunc := lifecycle.WithDetachedTimeout(
+		ctx,
+		runtime.operation.effectiveCancelTimeout(),
+	)
+	defer cancelFunc()
+	_, cancelErr := await.cancel(cancelCtx, current.ID)
+	return errors.Join(ctx.Err(), cancelErr)
 }
 
 func awaitOperationJSON[T any](
@@ -133,11 +211,12 @@ func awaitOperationRequestJSON[T any](
 	cancel cancelOperation,
 	awaitLabel string,
 	decodeLabel string,
+	watch ...watchOperation,
 ) (T, error) {
 	return awaitOperationJSON[T](
 		runtime,
 		ctx,
-		operationAwaitForRequest(request, initial, poll, cancel),
+		operationAwaitForRequest(request, initial, poll, cancel, watch...),
 		awaitLabel,
 		decodeLabel,
 	)
@@ -170,11 +249,12 @@ func awaitOperationRequestRawJSON(
 	cancel cancelOperation,
 	awaitLabel string,
 	outputLabel string,
+	watch ...watchOperation,
 ) (json.RawMessage, error) {
 	return awaitOperationRawJSON(
 		runtime,
 		ctx,
-		operationAwaitForRequest(request, initial, poll, cancel),
+		operationAwaitForRequest(request, initial, poll, cancel, watch...),
 		awaitLabel,
 		outputLabel,
 	)

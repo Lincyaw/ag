@@ -82,6 +82,13 @@ type AsyncProvider interface {
 	CancelCompletion(context.Context, string) (Operation, error)
 }
 
+// OperationWatcher is an optional async-resource optimization. Implementations
+// may block until the operation advances past afterRevision or the context is
+// cancelled. Poll remains the portable baseline.
+type OperationWatcher interface {
+	WatchOperation(context.Context, string, uint64) (Operation, error)
+}
+
 type ToolInterruptBehavior string
 
 const (

@@ -46,6 +46,7 @@ func (session *Session) invokeProvider(
 		provider.CancelCompletion,
 		fmt.Sprintf("provider %q completion", name),
 		fmt.Sprintf("provider %q response", name),
+		operationWatcher(provider),
 	)
 	if err != nil {
 		return sdk.ModelResponse{}, err
@@ -420,6 +421,7 @@ func (session *Session) awaitToolCalls(
 				call.asynchronous.CancelCall,
 				fmt.Sprintf("tool %q call", call.call.Name),
 				fmt.Sprintf("tool %q result", call.call.Name),
+				operationWatcher(call.asynchronous),
 			)
 			if err != nil {
 				if errors.Is(
