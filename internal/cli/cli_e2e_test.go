@@ -168,6 +168,9 @@ enabled = false
 [workspace]
 enabled = false
 
+[compact]
+enabled = false
+
 [state]
 directory = %q
 

@@ -99,6 +99,7 @@ func addGatewayRuntimeConfigFlags(flags *pflag.FlagSet) {
 		0,
 		"Maximum retained bytes per bash output stream.",
 	)
+	flags.Bool("compact", true, "Mount automatic prompt compaction.")
 	flags.String("registry-uri", "", "Remote lease registry grpc[s] URI.")
 	flags.String(
 		"registry-namespace",

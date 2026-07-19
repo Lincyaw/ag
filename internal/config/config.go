@@ -24,6 +24,7 @@ type Config struct {
 	OpenAI        OpenAI        `mapstructure:"openai" json:"openai" yaml:"openai"`
 	Workspace     Workspace     `mapstructure:"workspace" json:"workspace" yaml:"workspace"`
 	Bash          Bash          `mapstructure:"bash" json:"bash" yaml:"bash"`
+	Compact       Compact       `mapstructure:"compact" json:"compact" yaml:"compact"`
 	Plugins       Plugins       `mapstructure:"plugins" json:"plugins" yaml:"plugins"`
 	Registry      Registry      `mapstructure:"registry" json:"registry" yaml:"registry"`
 	Gateway       Gateway       `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
@@ -90,6 +91,15 @@ func (bash Bash) MarshalJSON() ([]byte, error) {
 		DefaultTimeout: bash.DefaultTimeout.String(), MaxTimeout: bash.MaxTimeout.String(),
 		MaxOutputBytes: bash.MaxOutputBytes, Environment: bash.Environment,
 	})
+}
+
+type Compact struct {
+	Enabled            bool `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
+	TriggerTokens      int  `mapstructure:"trigger_tokens" json:"trigger_tokens" yaml:"trigger_tokens"`
+	TargetTokens       int  `mapstructure:"target_tokens" json:"target_tokens" yaml:"target_tokens"`
+	KeepRecentMessages int  `mapstructure:"keep_recent_messages" json:"keep_recent_messages" yaml:"keep_recent_messages"`
+	MaxMessageChars    int  `mapstructure:"max_message_chars" json:"max_message_chars" yaml:"max_message_chars"`
+	MaxToolResultChars int  `mapstructure:"max_tool_result_chars" json:"max_tool_result_chars" yaml:"max_tool_result_chars"`
 }
 
 type Plugins struct {
@@ -225,6 +235,11 @@ func (c Config) Validate() error {
 		c.Bash.MaxOutputBytes < 1) {
 		return errors.New("bash configuration and limits are invalid")
 	}
+	if c.Compact.Enabled && (c.Compact.TriggerTokens < 1 ||
+		c.Compact.TargetTokens < 1 || c.Compact.KeepRecentMessages < 1 ||
+		c.Compact.MaxMessageChars < 1 || c.Compact.MaxToolResultChars < 1) {
+		return errors.New("compact limits must be positive")
+	}
 	if strings.TrimSpace(c.State.Directory) == "" &&
 		strings.TrimSpace(c.State.BackendURI) == "" {
 		return errors.New("state.directory or state.backend_uri is required")
@@ -310,6 +325,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("bash.max_timeout", "5m")
 	v.SetDefault("bash.max_output_bytes", 1<<20)
 	v.SetDefault("bash.environment", []string{})
+	v.SetDefault("compact.enabled", true)
+	v.SetDefault("compact.trigger_tokens", 96_000)
+	v.SetDefault("compact.target_tokens", 32_000)
+	v.SetDefault("compact.keep_recent_messages", 16)
+	v.SetDefault("compact.max_message_chars", 2_000)
+	v.SetDefault("compact.max_tool_result_chars", 4_000)
 	v.SetDefault("plugins.remote", []string{})
 	v.SetDefault("plugins.registry_uri", "")
 	v.SetDefault("plugins.registry_namespace", "default")
@@ -374,6 +395,7 @@ func bindFlags(v *viper.Viper, flags *pflag.FlagSet) error {
 		"bash.default_timeout":        "bash-timeout",
 		"bash.max_timeout":            "bash-max-timeout",
 		"bash.max_output_bytes":       "bash-max-output-bytes",
+		"compact.enabled":             "compact",
 		"plugins.remote":              "plugin",
 		"plugins.registry_uri":        "registry-uri",
 		"plugins.registry_namespace":  "registry-namespace",

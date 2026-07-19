@@ -213,6 +213,7 @@ func addRunConfigFlags(flags *pflag.FlagSet) {
 	flags.Duration("bash-timeout", 0, "Default bash operation timeout.")
 	flags.Duration("bash-max-timeout", 0, "Maximum bash operation timeout.")
 	flags.Int64("bash-max-output-bytes", 0, "Maximum retained bytes per bash output stream.")
+	flags.Bool("compact", true, "Mount automatic prompt compaction.")
 	addPluginConfigFlags(flags)
 }
 

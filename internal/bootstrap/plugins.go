@@ -5,6 +5,7 @@ import (
 
 	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/lincyaw/ag/plugins/bash"
+	"github.com/lincyaw/ag/plugins/compact"
 	fileplugin "github.com/lincyaw/ag/plugins/file"
 	"github.com/lincyaw/ag/plugins/openai"
 	otelplugin "github.com/lincyaw/ag/plugins/otel"
@@ -19,7 +20,7 @@ func configuredLocalPlugins(
 	tracer trace.Tracer,
 	meter metric.Meter,
 ) ([]sdk.Plugin, error) {
-	plugins := make([]sdk.Plugin, 0, 4)
+	plugins := make([]sdk.Plugin, 0, 5)
 	if config.Observability.Enabled {
 		plugin, err := otelplugin.New(otelplugin.Config{
 			Logger: logger,
@@ -37,6 +38,15 @@ func configuredLocalPlugins(
 			APIKey:     config.OpenAI.APIKey,
 			BaseURL:    config.OpenAI.BaseURL,
 			MaxRetries: config.OpenAI.MaxRetries,
+		}))
+	}
+	if config.Compact.Enabled {
+		plugins = append(plugins, compact.New(compact.Config{
+			TriggerTokens:      config.Compact.TriggerTokens,
+			TargetTokens:       config.Compact.TargetTokens,
+			KeepRecentMessages: config.Compact.KeepRecentMessages,
+			MaxMessageChars:    config.Compact.MaxMessageChars,
+			MaxToolResultChars: config.Compact.MaxToolResultChars,
 		}))
 	}
 	if config.Workspace.Enabled {
