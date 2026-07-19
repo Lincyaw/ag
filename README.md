@@ -178,7 +178,10 @@ ag version
 ```
 
 By default, `--state-dir` stores state in a local DuckDB database under that
-directory. Use `--storage` when you need an explicit backend URI:
+directory. Existing state directories that only contain legacy file JSON state
+stay on the file backend for resume compatibility; once `agent-state.duckdb`
+exists in the directory, the default path uses DuckDB. Use `--storage` when you
+need an explicit backend URI:
 
 ```text
 ag --storage 'duckdb:///absolute/path/agent-state.duckdb' run

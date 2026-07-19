@@ -137,7 +137,9 @@ as a development, debugging, and compatibility backend. High-frequency
 subscriber delivery, long-running agents, and gateway deployments should use an
 indexed database-backed driver instead of relying on file state growth. New CLI
 state directories default to DuckDB; explicit `file://` URIs and legacy file
-state directories remain supported for compatibility.
+state directories remain supported for compatibility. If the default
+`agent-state.duckdb` file already exists in a state directory, it takes
+precedence over legacy file-state markers in the same directory.
 
 The built-in DuckDB backend stores trajectory metadata, execution cursors,
 immutable entries, operation state, and named delivery queues in normalized

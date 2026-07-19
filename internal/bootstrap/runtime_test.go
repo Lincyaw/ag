@@ -96,3 +96,52 @@ func TestOpenStateBackendPreservesLegacyFileStateDirectory(t *testing.T) {
 		t.Fatalf("legacy backend = %s", backend.String())
 	}
 }
+
+func TestOpenStateBackendPrefersExistingDuckDBOverLegacyFileStateDirectory(
+	t *testing.T,
+) {
+	t.Parallel()
+	directory := t.TempDir()
+	backend, err := OpenStateBackend(
+		context.Background(),
+		appconfig.Config{
+			State: appconfig.State{Directory: directory},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Close(context.Background()); err != nil {
+		t.Fatalf("close initial DuckDB backend: %v", err)
+	}
+	trajectoryDirectory := filepath.Join(directory, "trajectories")
+	if err := os.MkdirAll(trajectoryDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(trajectoryDirectory, "legacy.json"),
+		[]byte(`{}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	resolution, err := ResolveStateBackend(appconfig.Config{
+		State: appconfig.State{Directory: directory},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.Source != StateBackendDefaultDuckDB ||
+		resolution.LegacyFileFallback() {
+		t.Fatalf("mixed state resolution = %#v", resolution)
+	}
+	parsed, err := url.Parse(resolution.URI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Scheme != "duckdb" ||
+		parsed.Path != filepath.Join(directory, defaultDuckDBStateFile) {
+		t.Fatalf("mixed state backend = %s", resolution.URI)
+	}
+}

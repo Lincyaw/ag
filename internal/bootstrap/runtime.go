@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -214,15 +215,22 @@ func OpenResolvedStateBackend(
 func defaultStateBackendURI(
 	directory string,
 ) (string, StateBackendSource) {
-	scheme := "duckdb"
-	path := filepath.Join(directory, defaultDuckDBStateFile)
-	source := StateBackendDefaultDuckDB
-	if legacyFileStateExists(directory) {
-		scheme = "file"
-		path = directory
-		source = StateBackendLegacyFileFallback
+	duckDBPath := filepath.Join(directory, defaultDuckDBStateFile)
+	if defaultDuckDBStateExists(duckDBPath) || !legacyFileStateExists(directory) {
+		return (&url.URL{
+			Scheme: "duckdb",
+			Path:   duckDBPath,
+		}).String(), StateBackendDefaultDuckDB
 	}
-	return (&url.URL{Scheme: scheme, Path: path}).String(), source
+	return (&url.URL{
+		Scheme: "file",
+		Path:   directory,
+	}).String(), StateBackendLegacyFileFallback
+}
+
+func defaultDuckDBStateExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func legacyFileStateExists(directory string) bool {
