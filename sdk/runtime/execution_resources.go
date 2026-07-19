@@ -151,11 +151,25 @@ type preparedToolCall struct {
 	correlationID string
 	asynchronous  sdk.AsyncTool
 	initial       sdk.Operation
-	failureKind   sdk.ToolErrorKind
-	failureReason string
+	failure       *toolCallFailure
 	forkAnchor    trajectoryForkAnchor
 	interrupt     sdk.ToolInterruptBehavior
 	concurrency   sdk.ToolConcurrency
+}
+
+type toolCallFailure struct {
+	kind   sdk.ToolErrorKind
+	reason string
+}
+
+func newToolCallFailure(
+	kind sdk.ToolErrorKind,
+	reason string,
+) *toolCallFailure {
+	if kind == "" {
+		kind = sdk.ToolErrorBlocked
+	}
+	return &toolCallFailure{kind: kind, reason: reason}
 }
 
 type toolCallOutcome struct {
@@ -231,17 +245,18 @@ func (session *Session) prepareToolCall(
 		originForkInvocationID: invocation.ID,
 	}
 	if before.Block != nil {
-		prepared.failureKind = sdk.ToolErrorKind(before.Block.Kind)
-		prepared.failureReason = before.Block.Reason
+		prepared.failure = newToolCallFailure(
+			sdk.ToolErrorKind(before.Block.Kind),
+			before.Block.Reason,
+		)
 		return prepared, nil
 	}
 
 	tool, exists := toolIndex[call.Name]
 	if !exists {
-		prepared.failureKind = sdk.ToolErrorUnknownTool
-		prepared.failureReason = fmt.Sprintf(
-			"unknown or unavailable tool %q",
-			call.Name,
+		prepared.failure = newToolCallFailure(
+			sdk.ToolErrorUnknownTool,
+			fmt.Sprintf("unknown or unavailable tool %q", call.Name),
 		)
 		return prepared, nil
 	}
@@ -302,7 +317,7 @@ func (session *Session) submitToolCall(
 	providerName string,
 	call *preparedToolCall,
 ) {
-	if call.failureKind != "" {
+	if call.failure != nil {
 		return
 	}
 	invoker := &scopedAgentInvoker{
@@ -322,15 +337,15 @@ func (session *Session) submitToolCall(
 	)
 	if err != nil {
 		if errors.Is(context.Cause(ctx), errContextInjectionInterrupt) {
-			call.failureKind = sdk.ToolErrorInterrupted
-			call.failureReason = errContextInjectionInterrupt.Error()
+			call.failure = newToolCallFailure(
+				sdk.ToolErrorInterrupted,
+				errContextInjectionInterrupt.Error(),
+			)
 			return
 		}
-		call.failureKind = sdk.ToolErrorExecutionFailed
-		call.failureReason = fmt.Sprintf(
-			"submit tool %q call: %v",
-			call.call.Name,
-			err,
+		call.failure = newToolCallFailure(
+			sdk.ToolErrorExecutionFailed,
+			fmt.Sprintf("submit tool %q call: %v", call.call.Name, err),
 		)
 		return
 	}
@@ -366,11 +381,9 @@ func (session *Session) submitToolCalls(
 		if err == nil {
 			continue
 		}
-		calls[index].failureKind = sdk.ToolErrorExecutionFailed
-		calls[index].failureReason = fmt.Sprintf(
-			"submit tool %q call: %v",
-			calls[index].call.Name,
-			err,
+		calls[index].failure = newToolCallFailure(
+			sdk.ToolErrorExecutionFailed,
+			fmt.Sprintf("submit tool %q call: %v", calls[index].call.Name, err),
 		)
 	}
 }
@@ -386,9 +399,9 @@ func (session *Session) awaitToolCalls(
 		len(calls),
 		parallelIndexedOptions{},
 		func(_ context.Context, index int) error {
-			if calls[index].failureKind != "" {
+			if calls[index].failure != nil {
 				outcomes[index].result = sdk.ToolResult{
-					Content: calls[index].failureReason,
+					Content: calls[index].failure.reason,
 					IsError: true,
 				}
 				return nil
@@ -462,14 +475,14 @@ func (session *Session) finalizeToolCall(
 			outcome.result,
 		)
 	}
-	if call.failureKind != "" {
+	if call.failure != nil {
 		return session.afterToolError(
 			ctx,
 			snapshot,
 			turn,
 			call,
-			call.failureKind,
-			call.failureReason,
+			call.failure.kind,
+			call.failure.reason,
 			outcome.result,
 		)
 	}

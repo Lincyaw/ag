@@ -1455,6 +1455,80 @@ func TestPromptRejectsInvalidProviderResponseAndRestoresSession(t *testing.T) {
 	}
 }
 
+func TestBeforeToolBlockWithoutKindPreventsToolExecution(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{Storage: newTestStateBackend()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	var observedKind sdk.ToolErrorKind
+	hook := sdk.TypedHook[sdk.BeforeToolPayload](
+		sdk.HookSpec{Name: "block-tool", Event: sdk.EventBeforeTool},
+		func(context.Context, sdk.BeforeToolPayload) (sdk.Effect, error) {
+			return sdk.BlockWith("blocked without a kind", ""), nil
+		},
+	)
+	errorHook := sdk.TypedHook[sdk.ToolErrorPayload](
+		sdk.HookSpec{Name: "observe-blocked-tool", Event: sdk.EventToolError},
+		func(_ context.Context, payload sdk.ToolErrorPayload) (sdk.Effect, error) {
+			observedKind = payload.Kind
+			return sdk.Effect{}, nil
+		},
+	)
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "before-tool-block-without-kind",
+			Version:     "1.0.0",
+			Description: "blocks tools through a bare before_tool block",
+			APIVersion:  sdk.APIVersion,
+			Registers: []string{
+				sdk.ProviderResource("panic-submit-model"),
+				sdk.ToolResource("panic-submit"),
+				sdk.HookResource("block-tool"),
+				sdk.HookResource("observe-blocked-tool"),
+			},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return errors.Join(
+				registrar.RegisterProvider(panicSubmitProvider{}),
+				registrar.RegisterTool(panicSubmitTool{}),
+				registrar.RegisterHook(hook),
+				registrar.RegisterHook(errorHook),
+			)
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "before-tool-block-without-kind-session",
+		Provider: "panic-submit-model",
+		MaxTurns: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := session.Prompt(ctx, "try blocked tool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observedKind != sdk.ToolErrorBlocked {
+		t.Fatalf("tool error kind = %q, want %q", observedKind, sdk.ToolErrorBlocked)
+	}
+	if result.Output != "unexpected tool error: blocked without a kind" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestValidateModelResponseToolCalls(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

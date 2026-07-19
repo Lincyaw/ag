@@ -60,6 +60,7 @@ const (
 	ToolErrorExecutionFailed  ToolErrorKind = "execution_failed"
 	ToolErrorInterrupted      ToolErrorKind = "interrupted"
 	ToolErrorPermissionDenied ToolErrorKind = "permission_denied"
+	ToolErrorBlocked          ToolErrorKind = "blocked"
 )
 
 type ToolErrorPayload struct {
