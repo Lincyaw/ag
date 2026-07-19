@@ -706,7 +706,7 @@ func TestDuckDBStateBackendStoresOperationsInDuckDB(t *testing.T) {
 		rootOperations[0].Operation.ID != submitted.Operation.ID {
 		t.Fatalf("DuckDB operations by invocation root = %#v", rootOperations)
 	}
-	claimTime := time.Date(2026, 7, 19, 13, 0, 0, 0, time.UTC)
+	claimTime := time.Now().UTC()
 	claimed, err := backend.Operations().Claim(
 		ctx,
 		submitted.Operation.ID,
