@@ -174,6 +174,49 @@ func TestBranchMessagesDistinguishesLegacyAndEnvelopeInputs(t *testing.T) {
 	}
 }
 
+func TestBranchMessagesPreservesToolResultError(t *testing.T) {
+	t.Parallel()
+
+	branch := []sdk.TrajectoryEntry{
+		{
+			ID:   "assistant",
+			Kind: sdk.TrajectoryKindProviderResponse,
+			Payload: mustJSON(t, sdk.AfterProviderPayload{
+				Response: &sdk.ModelResponse{
+					ToolCalls: []sdk.ToolCall{{
+						ID:        "call-1",
+						Name:      "tool",
+						Arguments: []byte(`{}`),
+					}},
+				},
+			}),
+		},
+		{
+			ID:       "tool-result",
+			ParentID: "assistant",
+			Kind:     sdk.TrajectoryKindToolResult,
+			Payload: mustJSON(t, sdk.AfterToolPayload{
+				Call: sdk.ToolCall{ID: "call-1", Name: "tool"},
+				Result: sdk.ToolResult{
+					Content: "permission denied",
+					IsError: true,
+				},
+			}),
+		},
+	}
+	messages, err := durability.BranchMessages("trajectory-1", branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 ||
+		messages[1].Role != sdk.RoleTool ||
+		messages[1].ToolCallID != "call-1" ||
+		messages[1].Content != "permission denied" ||
+		!messages[1].IsError {
+		t.Fatalf("branch messages = %#v", messages)
+	}
+}
+
 func TestLoadSessionResumeBaseProjectsForkAnchorWithoutOwnedCheckpoint(t *testing.T) {
 	t.Parallel()
 

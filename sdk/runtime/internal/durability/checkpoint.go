@@ -488,11 +488,10 @@ func branchMessagesAfterEntry(
 		if err := decodeTrajectoryPayload(trajectoryID, entry, &payload); err != nil {
 			return nil, err
 		}
-		return append(sdk.CloneMessages(messages), sdk.Message{
-			Role:       sdk.RoleTool,
-			Content:    payload.Result.Content,
-			ToolCallID: payload.Call.ID,
-		}), nil
+		return append(
+			sdk.CloneMessages(messages),
+			sdk.ToolMessage(payload.Call.ID, payload.Result),
+		), nil
 	case sdk.TrajectoryKindCheckpoint:
 		checkpoint, err := DecodeCheckpoint(trajectoryID, entry)
 		if err != nil {

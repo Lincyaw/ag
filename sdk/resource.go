@@ -29,6 +29,18 @@ type Message struct {
 	Content    string     `json:"content,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	// IsError is meaningful for RoleTool messages and preserves the tool_result
+	// error bit across runtime checkpoints, providers, and replay.
+	IsError bool `json:"is_error,omitempty"`
+}
+
+func ToolMessage(toolCallID string, result ToolResult) Message {
+	return Message{
+		Role:       RoleTool,
+		Content:    result.Content,
+		ToolCallID: toolCallID,
+		IsError:    result.IsError,
+	}
 }
 
 type Usage struct {

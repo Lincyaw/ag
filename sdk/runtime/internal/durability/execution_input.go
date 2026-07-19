@@ -133,7 +133,8 @@ func executionInputEnvelopeHasMessage(message sdk.Message) bool {
 	return message.Role != "" ||
 		message.Content != "" ||
 		len(message.ToolCalls) != 0 ||
-		message.ToolCallID != ""
+		message.ToolCallID != "" ||
+		message.IsError
 }
 
 func executionInputEnvelopeHasPayload(input ExecutionInput) bool {

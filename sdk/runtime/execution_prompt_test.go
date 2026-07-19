@@ -975,6 +975,7 @@ func TestNowContextInjectionInterruptsToolAndContinues(t *testing.T) {
 	second := requests[1].Messages
 	if len(second) < 4 ||
 		second[len(second)-2].Content != "interrupted by context injection" ||
+		!second[len(second)-2].IsError ||
 		second[len(second)-1].Content != "interrupting context" {
 		t.Fatalf("second provider messages = %#v", second)
 	}

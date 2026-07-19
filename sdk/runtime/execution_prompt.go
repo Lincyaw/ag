@@ -480,11 +480,10 @@ func (execution *promptExecution) executeTools(
 		if err != nil {
 			return nil, false, err
 		}
-		execution.messages = append(execution.messages, sdk.Message{
-			Role:       sdk.RoleTool,
-			Content:    result.Content,
-			ToolCallID: finalCall.ID,
-		})
+		execution.messages = append(
+			execution.messages,
+			sdk.ToolMessage(finalCall.ID, result),
+		)
 		execution.result.ToolCalls++
 		results[index] = result
 		dependencies[index] = call.invocation.ID
