@@ -227,19 +227,7 @@ func (backend *runtimeExecutionBackend) loadExecutionView(
 	readPlan activeHostReadPlan,
 ) (agentruntime.ExecutionView, error) {
 	if readPlan.active() {
-		// A live host read uses the runtime close gate when it is still open.
-		// If the host is already closing, fall back to the durable trajectory
-		// projection; the active plan is still used to wait for host cleanup.
-		view, err := readPlan.loadView(ctx, session.ID)
-		if err == nil || ctx.Err() != nil ||
-			!errors.Is(err, agentruntime.ErrRuntimeClosed) {
-			return view, err
-		}
-		stateView, stateErr := backend.loadStateExecutionView(ctx, session)
-		if stateErr != nil {
-			return agentruntime.ExecutionView{}, errors.Join(err, stateErr)
-		}
-		return stateView, nil
+		return readPlan.loadView(ctx, session.ID)
 	}
 	return backend.loadStateExecutionView(ctx, session)
 }

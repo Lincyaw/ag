@@ -97,35 +97,32 @@ func (control ExecutionControl) LoadView(
 	ctx context.Context,
 	trajectoryID string,
 ) (ExecutionView, error) {
-	release, err := control.beginRuntimeRead()
-	if err != nil {
-		return ExecutionView{}, err
-	}
-	defer release()
-	return control.resolvedLifecycle().LoadView(ctx, trajectoryID)
+	return readExecutionControl(control, func(
+		lifecycle ExecutionLifecycle,
+	) (ExecutionView, error) {
+		return lifecycle.LoadView(ctx, trajectoryID)
+	})
 }
 
 func (control ExecutionControl) LoadRecoveryCandidate(
 	ctx context.Context,
 	trajectoryID string,
 ) (ExecutionRecoveryCandidate, error) {
-	release, err := control.beginRuntimeRead()
-	if err != nil {
-		return ExecutionRecoveryCandidate{}, err
-	}
-	defer release()
-	return control.resolvedLifecycle().LoadRecoveryCandidate(ctx, trajectoryID)
+	return readExecutionControl(control, func(
+		lifecycle ExecutionLifecycle,
+	) (ExecutionRecoveryCandidate, error) {
+		return lifecycle.LoadRecoveryCandidate(ctx, trajectoryID)
+	})
 }
 
 func (control ExecutionControl) ListRecoveryCandidates(
 	ctx context.Context,
 ) ([]ExecutionRecoveryCandidate, error) {
-	release, err := control.beginRuntimeRead()
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	return control.resolvedLifecycle().ListRecoveryCandidates(ctx)
+	return readExecutionControl(control, func(
+		lifecycle ExecutionLifecycle,
+	) ([]ExecutionRecoveryCandidate, error) {
+		return lifecycle.ListRecoveryCandidates(ctx)
+	})
 }
 
 func (lifecycle ExecutionLifecycle) LoadView(
@@ -272,6 +269,33 @@ func (control ExecutionControl) resolvedLifecycle() ExecutionLifecycle {
 	lifecycle := NewExecutionLifecycle(control.runtime.trajectories)
 	lifecycle.now = control.lifecycle.now
 	return lifecycle
+}
+
+func readExecutionControl[T any](
+	control ExecutionControl,
+	read func(ExecutionLifecycle) (T, error),
+) (T, error) {
+	release, err := control.beginRuntimeRead()
+	if err != nil {
+		if lifecycle, ok := control.closedRuntimeReadLifecycle(err); ok {
+			return read(lifecycle)
+		}
+		var zero T
+		return zero, err
+	}
+	defer release()
+	return read(control.resolvedLifecycle())
+}
+
+func (control ExecutionControl) closedRuntimeReadLifecycle(
+	err error,
+) (ExecutionLifecycle, bool) {
+	if !errors.Is(err, ErrRuntimeClosed) ||
+		control.runtime == nil ||
+		control.runtime.closeStorage {
+		return ExecutionLifecycle{}, false
+	}
+	return control.resolvedLifecycle(), true
 }
 
 func (control ExecutionControl) beginRuntimeRead() (func(), error) {

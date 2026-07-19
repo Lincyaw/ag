@@ -228,6 +228,62 @@ func TestExecutionLifecycleListsRecoveryCandidates(t *testing.T) {
 	}
 }
 
+func TestExecutionControlReadsBorrowedRuntimeLifecycleAfterClose(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	backend := newTestStateBackend()
+	metadata := beginLifecycleTestExecution(
+		t,
+		ctx,
+		backend.Trajectories(),
+		"borrowed-runtime-read",
+	)
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:          backend,
+		StorageOwnership: StorageBorrowed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := NewRuntimeExecutionControl(runtime).LoadView(ctx, metadata.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Execution.ID != metadata.Execution.ID {
+		t.Fatalf("borrowed runtime closed view = %#v", view)
+	}
+}
+
+func TestExecutionControlRejectsOwnedRuntimeReadAfterClose(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	backend := newTestStateBackend()
+	metadata := beginLifecycleTestExecution(
+		t,
+		ctx,
+		backend.Trajectories(),
+		"owned-runtime-read",
+	)
+	runtime, err := NewRuntime(RuntimeConfig{Storage: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewRuntimeExecutionControl(runtime).LoadView(
+		ctx,
+		metadata.ID,
+	); !errors.Is(err, ErrRuntimeClosed) {
+		t.Fatalf("owned runtime closed read error = %v", err)
+	}
+}
+
 func beginLifecycleTestExecution(
 	t *testing.T,
 	ctx context.Context,
