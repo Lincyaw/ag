@@ -152,16 +152,12 @@ func (host ExecutionHost) EnqueueContextInjection(
 		ctx,
 		host,
 		func(ctx context.Context) (ExecutionView, error) {
-			control := host.Control()
-			if err := control.EnqueueContextInjection(
+			return host.Control().EnqueueContextInjectionView(
 				ctx,
 				trajectoryID,
 				executionID,
 				injection,
-			); err != nil {
-				return ExecutionView{}, err
-			}
-			return control.LoadView(ctx, trajectoryID)
+			)
 		},
 	)
 }

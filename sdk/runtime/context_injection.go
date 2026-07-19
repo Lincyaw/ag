@@ -126,6 +126,25 @@ func (control ExecutionControl) EnqueueContextInjection(
 	)
 }
 
+// EnqueueContextInjectionView schedules model-visible context and returns the
+// current execution view after the durable enqueue boundary.
+func (control ExecutionControl) EnqueueContextInjectionView(
+	ctx context.Context,
+	trajectoryID string,
+	executionID string,
+	injection sdk.ContextInjection,
+) (ExecutionView, error) {
+	if err := control.EnqueueContextInjection(
+		ctx,
+		trajectoryID,
+		executionID,
+		injection,
+	); err != nil {
+		return ExecutionView{}, err
+	}
+	return control.LoadView(ctx, trajectoryID)
+}
+
 func (lifecycle ExecutionLifecycle) EnqueueContextInjection(
 	ctx context.Context,
 	trajectoryID string,

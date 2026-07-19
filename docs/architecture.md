@@ -146,6 +146,9 @@ runtime without the live host still commits terminal/restore entries through
 `TrajectoryStore.CancelExecution`. Lifecycle-only fences remain lower-level
 trajectory operations; presenters that borrow only state should use one-shot
 `ExecutionHost` commands instead of holding a naked control facade.
+Read-after-control operations, such as queued context injection followed by the
+current execution view, belong on `ExecutionControl` so presenters do not
+recompose runtime control semantics from lower-level calls.
 `ExecutionHost` groups a runtime with the borrowed state backend used by that
 host; presenters may construct hosts, but runtime owns the control and shutdown
 protocol for draining delivery work, closing runtime resources, and closing the

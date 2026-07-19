@@ -190,17 +190,14 @@ func (backend *runtimeExecutionBackend) EnqueueContextInjection(
 ) (Execution, error) {
 	plan, err := backend.hosts.contextPlan(session.ID, executionID)
 	if err == nil {
-		if err := plan.control.EnqueueContextInjection(
+		view, err := plan.control.EnqueueContextInjectionView(
 			ctx,
 			session.ID,
 			executionID,
 			injection,
-		); err != nil {
+		)
+		if err != nil {
 			return Execution{}, gatewayExecutionViewError(err)
-		}
-		view, err := plan.control.LoadView(ctx, session.ID)
-		if err := gatewayExecutionViewError(err); err != nil {
-			return Execution{}, err
 		}
 		return gatewayExecutionFromView(view), nil
 	}
