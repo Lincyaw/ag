@@ -379,6 +379,9 @@ func TestProviderOutcomeIsLiveEventNotTrajectoryEntry(t *testing.T) {
 			if event.Name != sdk.EventProviderOutcome {
 				return
 			}
+			if event.SessionID != "provider-outcome-session" {
+				return
+			}
 			var payload sdk.ProviderOutcomePayload
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
 				return
@@ -434,6 +437,7 @@ func TestProviderOutcomeIsLiveEventNotTrajectoryEntry(t *testing.T) {
 	}
 	if outcome.Kind != sdk.ProviderOutcomeCompleted ||
 		outcome.Provider != "observer-provider" ||
+		outcome.Sequence != 1 ||
 		outcome.Response == nil ||
 		outcome.Response.Content != "observer result" ||
 		outcome.OperationKey == "" ||
@@ -545,12 +549,16 @@ func TestProviderOutcomeSubscriberIsLiveOnly(t *testing.T) {
 	if delivery.Event.Name != sdk.EventProviderOutcome {
 		t.Fatalf("delivery event = %#v", delivery.Event)
 	}
+	if delivery.Event.SessionID != session.ID() {
+		t.Fatalf("delivery session ID = %q, want %q", delivery.Event.SessionID, session.ID())
+	}
 	var payload sdk.ProviderOutcomePayload
 	if err := json.Unmarshal(delivery.Event.Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
 	if payload.Kind != sdk.ProviderOutcomeCompleted ||
-		payload.Provider != "observer-provider" {
+		payload.Provider != "observer-provider" ||
+		payload.Sequence != 1 {
 		t.Fatalf("delivery payload = %#v", payload)
 	}
 

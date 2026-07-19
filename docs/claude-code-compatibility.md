@@ -187,10 +187,11 @@ contract returns a completed `ModelResponse` before tool preparation begins.
 Async operations cover long-running provider calls and tools, but they do not
 expose a provider-delta stream or a tool-use-ready event. `provider_outcome`
 currently reports terminal provider completion/failure as a live observation,
-not as durable resume state and not as a token/content stream. Full
-compatibility with Claude Code's streaming executor requires a new provider
-streaming abstraction, with durable ordering rules for partial assistant content
-and early tool-call preparation.
+not as durable resume state and not as a token/content stream. Its `sequence`
+field is the ordering slot for future provider deltas. Full compatibility with
+Claude Code's streaming executor requires a new provider streaming abstraction,
+with durable ordering rules for partial assistant content and early tool-call
+preparation.
 
 The non-streaming runtime path now separates provider terminal completion from
 the trajectory response append. That keeps today's completed `ModelResponse`

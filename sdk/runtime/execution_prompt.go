@@ -217,45 +217,75 @@ type providerCall struct {
 	tools      map[string]advertisedTool
 }
 
-type providerCompletion struct {
-	response sdk.ModelResponse
-	err      error
+// providerOutcome is the runtime-internal provider fact. Live observations and
+// durable trajectory projections are derived from it rather than reconstructed
+// independently.
+type providerOutcome struct {
+	sessionID     string
+	turn          int
+	provider      string
+	operationKey  string
+	correlationID string
+	sequence      uint64
+	response      sdk.ModelResponse
+	err           error
 }
 
-func (completion providerCompletion) afterPayload(
+func newProviderTerminalOutcome(
 	turn int,
-	provider string,
-) sdk.AfterProviderPayload {
-	payload := sdk.AfterProviderPayload{
-		Turn:     turn,
-		Provider: provider,
+	call providerCall,
+	response sdk.ModelResponse,
+	err error,
+) providerOutcome {
+	return providerOutcome{
+		sessionID:     call.invocation.SessionID,
+		turn:          turn,
+		provider:      call.name,
+		operationKey:  call.invocation.ID,
+		correlationID: call.invocation.ID,
+		// The non-streaming provider path emits one terminal outcome.
+		sequence: 1,
+		response: response,
+		err:      err,
 	}
-	if completion.err != nil {
-		payload.Error = completion.err.Error()
+}
+
+func (outcome providerOutcome) afterPayload() sdk.AfterProviderPayload {
+	payload := sdk.AfterProviderPayload{
+		Turn:     outcome.turn,
+		Provider: outcome.provider,
+	}
+	if outcome.err != nil {
+		payload.Error = outcome.err.Error()
 		return payload
 	}
-	payload.Response = &completion.response
+	payload.Response = &outcome.response
 	return payload
 }
 
-func (completion providerCompletion) outcomePayload(
-	turn int,
-	call providerCall,
-) sdk.ProviderOutcomePayload {
+func (outcome providerOutcome) eventPayload() sdk.ProviderOutcomePayload {
 	payload := sdk.ProviderOutcomePayload{
-		Turn:          turn,
-		Provider:      call.name,
-		OperationKey:  call.invocation.ID,
-		CorrelationID: call.invocation.ID,
+		Turn:          outcome.turn,
+		Provider:      outcome.provider,
+		OperationKey:  outcome.operationKey,
+		CorrelationID: outcome.correlationID,
+		Sequence:      outcome.sequence,
 	}
-	if completion.err != nil {
+	if outcome.err != nil {
 		payload.Kind = sdk.ProviderOutcomeFailed
-		payload.Error = completion.err.Error()
+		payload.Error = outcome.err.Error()
 		return payload
 	}
 	payload.Kind = sdk.ProviderOutcomeCompleted
-	payload.Response = &completion.response
+	payload.Response = &outcome.response
 	return payload
+}
+
+func (outcome providerOutcome) trajectoryResponse() durability.ProviderResponse {
+	return durability.ProviderResponse{
+		AfterProviderPayload: outcome.afterPayload(),
+		CorrelationID:        outcome.correlationID,
+	}
 }
 
 func (execution *promptExecution) executeTurn(
@@ -479,29 +509,23 @@ func (execution *promptExecution) callProvider(
 	turn int,
 	call providerCall,
 ) (sdk.ModelResponse, error) {
-	completion := execution.completeProvider(operationCtx, call)
+	outcome := execution.completeProvider(operationCtx, turn, call)
 	outcomeErr := execution.session.runtime.dispatchProviderOutcome(
 		ctx,
 		snapshot,
-		turn,
-		call,
-		completion,
+		outcome,
 	)
-	after := completion.afterPayload(turn, call.name)
 	trajectoryErr := execution.session.appendTrajectoryWithExecutionEvent(
 		ctx,
 		snapshot,
 		sdk.TrajectoryKindProviderResponse,
-		durability.ProviderResponse{
-			AfterProviderPayload: after,
-			CorrelationID:        call.invocation.ID,
-		},
+		outcome.trajectoryResponse(),
 		nil,
 		sdk.EventAfterProvider,
-		after,
+		outcome.afterPayload(),
 	)
-	return completion.response, errors.Join(
-		completion.err,
+	return outcome.response, errors.Join(
+		outcome.err,
 		outcomeErr,
 		trajectoryErr,
 	)
@@ -509,8 +533,9 @@ func (execution *promptExecution) callProvider(
 
 func (execution *promptExecution) completeProvider(
 	ctx context.Context,
+	turn int,
 	call providerCall,
-) providerCompletion {
+) providerOutcome {
 	response, err := execution.session.invokeProvider(
 		ctx,
 		call.name,
@@ -521,25 +546,20 @@ func (execution *promptExecution) completeProvider(
 	if err == nil {
 		err = validateModelResponse(response)
 	}
-	return providerCompletion{
-		response: response,
-		err:      err,
-	}
+	return newProviderTerminalOutcome(turn, call, response, err)
 }
 
 func (runtime *Runtime) dispatchProviderOutcome(
 	ctx context.Context,
 	snapshot *registrySnapshot,
-	turn int,
-	call providerCall,
-	completion providerCompletion,
+	outcome providerOutcome,
 ) error {
 	_, err := runtime.dispatchExecutionObservationEvent(
 		ctx,
 		snapshot,
 		sdk.EventProviderOutcome,
-		call.invocation.SessionID,
-		completion.outcomePayload(turn, call),
+		outcome.sessionID,
+		outcome.eventPayload(),
 	)
 	return err
 }

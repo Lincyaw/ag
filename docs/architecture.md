@@ -90,7 +90,9 @@ Provider terminal completion is a runtime outcome before it is a trajectory
 entry: provider invocation, response validation, and future streaming/tool-ready
 outcomes must be resolved at the operation boundary. The runtime emits
 `provider_outcome` as a live, non-durable observation of the terminal provider
-result, then separately projects `provider_response` entries for durable
+result. Provider outcomes carry an operation-local `sequence` so future content
+deltas and tool-ready signals can share the same live ordering model, while
+the runtime separately projects `provider_response` entries for durable
 fork/resume. Gateway code must not invent alternate provider-response state
 because the trajectory projection is the resume source of truth.
 

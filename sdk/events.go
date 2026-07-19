@@ -61,6 +61,7 @@ type ProviderOutcomePayload struct {
 	Provider      string              `json:"provider"`
 	OperationKey  string              `json:"operation_key,omitempty"`
 	CorrelationID string              `json:"correlation_id,omitempty"`
+	Sequence      uint64              `json:"sequence,omitempty"`
 	Kind          ProviderOutcomeKind `json:"kind"`
 	Response      *ModelResponse      `json:"response,omitempty"`
 	Error         string              `json:"error,omitempty"`
