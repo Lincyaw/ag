@@ -15,13 +15,20 @@ import (
 
 func (application *app) stateBackend(
 	command *cobra.Command,
-) (sdk.StateBackend, appconfig.Loaded, error) {
+) (sdk.StateBackend, appconfig.Loaded, bootstrap.StateBackendResolution, error) {
 	loaded, err := application.load(command)
 	if err != nil {
-		return nil, appconfig.Loaded{}, err
+		return nil, appconfig.Loaded{}, bootstrap.StateBackendResolution{}, err
 	}
-	backend, err := bootstrap.OpenStateBackend(command.Context(), loaded.Config)
-	return backend, loaded, err
+	resolution, err := bootstrap.ResolveStateBackend(loaded.Config)
+	if err != nil {
+		return nil, appconfig.Loaded{}, bootstrap.StateBackendResolution{}, err
+	}
+	backend, err := bootstrap.OpenResolvedStateBackend(
+		command.Context(),
+		resolution,
+	)
+	return backend, loaded, resolution, err
 }
 
 func (application *app) stateCommand() *cobra.Command {
@@ -34,15 +41,17 @@ func (application *app) stateCommand() *cobra.Command {
 		Short: "Show backend identity and correctness capabilities",
 		Args:  noArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			backend, _, err := application.stateBackend(command)
+			backend, _, resolution, err := application.stateBackend(command)
 			if err != nil {
 				return err
 			}
 			defer backend.Close(context.Background())
 			return application.writeState(stateOutput{
-				Backend:      backend.String(),
-				Namespace:    backend.Namespace(),
-				Capabilities: backend.Capabilities(),
+				Backend:            backend.String(),
+				Namespace:          backend.Namespace(),
+				Selection:          string(resolution.Source),
+				LegacyFileFallback: resolution.LegacyFileFallback(),
+				Capabilities:       backend.Capabilities(),
 			})
 		},
 	}
@@ -78,7 +87,7 @@ func (application *app) stateCommand() *cobra.Command {
 			if !ok {
 				return errUserCanceled
 			}
-			backend, _, err := application.stateBackend(command)
+			backend, _, _, err := application.stateBackend(command)
 			if err != nil {
 				return err
 			}

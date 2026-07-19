@@ -21,7 +21,7 @@ func (application *app) invocationCommand() *cobra.Command {
 			command *cobra.Command,
 			args []string,
 		) error {
-			backend, _, err := application.stateBackend(command)
+			backend, _, _, err := application.stateBackend(command)
 			if err != nil {
 				return err
 			}

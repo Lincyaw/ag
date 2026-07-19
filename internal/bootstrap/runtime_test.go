@@ -13,6 +13,16 @@ import (
 func TestOpenStateBackendDefaultsStateDirectoryToDuckDB(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
+	resolution, err := ResolveStateBackend(appconfig.Config{
+		State: appconfig.State{Directory: directory},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.Source != StateBackendDefaultDuckDB ||
+		resolution.LegacyFileFallback() {
+		t.Fatalf("default resolution = %#v", resolution)
+	}
 	backend, err := OpenStateBackend(
 		context.Background(),
 		appconfig.Config{
@@ -53,6 +63,16 @@ func TestOpenStateBackendPreservesLegacyFileStateDirectory(t *testing.T) {
 		0o600,
 	); err != nil {
 		t.Fatal(err)
+	}
+	resolution, err := ResolveStateBackend(appconfig.Config{
+		State: appconfig.State{Directory: directory},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.Source != StateBackendLegacyFileFallback ||
+		!resolution.LegacyFileFallback() {
+		t.Fatalf("legacy resolution = %#v", resolution)
 	}
 	backend, err := OpenStateBackend(
 		context.Background(),

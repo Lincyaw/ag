@@ -126,12 +126,19 @@ func TestHumanResourceRenderersExposeUsefulOperationalFields(t *testing.T) {
 			render: func(application *app) error {
 				return application.writeState(stateOutput{
 					Backend: "file:///state", Namespace: "default",
+					Selection:          "legacy_file_fallback",
+					LegacyFileFallback: true,
 					Capabilities: sdk.StorageCapabilities{
 						Durable: true, Maintenance: true,
 					},
 				})
 			},
-			expected: []string{"Backend:", "file:///state", "Durable:", "yes"},
+			expected: []string{
+				"Backend:", "file:///state",
+				"Selection:", "legacy_file_fallback",
+				"legacy file state was detected",
+				"Durable:", "yes",
+			},
 		},
 		{
 			name: "prune",

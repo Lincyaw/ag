@@ -8,9 +8,11 @@ import (
 )
 
 type stateOutput struct {
-	Backend      string                  `json:"backend"`
-	Namespace    string                  `json:"namespace"`
-	Capabilities sdk.StorageCapabilities `json:"capabilities"`
+	Backend            string                  `json:"backend"`
+	Namespace          string                  `json:"namespace"`
+	Selection          string                  `json:"selection,omitempty"`
+	LegacyFileFallback bool                    `json:"legacy_file_fallback,omitempty"`
+	Capabilities       sdk.StorageCapabilities `json:"capabilities"`
 }
 
 type prunePreviewOutput struct {
@@ -23,8 +25,19 @@ func (application *app) writeState(value stateOutput) error {
 		table := newTable(writer)
 		fmt.Fprintf(table, "Backend:\t%s\n", tableCell(value.Backend))
 		fmt.Fprintf(table, "Namespace:\t%s\n", tableCell(emptyAs(value.Namespace, "default")))
+		if value.Selection != "" {
+			fmt.Fprintf(table, "Selection:\t%s\n", tableCell(value.Selection))
+		}
 		if err := table.Flush(); err != nil {
 			return err
+		}
+		if value.LegacyFileFallback {
+			if _, err := fmt.Fprintln(
+				writer,
+				"\nWarning: legacy file state was detected, so ag preserved the file backend for resume compatibility. New state directories default to DuckDB.",
+			); err != nil {
+				return err
+			}
 		}
 		if _, err := fmt.Fprintln(writer, "\nCapabilities:"); err != nil {
 			return err

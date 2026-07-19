@@ -16,7 +16,7 @@ func (application *app) trajectoryCommand() *cobra.Command {
 		Short: "List trajectory summaries",
 		Args:  noArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			backend, _, err := application.stateBackend(command)
+			backend, _, _, err := application.stateBackend(command)
 			if err != nil {
 				return err
 			}
@@ -35,7 +35,7 @@ func (application *app) trajectoryCommand() *cobra.Command {
 		Short: "Show a trajectory or one of its branches",
 		Args:  exactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			backend, _, err := application.stateBackend(command)
+			backend, _, _, err := application.stateBackend(command)
 			if err != nil {
 				return err
 			}
@@ -65,7 +65,7 @@ func (application *app) trajectoryCommand() *cobra.Command {
 		Short: "Move the active branch to a prior checkpoint",
 		Args:  exactArgs(2),
 		RunE: func(command *cobra.Command, args []string) error {
-			backend, loaded, err := application.stateBackend(command)
+			backend, loaded, _, err := application.stateBackend(command)
 			if err != nil {
 				return err
 			}

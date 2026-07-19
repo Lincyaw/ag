@@ -38,6 +38,23 @@ type PluginPlan struct {
 	Mounts  []string
 }
 
+type StateBackendSource string
+
+const (
+	StateBackendExplicitURI        StateBackendSource = "explicit"
+	StateBackendDefaultDuckDB      StateBackendSource = "default_duckdb"
+	StateBackendLegacyFileFallback StateBackendSource = "legacy_file_fallback"
+)
+
+type StateBackendResolution struct {
+	URI    string
+	Source StateBackendSource
+}
+
+func (resolution StateBackendResolution) LegacyFileFallback() bool {
+	return resolution.Source == StateBackendLegacyFileFallback
+}
+
 func StartRuntime(
 	ctx context.Context,
 	config appconfig.Config,
@@ -68,9 +85,23 @@ func StartRuntime(
 			logFile.Close(),
 		)
 	}
-	storage, err := OpenStateBackend(ctx, config)
+	resolution, err := ResolveStateBackend(config)
 	if err != nil {
 		return cleanupTelemetry(fmt.Errorf("configure state backend: %w", err))
+	}
+	storage, err := OpenResolvedStateBackend(ctx, resolution)
+	if err != nil {
+		return cleanupTelemetry(fmt.Errorf("configure state backend: %w", err))
+	}
+	if resolution.LegacyFileFallback() {
+		logger.WarnContext(
+			ctx,
+			"using legacy file state backend",
+			"backend",
+			storage.String(),
+			"recommended_backend",
+			"duckdb",
+		)
 	}
 	runtime, err := agentruntime.NewRuntimeContext(ctx, agentruntime.RuntimeConfig{
 		RuntimeVersion: version,
@@ -128,24 +159,39 @@ func OpenStateBackend(
 	ctx context.Context,
 	config appconfig.Config,
 ) (sdk.StateBackend, error) {
+	resolution, err := ResolveStateBackend(config)
+	if err != nil {
+		return nil, err
+	}
+	return OpenResolvedStateBackend(ctx, resolution)
+}
+
+func ResolveStateBackend(config appconfig.Config) (StateBackendResolution, error) {
 	namespace := strings.TrimSpace(config.State.Namespace)
 	rawURI := strings.TrimSpace(config.State.BackendURI)
+	source := StateBackendExplicitURI
 	if rawURI == "" {
 		directory, err := filepath.Abs(config.State.Directory)
 		if err != nil {
-			return nil, fmt.Errorf("resolve state directory: %w", err)
+			return StateBackendResolution{}, fmt.Errorf(
+				"resolve state directory: %w",
+				err,
+			)
 		}
-		rawURI = defaultStateBackendURI(directory)
+		rawURI, source = defaultStateBackendURI(directory)
 	}
 	if namespace != "" {
 		parsed, err := url.Parse(rawURI)
 		if err != nil {
-			return nil, fmt.Errorf("parse state backend URI: %w", err)
+			return StateBackendResolution{}, fmt.Errorf(
+				"parse state backend URI: %w",
+				err,
+			)
 		}
 		query := parsed.Query()
 		if existing := strings.TrimSpace(query.Get("namespace")); existing != "" &&
 			existing != namespace {
-			return nil, fmt.Errorf(
+			return StateBackendResolution{}, fmt.Errorf(
 				"state namespace %q conflicts with backend URI namespace %q",
 				namespace,
 				existing,
@@ -155,17 +201,28 @@ func OpenStateBackend(
 		parsed.RawQuery = query.Encode()
 		rawURI = parsed.String()
 	}
-	return sdkstorage.NewDefaultStorageRegistry().Open(ctx, rawURI)
+	return StateBackendResolution{URI: rawURI, Source: source}, nil
 }
 
-func defaultStateBackendURI(directory string) string {
+func OpenResolvedStateBackend(
+	ctx context.Context,
+	resolution StateBackendResolution,
+) (sdk.StateBackend, error) {
+	return sdkstorage.NewDefaultStorageRegistry().Open(ctx, resolution.URI)
+}
+
+func defaultStateBackendURI(
+	directory string,
+) (string, StateBackendSource) {
 	scheme := "duckdb"
 	path := filepath.Join(directory, defaultDuckDBStateFile)
+	source := StateBackendDefaultDuckDB
 	if legacyFileStateExists(directory) {
 		scheme = "file"
 		path = directory
+		source = StateBackendLegacyFileFallback
 	}
-	return (&url.URL{Scheme: scheme, Path: path}).String()
+	return (&url.URL{Scheme: scheme, Path: path}).String(), source
 }
 
 func legacyFileStateExists(directory string) bool {
