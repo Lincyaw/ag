@@ -217,6 +217,27 @@ type providerCall struct {
 	tools      map[string]advertisedTool
 }
 
+type providerCompletion struct {
+	response sdk.ModelResponse
+	err      error
+}
+
+func (completion providerCompletion) afterPayload(
+	turn int,
+	provider string,
+) sdk.AfterProviderPayload {
+	payload := sdk.AfterProviderPayload{
+		Turn:     turn,
+		Provider: provider,
+	}
+	if completion.err != nil {
+		payload.Error = completion.err.Error()
+		return payload
+	}
+	payload.Response = &completion.response
+	return payload
+}
+
 func (execution *promptExecution) executeTurn(
 	ctx context.Context,
 	turn int,
@@ -438,25 +459,8 @@ func (execution *promptExecution) callProvider(
 	turn int,
 	call providerCall,
 ) (sdk.ModelResponse, error) {
-	response, callErr := execution.session.invokeProvider(
-		operationCtx,
-		call.name,
-		call.provider,
-		call.invocation,
-		call.request,
-	)
-	if callErr == nil {
-		callErr = validateModelResponse(response)
-	}
-	after := sdk.AfterProviderPayload{
-		Turn:     turn,
-		Provider: call.name,
-	}
-	if callErr != nil {
-		after.Error = callErr.Error()
-	} else {
-		after.Response = &response
-	}
+	completion := execution.completeProvider(operationCtx, call)
+	after := completion.afterPayload(turn, call.name)
 	trajectoryErr := execution.session.appendTrajectoryWithExecutionEvent(
 		ctx,
 		snapshot,
@@ -469,7 +473,27 @@ func (execution *promptExecution) callProvider(
 		sdk.EventAfterProvider,
 		after,
 	)
-	return response, errors.Join(callErr, trajectoryErr)
+	return completion.response, errors.Join(completion.err, trajectoryErr)
+}
+
+func (execution *promptExecution) completeProvider(
+	ctx context.Context,
+	call providerCall,
+) providerCompletion {
+	response, err := execution.session.invokeProvider(
+		ctx,
+		call.name,
+		call.provider,
+		call.invocation,
+		call.request,
+	)
+	if err == nil {
+		err = validateModelResponse(response)
+	}
+	return providerCompletion{
+		response: response,
+		err:      err,
+	}
 }
 
 func (execution *promptExecution) nextProviderAttempt(

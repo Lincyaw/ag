@@ -86,6 +86,12 @@ runtime context values without inheriting caller cancellation. Claimed local
 operation records are validated against the current target before execution;
 records that name a different resource revision fail instead of running against
 whatever plugin happens to be mounted now.
+Provider terminal completion is a runtime outcome before it is a trajectory
+entry: provider invocation, response validation, and future streaming/tool-ready
+outcomes must be resolved at the operation boundary, then projected into
+`provider_response` entries for durable fork/resume. Gateway code must not
+invent alternate provider-response state because the trajectory projection is
+the resume source of truth.
 
 Operation control uses the target identity, not the executable revision.
 Polling and execution validate the recorded resource revision because they read

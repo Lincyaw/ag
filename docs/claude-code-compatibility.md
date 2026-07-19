@@ -4,6 +4,29 @@ This note maps the Claude Code message, fork, resume, and queue patterns to the
 SDK runtime model. The target is compatibility at the abstraction boundary, not
 line-by-line emulation of Claude Code's JSONL or UI implementation.
 
+## Compatibility Snapshot
+
+| Claude Code abstraction | SDK kernel owner | Status | Notes |
+| --- | --- | --- | --- |
+| Parent-pointer transcript tree, rewind, leaf resume | Trajectory | Covered | The SDK uses immutable trajectory entries, `ParentID`, branch projection, and checkpoint resume rather than caller-local message slices. |
+| Sidechains and subagents | Trajectory + invocation | Covered with a different physical layout | Claude Code stores sidechains in one JSONL file with `agentId`; the SDK stores child trajectories and uses invocation ancestry for orchestration. |
+| Fork child context and resume | Trajectory + agent session mode | Covered for state semantics | Fork/resume are trajectory operations. Exact Claude Code cache-safe fork metadata is still separate. |
+| Queue priority `now` / `next` / `later` | Context injection | Covered | The SDK queue is durable and target-addressed instead of a process singleton. |
+| Submit interrupt and tool interrupt behavior | Context injection + operation cancellation + tool spec | Mostly covered | `ContextInjectionNow` can interrupt provider and cancellable tool waits; `ToolSpec.InterruptBehavior` models `block` vs `cancel`. Exact interrupt wording is presenter policy. |
+| Permission rejection | Events/effects + tool error payload | Covered for semantics | `PermissionRejection` and `DenyToolPermission` standardize model-visible denial text and structured `ToolErrorPermissionDenied`. |
+| Hook blocking/context/permission outcomes | Events/effects + context injection | Mostly covered | Blocking, patching, action selection, and injected context are SDK concepts. Claude Code attachment names remain presenter/plugin formatting. |
+| Task notifications | Context injection | Partially covered | `ContextInjectionTaskNotification` can target sessions/executions; portable XML/schema fields are not first-class SDK types. |
+| Inter-agent and channel messages | Context injection + invocation | Partially covered | The routing carrier exists through `TargetSessionID`, `TargetExecutionID`, mode, origin, and attributes. Swarm/channel schemas remain external. |
+| Local command caveats and slash command output | Context injection | Partially covered | `ContextInjectionLocalCommand`, `IsMeta`, `Origin`, and attributes can carry it. The SDK should not bake Claude Code XML strings into providers. |
+| Hidden attachments, reminders, skill deltas, mode deltas | Context injection | Partially covered | The carrier exists, but typed SDK payloads are not defined for every Claude Code attachment kind. Add only those that need cross-presenter semantics. |
+| Query loop terminal/continue decisions | Runtime action/cause reducer | Mostly covered | `ActionStep`, `ActionInject`, `ActionStop`, causes, and max-turn handling cover the core state machine. Claude Code's exact reason taxonomy is not all public SDK state. |
+| Stop hooks | Events/effects | Partially covered | A hook can stop, block, or inject context through the event contract. A named stop-hook phase and background stop tasks are not first-class. |
+| Token budget continuation | Runtime policy + context injection | Not yet first-class | It can be approximated by injected nudges, but there is no SDK budget controller or durable budget state. |
+| Auto-compact and reactive compact | Trajectory/checkpoint policy | Not yet first-class | Checkpoints and branch projection can host compacted state, but there is no SDK compact scheduler, compact boundary entry, or retry policy. |
+| Content replacement state for large tool results | Checkpoint/resume metadata | Not yet covered | This should be durable checkpoint/resume state so fork/resume stay prompt-cache stable. |
+| Streaming provider deltas and early tool execution | Provider completion + tool scheduler | Not yet covered | The current public provider contract returns a completed `ModelResponse`; the runtime now has an internal provider completion boundary that can be extended into streamed outcomes. |
+| Recursive fork ban | Runtime policy | Policy gap | The SDK can represent nested forks. Exact Claude Code compatibility needs a policy guard, not a storage limitation. |
+
 ## Covered By The SDK Kernel
 
 ### Trajectory tree, fork, and resume
@@ -100,12 +123,48 @@ Exact Claude Code UI wording remains a presenter concern, but the control
 semantics no longer require every gateway/plugin to invent its own rejection
 strings.
 
-### Task notifications and inter-agent messages
+### Query loop terminal and continuation state
+
+Claude Code names many terminal and continuation reasons in `query.ts`. The SDK
+does not need to expose the same strings to be compatible with the abstraction.
+The kernel equivalent is:
+
+- `ActionStep` to continue after model-visible tool results or injected context;
+- `ActionInject` to add model-visible context and continue;
+- `ActionStop` plus `Cause` to terminate with a durable reason;
+- `EventDecide`, `EventTurnEnd`, and `EventAgentEnd` for policy and
+  presentation;
+- trajectory terminal and checkpoint payloads for resume/recovery.
+
+This covers the loop shape. Exact Claude Code reason labels such as
+`stop_hook_blocking`, `token_budget_continuation`, or
+`reactive_compact_retry` should become SDK causes only if other presenters need
+to coordinate around them.
+
+### Task notifications, inter-agent messages, and local commands
 
 The SDK can carry these as context injections targeted at a session/execution,
 but it does not define Claude Code's XML schemas as first-class SDK payloads.
 That is acceptable if presenters own formatting. It becomes a gap if plugins
 need portable task-notification or teammate-message semantics across presenters.
+
+The same rule applies to local command caveats and hidden attachment messages.
+`ContextInjectionMode`, `Origin`, `IsMeta`, `Attributes`, and target fields are
+the carrier. Claude Code-specific XML tags and attachment names should remain
+outside the provider contract unless the SDK needs to make their meaning
+portable.
+
+### Stop hooks and plan-mode policy
+
+The SDK event/effect model can represent Claude Code stop-hook outcomes:
+blocking errors are injected context, `preventContinuation` is an `ActionStop`,
+and continuation is an `ActionStep` or `ActionInject`. Plan-mode rejection can
+also be expressed as a context injection plus a non-final stop/action policy.
+
+What is not yet first-class is a named stop-hook phase with built-in background
+jobs such as prompt suggestions, memory extraction, or job classification. Those
+should stay plugin/presenter concerns until more than one host needs the same
+durable semantics.
 
 ### Fork cache safety
 
@@ -131,12 +190,38 @@ with Claude Code's streaming executor requires a new provider streaming
 abstraction, with durable ordering rules for partial assistant content and
 early tool-call preparation.
 
+The non-streaming runtime path now separates provider terminal completion from
+the trajectory response append. That keeps today's completed `ModelResponse`
+contract intact while giving streaming a single internal replacement point:
+stream deltas should produce ordered provider outcomes, and the trajectory
+projection should remain the durable source for fork/resume.
+
 ### Tool-result replacement state
 
 Claude Code tracks large tool results and replaces repeated results with compact
-summaries. The SDK has checkpoint compaction and branch projection, but no
+summaries. The SDK has checkpoint continuation and branch projection, but no
 portable `ContentReplacementState` equivalent. This should be modeled as
 checkpoint/resume metadata if needed, not as provider-specific message surgery.
+
+### Compact and context-collapse policy
+
+Claude Code's auto-compact, reactive compact, and context-collapse paths are
+runtime policies that mutate the model-visible prefix while preserving durable
+transcript history. The SDK has checkpoints and branch projection, but no
+first-class compact boundary entry, compact scheduler, retry circuit breaker, or
+replacement-state projection.
+
+If this becomes a compatibility requirement, the compact state should belong to
+trajectory/checkpoint durability. Gateway memory must not decide which branch
+prefix is visible after resume.
+
+### Token budget continuation
+
+Claude Code can inject nudge messages until an output-token target is met. The
+SDK can approximate this today with context injection and `ActionStep`, but it
+does not own a durable token-budget controller. A real SDK abstraction would
+need budget state in the execution checkpoint and a policy reducer that decides
+whether to continue, stop, or escalate output limits.
 
 ### Recursive fork policy
 
