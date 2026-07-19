@@ -29,8 +29,8 @@ type DispatchResult struct {
 }
 
 type eventDispatchOptions struct {
-	postCommit                  bool
-	enqueueSubscriberDeliveries bool
+	postCommit                     bool
+	enqueueSubscriberDeliveries    bool
 	warnSubscriberDeliveryFailures bool
 }
 
