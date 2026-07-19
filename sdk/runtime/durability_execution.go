@@ -444,7 +444,19 @@ func (runtime *Runtime) cancelTrajectoryExecutionOnce(
 		return ExecutionView{}, err
 	}
 	defer lease.release()
-	end := agentEndPayloadForCancellation(reason, base.Messages)
+	cancellationResult, err := loadCancellationResult(
+		ctx,
+		runtime.trajectories,
+		metadata,
+	)
+	if err != nil {
+		return ExecutionView{}, err
+	}
+	end := agentEndPayloadForCancellation(
+		reason,
+		cancellationResult,
+		base.Messages,
+	)
 	completion, err := newExecutionCompletionEntries(
 		executionCompletionEntrySpec{
 			From:        metadata.Head,
@@ -818,10 +830,14 @@ func agentEndPayloadForFailure(
 
 func agentEndPayloadForCancellation(
 	reason string,
+	result Result,
 	messages []sdk.Message,
 ) sdk.AgentEndPayload {
+	if len(result.Messages) > 0 {
+		messages = result.Messages
+	}
 	return agentEndPayloadFromResult(
-		Result{},
+		result,
 		messages,
 		sdk.Cause{
 			Code:   sdk.CauseCancelled,
@@ -829,6 +845,26 @@ func agentEndPayloadForCancellation(
 			Final:  true,
 		},
 	)
+}
+
+func loadCancellationResult(
+	ctx context.Context,
+	store sdk.TrajectoryStore,
+	metadata sdk.TrajectoryMetadata,
+) (Result, error) {
+	entry, checkpoint, found, err := durability.LatestExecutionCheckpoint(
+		ctx,
+		store,
+		metadata,
+	)
+	if err != nil || !found {
+		return Result{}, err
+	}
+	result := resultFromCheckpoint(entry, checkpoint)
+	if result == nil {
+		return Result{}, nil
+	}
+	return *result, nil
 }
 
 func agentEndPayloadFromResult(

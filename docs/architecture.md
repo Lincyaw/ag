@@ -179,6 +179,11 @@ unhosted cancellation uses the same trajectory completion entries through
 `TrajectoryStore.CancelExecution`; `FenceExecutionCancellation` remains only
 the fence for lifecycle-only callers that cannot own a runtime completion
 boundary.
+Cancellation terminal payloads project the latest checkpoint owned by the
+cancelled execution when one exists, while the active head still restores to
+the execution base. Completed work and consumed context injection metadata stay
+observable through the terminal read model without leaking into the resumed
+conversation branch.
 `PromptSubmission` deliberately splits durable acceptance from execution
 hosting; both halves are still trajectory work and must participate in runtime
 shutdown, cancellation, and recovery rules. The hosting half consumes the

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lincyaw/ag/sdk"
+	"github.com/lincyaw/ag/sdk/runtime/internal/durability"
 	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 )
 
@@ -1431,6 +1432,184 @@ func TestRuntimeCancelExecutionCompletesUnhostedTrajectoryExecution(t *testing.T
 	}
 	if terminal.ID == "" || terminal.ParentID != input.ID {
 		t.Fatalf("terminal entry = %#v", terminal)
+	}
+	branch, err := trajectory.Branch(trajectory.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(branch) == 0 ||
+		branch[len(branch)-1].Kind != sdk.TrajectoryKindRestore {
+		t.Fatalf("cancelled execution head branch = %#v", branch)
+	}
+	for _, entry := range branch {
+		if entry.ID == terminal.ID {
+			t.Fatalf("terminal entry %q remained on active branch", entry.ID)
+		}
+	}
+}
+
+func TestRuntimeCancelExecutionProjectsCheckpointResult(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store := sdkstorage.NewMemoryTrajectoryStore()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:          testStateBackendWithStores(store, nil),
+		StorageOwnership: StorageBorrowed,
+		OperationPoll:    time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			time.Second,
+		)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	const trajectoryID = "unhosted-cancel-checkpoint"
+	if err := store.Create(ctx, sdk.Trajectory{ID: trajectoryID}); err != nil {
+		t.Fatal(err)
+	}
+	input, err := newPayloadTrajectoryEntry(
+		"",
+		sdk.TrajectoryKindUserMessage,
+		0,
+		time.Now().UTC(),
+		durability.NewExecutionInput(
+			sdk.Message{Role: sdk.RoleUser, Content: "start"},
+			sdk.TrajectoryEnvironment{},
+			nil,
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.ID = "unhosted-cancel-checkpoint-input"
+	metadata, err := store.BeginExecution(
+		ctx,
+		trajectoryID,
+		"",
+		sdk.TrajectoryExecutionStart{
+			ID:       "unhosted-cancel-checkpoint-execution",
+			Provider: "scripted",
+			MaxTurns: 3,
+		},
+		input,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimExecution(
+		ctx,
+		trajectoryID,
+		"remote-worker",
+		time.Now().UTC(),
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := newPayloadTrajectoryEntry(
+		metadata.Head,
+		sdk.TrajectoryKindCheckpoint,
+		0,
+		time.Now().UTC(),
+		durability.Checkpoint{
+			Messages: []sdk.Message{
+				{Role: sdk.RoleUser, Content: "start"},
+				{Role: sdk.RoleAssistant, Content: "partial output"},
+			},
+			Output:    "partial output",
+			Provider:  "scripted",
+			Turns:     1,
+			ToolCalls: 2,
+			Action:    sdk.Action{Kind: sdk.ActionStep},
+			ContextInjections: []sdk.ContextInjection{{
+				ID:                "cancel-context",
+				Priority:          sdk.ContextInjectionNext,
+				Mode:              sdk.ContextInjectionTaskNotification,
+				Origin:            "test",
+				TargetSessionID:   trajectoryID,
+				TargetExecutionID: claimed.ID,
+				IsMeta:            true,
+				Messages: []sdk.Message{{
+					Role:    sdk.RoleUser,
+					Content: "queued before cancel",
+				}},
+			}},
+			ConsumedContextInjectionIDs: []string{"cancel-context"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint.ID = "unhosted-cancel-checkpoint-entry"
+	checkpoint.Fields.ExecutionID = claimed.ID
+	metadata, err = store.CommitExecution(
+		ctx,
+		sdk.TrajectoryExecutionCommit{
+			TrajectoryID: trajectoryID,
+			ExecutionID:  claimed.ID,
+			LeaseToken:   claimed.LeaseToken,
+			ExpectedHead: metadata.Head,
+			Entries:      []sdk.TrajectoryEntry{checkpoint},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cancelled, err := runtime.CancelExecution(
+		ctx,
+		trajectoryID,
+		claimed.ID,
+		"runtime requested cancellation",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Execution.State != sdk.TrajectoryExecutionCancelled ||
+		cancelled.Result == nil {
+		t.Fatalf("cancelled execution view = %#v", cancelled)
+	}
+	if cancelled.Result.Output != "partial output" ||
+		cancelled.Result.Turns != 1 ||
+		cancelled.Result.ToolCalls != 2 ||
+		cancelled.Result.Cause.Code != sdk.CauseCancelled ||
+		cancelled.Result.Cause.Detail != "runtime requested cancellation" ||
+		!cancelled.Result.Cause.Final {
+		t.Fatalf("cancelled checkpoint result = %#v", cancelled.Result)
+	}
+	if got := cancelled.Result.Messages; len(got) != 2 ||
+		got[1].Content != "partial output" {
+		t.Fatalf("cancelled result messages = %#v", got)
+	}
+	if got := cancelled.Result.ContextInjections; len(got) != 1 ||
+		got[0].ID != "cancel-context" ||
+		got[0].Mode != sdk.ContextInjectionTaskNotification ||
+		got[0].Origin != "test" ||
+		!got[0].IsMeta ||
+		len(got[0].Messages) != 1 ||
+		got[0].Messages[0].Content != "queued before cancel" {
+		t.Fatalf("cancelled context injections = %#v", got)
+	}
+	trajectory, err := store.Load(ctx, trajectoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terminal sdk.TrajectoryEntry
+	for _, entry := range trajectory.Entries {
+		if entry.Kind == sdk.TrajectoryKindTerminal {
+			terminal = entry
+			break
+		}
+	}
+	if terminal.ID == "" || terminal.ParentID != metadata.Head {
+		t.Fatalf("terminal entry = %#v, checkpoint head = %q", terminal, metadata.Head)
 	}
 	branch, err := trajectory.Branch(trajectory.Head)
 	if err != nil {
