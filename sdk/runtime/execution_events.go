@@ -29,9 +29,10 @@ type DispatchResult struct {
 }
 
 type eventDispatchOptions struct {
-	postCommit                     bool
-	enqueueSubscriberDeliveries    bool
-	warnSubscriberDeliveryFailures bool
+	postCommit                       bool
+	enqueueSubscriberDeliveries      bool
+	warnSubscriberDeliveryFailures   bool
+	runtimeOwnedSubscriberDeliveries bool
 }
 
 func emitEventDispatchOptions() eventDispatchOptions {
@@ -40,8 +41,9 @@ func emitEventDispatchOptions() eventDispatchOptions {
 
 func executionEventDispatchOptions() eventDispatchOptions {
 	return eventDispatchOptions{
-		enqueueSubscriberDeliveries:    true,
-		warnSubscriberDeliveryFailures: true,
+		enqueueSubscriberDeliveries:      true,
+		warnSubscriberDeliveryFailures:   true,
+		runtimeOwnedSubscriberDeliveries: true,
 	}
 }
 
@@ -49,8 +51,9 @@ func postCommitEventDispatchOptions(
 	delivery postCommitDelivery,
 ) eventDispatchOptions {
 	return eventDispatchOptions{
-		postCommit:                  true,
-		enqueueSubscriberDeliveries: delivery.enqueueAfterDispatch(),
+		postCommit:                       true,
+		enqueueSubscriberDeliveries:      delivery.enqueueAfterDispatch(),
+		runtimeOwnedSubscriberDeliveries: true,
 	}
 }
 
@@ -64,6 +67,15 @@ func (options eventDispatchOptions) enqueueSubscribers() bool {
 
 func (options eventDispatchOptions) returnSubscriberFailures() bool {
 	return !options.warnSubscriberDeliveryFailures
+}
+
+func (options eventDispatchOptions) subscriberDeliveryContext(
+	ctx context.Context,
+) context.Context {
+	if options.runtimeOwnedSubscriberDeliveries {
+		return afterDispatchEventContext(ctx)
+	}
+	return ctx
 }
 
 func afterDispatchEventContext(ctx context.Context) context.Context {
@@ -124,7 +136,7 @@ func (runtime *Runtime) dispatchExecutionEvent(
 	)
 }
 
-func dispatchMutableEvent[T any](
+func dispatchMutableExecutionEvent[T any](
 	runtime *Runtime,
 	ctx context.Context,
 	snapshot *registrySnapshot,
@@ -363,7 +375,12 @@ func (runtime *Runtime) dispatchPreparedEvent(
 	}
 	finalizeDispatchAudit(&result)
 	if options.enqueueSubscribers() {
-		if err := runtime.enqueueSubscribers(ctx, snapshot, result.Event); err != nil {
+		deliveryCtx := options.subscriberDeliveryContext(ctx)
+		if err := runtime.enqueueSubscribers(
+			deliveryCtx,
+			snapshot,
+			result.Event,
+		); err != nil {
 			recordSpanError(span, err)
 			if options.returnSubscriberFailures() {
 				return DispatchResult{}, err

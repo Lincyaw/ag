@@ -169,7 +169,7 @@ func (session *Session) prepareToolCall(
 	toolIndex map[string]sdk.Tool,
 	providerInvocationID string,
 ) (preparedToolCall, error) {
-	payload, before, err := dispatchMutableEvent(
+	payload, before, err := dispatchMutableExecutionEvent(
 		session.runtime,
 		ctx,
 		snapshot,
@@ -401,7 +401,7 @@ func (session *Session) afterToolError(
 	reason string,
 	result sdk.ToolResult,
 ) (sdk.ToolCall, sdk.ToolResult, error) {
-	payload, dispatched, err := dispatchMutableEvent(
+	payload, dispatched, err := dispatchMutableExecutionEvent(
 		session.runtime,
 		ctx,
 		snapshot,
@@ -436,7 +436,7 @@ func (session *Session) afterTool(
 	result sdk.ToolResult,
 	audits ...sdk.EventAudit,
 ) (sdk.ToolCall, sdk.ToolResult, error) {
-	payload, dispatched, err := dispatchMutableEvent(
+	payload, dispatched, err := dispatchMutableExecutionEvent(
 		session.runtime,
 		ctx,
 		snapshot,

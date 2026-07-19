@@ -82,7 +82,7 @@ func (execution *promptExecution) start(
 		return Result{}, false, err
 	}
 	defer lease.release()
-	beforeStart, startDispatch, err := dispatchMutableEvent(
+	beforeStart, startDispatch, err := dispatchMutableExecutionEvent(
 		session.runtime,
 		ctx,
 		lease.snapshot,
@@ -262,7 +262,7 @@ func (execution *promptExecution) prepareProviderCall(
 	if err != nil {
 		return providerCall{}, err
 	}
-	payload, beforeProvider, err := dispatchMutableEvent(
+	payload, beforeProvider, err := dispatchMutableExecutionEvent(
 		session.runtime,
 		ctx,
 		snapshot,

@@ -324,7 +324,7 @@ func TestExecutionEventSubscriberEnqueueFailureDoesNotAbortDispatch(t *testing.T
 	}
 	snapshot := lease.snapshot
 	lease.release()
-	_, mutableResult, err := dispatchMutableEvent(
+	_, mutableResult, err := dispatchMutableExecutionEvent(
 		runtime,
 		ctx,
 		snapshot,
@@ -353,6 +353,51 @@ func TestExecutionEventSubscriberEnqueueFailureDoesNotAbortDispatch(t *testing.T
 	if decisionResult.Event.ID == "" ||
 		decisionResult.Event.Name != sdk.EventDecide {
 		t.Fatalf("dispatch execution result = %#v", decisionResult)
+	}
+}
+
+func TestExecutionEventSubscriberEnqueueOutlivesRequestCancellation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{Storage: newTestStateBackend()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	mountExecutionSubscriber(t, runtime, sdk.EventDecide)
+
+	lease, err := runtime.acquireSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := lease.snapshot
+	lease.release()
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	result, err := runtime.dispatchExecutionEvent(
+		cancelled,
+		snapshot,
+		sdk.EventDecide,
+		"detached-enqueue-session",
+		sdk.DecidePayload{Default: sdk.Action{Kind: sdk.ActionStop}},
+	)
+	if err != nil {
+		t.Fatalf("dispatch execution event: %v", err)
+	}
+	deliveries, err := runtime.delivery.store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != 1 ||
+		deliveries[0].Event.ID != result.Event.ID ||
+		deliveries[0].Event.Name != sdk.EventDecide {
+		t.Fatalf("detached execution deliveries = %#v", deliveries)
 	}
 }
 
@@ -385,6 +430,42 @@ func TestEmitReturnsSubscriberEnqueueFailure(t *testing.T) {
 	)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Emit() error = %v, want context deadline", err)
+	}
+}
+
+func TestEmitSubscriberEnqueueUsesRequestCancellation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{Storage: newTestStateBackend()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	mountExecutionSubscriber(t, runtime, sdk.EventAgentStart)
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = runtime.Emit(
+		cancelled,
+		sdk.EventAgentStart,
+		"strict-cancelled-emit",
+		sdk.AgentStartPayload{},
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Emit() error = %v, want context canceled", err)
+	}
+	deliveries, err := runtime.delivery.store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != 0 {
+		t.Fatalf("cancelled emit deliveries = %#v", deliveries)
 	}
 }
 
