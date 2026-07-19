@@ -127,6 +127,15 @@ func TestSubmitPromptPersistsBeforeExecutionStarts(t *testing.T) {
 	if result.Output != "finished" || result.Turns != 2 {
 		t.Fatalf("submission result = %#v", result)
 	}
+	view, err := submission.LoadExecutionView(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Execution.State != sdk.TrajectoryExecutionSucceeded ||
+		view.Result == nil ||
+		view.Result.Output != "finished" {
+		t.Fatalf("completed submission view = %#v", view)
+	}
 	if _, err := submission.Run(ctx); err == nil {
 		t.Fatal("second submission run succeeded")
 	}
@@ -183,7 +192,10 @@ func TestRuntimeSubmitPromptResumesAndAcceptsExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	view := submission.ExecutionView()
+	view, err := submission.LoadExecutionView(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if view.TrajectoryID != session.ID() ||
 		view.Execution.ID == "" ||
 		view.Execution.State != sdk.TrajectoryExecutionPending ||

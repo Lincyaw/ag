@@ -171,6 +171,10 @@ trajectory operations; presenters that borrow only state should use one-shot
 Read-after-control operations, such as queued context injection followed by the
 current execution view, belong on `ExecutionControl` so presenters do not
 recompose runtime control semantics from lower-level calls.
+Prompt submission follows the same boundary: `PromptSubmission` durably
+accepts input, and presenters that need an execution read model should load the
+trajectory-backed view rather than reuse the in-memory accepted-execution
+snapshot.
 `ExecutionHost` groups a runtime with the borrowed state backend used by that
 host; presenters may construct hosts, but runtime owns the control and shutdown
 protocol for draining delivery work, closing runtime resources, and closing the

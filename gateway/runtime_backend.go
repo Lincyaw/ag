@@ -129,11 +129,14 @@ func (backend *runtimeExecutionBackend) Submit(
 	if err != nil {
 		return cleanup(err, host)
 	}
-	execution := submission.Execution()
+	view, err := submission.LoadExecutionView(setupCtx)
+	if err != nil {
+		return cleanup(err, host)
+	}
 	if err := backend.hosts.bind(
 		session.ID,
 		slot,
-		execution.ID,
+		view.Execution.ID,
 		host.Runtime,
 		host.Control(),
 	); err != nil {
@@ -147,7 +150,7 @@ func (backend *runtimeExecutionBackend) Submit(
 		submission,
 		host,
 	)
-	return gatewayExecutionFromView(submission.ExecutionView()), nil
+	return gatewayExecutionFromView(view), nil
 }
 
 func (backend *runtimeExecutionBackend) Recover(

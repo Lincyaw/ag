@@ -80,6 +80,24 @@ func (submission *PromptSubmission) Execution() sdk.TrajectoryExecution {
 	return submission.execution
 }
 
+// LoadExecutionView loads the current trajectory-backed execution view for the
+// accepted submission. Unlike ExecutionView, this reflects terminal result
+// projection after the submitted execution has run.
+func (submission *PromptSubmission) LoadExecutionView(
+	ctx context.Context,
+) (ExecutionView, error) {
+	if submission == nil || submission.session == nil {
+		return ExecutionView{}, errors.New("prompt submission is nil")
+	}
+	session := submission.session
+	if session.runtime == nil || session.runtime.trajectories == nil {
+		return ExecutionView{}, errors.New("prompt submission runtime is nil")
+	}
+	return LoadExecutionView(ctx, session.runtime.trajectories, session.config.ID)
+}
+
+// ExecutionView returns the accepted execution snapshot kept for synchronous
+// callers. Use LoadExecutionView when a current trajectory projection is needed.
 func (submission *PromptSubmission) ExecutionView() ExecutionView {
 	if submission == nil || submission.session == nil {
 		return ExecutionView{}
