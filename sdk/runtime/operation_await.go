@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/lincyaw/ag/internal/lifecycle"
 	"github.com/lincyaw/ag/sdk"
@@ -75,7 +74,7 @@ func (runtime *Runtime) awaitOperation(
 			}
 			cancelCtx, cancelFunc := lifecycle.WithDetachedTimeout(
 				ctx,
-				2*time.Second,
+				runtime.operation.effectiveCancelTimeout(),
 			)
 			defer cancelFunc()
 			_, cancelErr := await.cancel(cancelCtx, current.ID)

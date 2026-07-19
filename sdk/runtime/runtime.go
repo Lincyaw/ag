@@ -51,6 +51,7 @@ type RuntimeConfig struct {
 	DeliveryMaxAttempts    int
 	HookTimeout            time.Duration
 	OperationPoll          time.Duration
+	OperationCancelTimeout time.Duration
 	OperationLease         time.Duration
 	TrajectoryLease        time.Duration
 }
@@ -138,6 +139,9 @@ func normalizeRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 	if config.OperationPoll == 0 {
 		config.OperationPoll = 100 * time.Millisecond
 	}
+	if config.OperationCancelTimeout == 0 {
+		config.OperationCancelTimeout = defaultOperationCancelTimeout
+	}
 	if config.OperationLease == 0 {
 		config.OperationLease = 30 * time.Second
 	}
@@ -148,8 +152,8 @@ func normalizeRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 		config.DeliveryPoll <= 0 || config.DeliveryEnqueueTimeout <= 0 ||
 		config.DeliveryTimeout <= 0 || config.DeliveryMaxAttempts < 1 ||
 		config.HookTimeout <= 0 ||
-		config.OperationPoll <= 0 || config.OperationLease <= 0 ||
-		config.TrajectoryLease <= 0 {
+		config.OperationPoll <= 0 || config.OperationCancelTimeout <= 0 ||
+		config.OperationLease <= 0 || config.TrajectoryLease <= 0 {
 		return RuntimeConfig{}, errors.New(
 			"delivery and operation settings must be positive",
 		)
@@ -246,12 +250,13 @@ func NewRuntimeContext(
 			workerID: "trajectory-runtime-" + sdk.NewID(),
 		},
 		operation: operationRuntime{
-			store:    storage.operations,
-			cancel:   cancelOperations,
-			inflight: operationworker.NewInflight(operationContext),
-			poll:     config.OperationPoll,
-			lease:    config.OperationLease,
-			workerID: "runtime-" + sdk.NewID(),
+			store:         storage.operations,
+			cancel:        cancelOperations,
+			inflight:      operationworker.NewInflight(operationContext),
+			poll:          config.OperationPoll,
+			cancelTimeout: config.OperationCancelTimeout,
+			lease:         config.OperationLease,
+			workerID:      "runtime-" + sdk.NewID(),
 		},
 		delivery: deliveryRuntime{
 			store:          storage.delivery,

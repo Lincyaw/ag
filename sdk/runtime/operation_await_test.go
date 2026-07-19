@@ -65,7 +65,10 @@ func TestAwaitOperationPollsMonotonicRevisionsToCompletion(t *testing.T) {
 
 func TestAwaitOperationCancellationUsesFreshContext(t *testing.T) {
 	t.Parallel()
-	runtime := &Runtime{operation: operationRuntime{poll: time.Second}}
+	runtime := &Runtime{operation: operationRuntime{
+		poll:          time.Second,
+		cancelTimeout: 2500 * time.Millisecond,
+	}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var cancelled atomic.Bool
@@ -86,6 +89,13 @@ func TestAwaitOperationCancellationUsesFreshContext(t *testing.T) {
 			cancel: func(cancelCtx context.Context, id string) (sdk.Operation, error) {
 				if err := cancelCtx.Err(); err != nil {
 					t.Fatalf("cancel context inherited cancellation: %v", err)
+				}
+				deadline, ok := cancelCtx.Deadline()
+				if !ok {
+					t.Fatal("cancel context has no deadline")
+				}
+				if remaining := time.Until(deadline); remaining < 1500*time.Millisecond {
+					t.Fatalf("cancel context deadline remaining = %s", remaining)
 				}
 				if id != "operation-cancel" {
 					t.Fatalf("cancel ID = %q", id)

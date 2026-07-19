@@ -93,13 +93,26 @@ func (target localOperationTarget) cancel(
 }
 
 type operationRuntime struct {
-	store    sdk.OperationStore
-	cancel   context.CancelFunc
-	inflight operationworker.Inflight
-	wait     sync.WaitGroup
-	poll     time.Duration
-	lease    time.Duration
-	workerID string
+	store         sdk.OperationStore
+	cancel        context.CancelFunc
+	inflight      operationworker.Inflight
+	wait          sync.WaitGroup
+	poll          time.Duration
+	cancelTimeout time.Duration
+	lease         time.Duration
+	workerID      string
+}
+
+const defaultOperationCancelTimeout = 2 * time.Second
+
+func (operation *operationRuntime) effectiveCancelTimeout() time.Duration {
+	if operation == nil {
+		return defaultOperationCancelTimeout
+	}
+	if operation.cancelTimeout > 0 {
+		return operation.cancelTimeout
+	}
+	return defaultOperationCancelTimeout
 }
 
 func (operation *operationRuntime) stop() {
