@@ -72,7 +72,8 @@ Presenters compose `sdk/runtime` with SDK ports. Plugins implement the
 versioned protocol. In-process Go plugins may use public SDK interfaces as a
 convenience, but must never import `sdk/runtime` or another plugin package.
 The execution engine depends on `TrajectoryStore`, `OperationStore`,
-`DeliveryStore`, and `StateBackend`; it does not depend on file store types.
+`DeliveryStore`, `StateBackend`, and optionally `AtomicStateBackend`; it does
+not depend on file store types.
 
 ## State backend bootstrap boundary
 
@@ -91,6 +92,14 @@ type StateBackend interface {
     Close(context.Context) error
 }
 
+type AtomicStateBackend interface {
+    StateBackend
+    AppendTrajectory(context.Context, TrajectoryAppendCommit) (TrajectoryAppendResult, error)
+    StartExecution(context.Context, ExecutionStartCommit) (ExecutionMutationResult, error)
+    CommitExecution(context.Context, ExecutionMutationCommit) (ExecutionMutationResult, error)
+    CancelExecution(context.Context, ExecutionCancelCommit) (ExecutionCancelResult, error)
+}
+
 type StorageDriver interface {
     Scheme() string
     Open(context.Context, *url.URL) (StateBackend, error)
@@ -99,7 +108,13 @@ type StorageDriver interface {
 
 Applications can register `postgres://`, `s3://`, network, or other drivers
 with `StorageRegistry` without changing the runtime. `memory://`, `file://`,
-and `duckdb://` are built-in drivers in `sdk/storage`.
+`duckdb://`, `postgres://`, and `postgresql://` are built-in drivers in
+`sdk/storage`.
+Storage drivers may implement different locking, indexing, and transaction
+strategies, but they share the same aggregate model rules for trajectory forks,
+operation leases/completion, and delivery enqueue/lease/ack/retry/dead-letter
+transitions. A driver should persist the result of those rules, not redefine
+them in backend-specific mutation code.
 
 Storage is a bootstrap extension rather than an ordinary runtime plugin. The
 runtime needs its source of truth before it can recover operations, load a
@@ -109,35 +124,52 @@ the plugin composition it must restore would create a boot cycle.
 `StorageCapabilities` explicitly reports durability, multi-process safety,
 cross-store atomicity, fencing, pagination, maintenance, namespace isolation,
 and encryption-at-rest. Callers must not infer these properties from a URI
-scheme. Built-in memory and file backends do not claim cross-store atomicity or
-encryption at rest.
+scheme. `NewRuntime` treats capabilities as a startup contract: it requires
+operation fencing and named delivery queues, and `AtomicState` must match the
+`AtomicStateBackend` interface in both directions. Built-in memory, file, and
+DuckDB backends do not claim cross-store atomicity or encryption at rest.
 
 The built-in file backend is a local/reference implementation. It uses
 cross-process file locks where the platform supports them, atomic file
 replacement, restrictive permissions, namespace partitions, pagination, and
-retention cleanup. It still rewrites whole JSON state files and does not provide
-one transaction across trajectory, operation, and delivery state; large or
-distributed deployments should provide a database/object/network backend.
+retention cleanup. It still rewrites whole JSON state files and should be treated
+as a development, debugging, and compatibility backend. High-frequency
+subscriber delivery, long-running agents, and gateway deployments should use an
+indexed database-backed driver instead of relying on file state growth.
 
-The built-in DuckDB backend stores trajectory metadata, execution cursors, and
-immutable entries in normalized tables. `BeginExecution` and
-`CommitExecution` are ACID SQL transactions, while execution, operation,
-provider, tool, correlation, kind, and time fields are native indexed columns.
-`TrajectoryAnalyzer.AnalyzeEntries` exposes bounded fixed-field extraction
-without parsing payload JSON. Operations and named delivery queues currently
-remain durable file-backed sidecars, so the backend reports
-`AtomicState=false`.
+The built-in DuckDB backend stores trajectory metadata, execution cursors,
+immutable entries, operation state, and named delivery queues in normalized
+tables. Subscriber outbox enqueue, lease, ack, retry, purge, operation submit,
+claim, renew, complete, recovery, and invocation-root lookup are incremental SQL
+mutations or indexed queries rather than whole-file rewrites. `BeginExecution`
+and `CommitExecution` are ACID SQL transactions, while execution, provider,
+tool, correlation, kind, time, operation invocation, and delivery scheduling
+fields are native indexed columns. `TrajectoryAnalyzer.AnalyzeEntries` exposes
+bounded fixed-field extraction without parsing payload JSON. The backend still
+reports `AtomicState=false` because it does not implement one public
+`AtomicStateBackend` transaction spanning trajectory, operation, and delivery
+aggregate commits.
 
 DuckDB is intended for one read-write agent host process with concurrent
 in-process readers. It reports `MultiProcessSafe=false`: multiple independent
 writer processes must not open the same native DuckDB file. A distributed
 deployment still needs a network database or service-backed storage driver.
 
+The built-in PostgreSQL backend stores trajectories, operations, and named
+delivery queues in one database and reports `AtomicState=true`. It implements
+`AppendTrajectory`, `StartExecution`, `CommitExecution`, and
+`CancelExecution`, so trajectory appends, execution acceptance, execution
+progress, cancellation completion, and host outbox projection can share a
+database transaction when the event contract allows planning subscriber
+deliveries before commit.
+
 `NewRuntime` requires a `StateBackend`; selecting memory, file, or an external
-driver is an application composition decision. A successful construction
-transfers ownership to the runtime by default. If construction fails, ownership
-remains with the caller. `StorageBorrowed` keeps lifecycle ownership with the
-embedding application after successful construction.
+driver is an application composition decision. Hosts with a startup context use
+`NewRuntimeContext` so construction-time storage health checks are cancellable.
+A successful construction transfers ownership to the runtime by default. If
+construction fails, ownership remains with the caller. `StorageBorrowed` keeps
+lifecycle ownership with the embedding application after successful
+construction.
 
 ## Unified plugin entry
 
@@ -333,6 +365,12 @@ the same delivery may invoke it again; subscriber effects must therefore be
 idempotent. Retries use bounded exponential backoff and eventually reach a
 dead-letter state. Ordering is preserved per trajectory, not globally.
 
+Deduplication is strict, not lossy: an existing delivery ID is accepted as a
+duplicate only when the target, subscription, resource revision, partition, and
+event identity, including payload, match. Reusing a delivery ID for different
+event content is a conflict so atomic outbox projection cannot silently drop a
+real event.
+
 The initial kernel event boundaries are:
 
 ```text
@@ -395,16 +433,43 @@ started.
 Workers claim operations with a time-bounded lease and unique fencing token,
 renew the lease while working, and must present the token to complete. A worker
 whose lease expired cannot overwrite a result committed by its replacement.
-This fences stale state writes; it does not make an external side effect
-exactly-once.
+If a claimed operation no longer matches the worker's resource revision, the
+worker fails it terminally under the same fence instead of leaving it running
+until lease expiry. This fences stale state writes; it does not make an
+external side effect exactly-once.
+If worker cancellation interrupts the claim before completion, including during
+resource validation, the runner releases the claim through detached
+finalization so recovery can re-evaluate the record instead of recording
+shutdown as an operation failure.
+`OperationStore` intentionally exposes narrow domain commands rather than a raw
+state-transition CAS method; generic transition helpers stay inside storage
+model code where they cannot bypass claim, cancellation, and stale-resource
+rules.
+Recovery scheduling consumes the store's non-terminal operation view and turns
+each record into a worker recovery candidate. Pending operations and running
+operations without an active lease can start immediately; running operations
+with a still-valid lease carry a delay and are re-read before recovery claims
+them. Presenters and RPC servers should not scan all operations and rediscover
+terminal-state or lease-expiry rules outside the store and worker scheduler.
+Delayed recovery is owned by the operation host lifecycle: server shutdown
+cancels it, but startup or request context cancellation does not.
 
 Operation IDs and idempotency keys are distinct. Retrying Submit with the same
-idempotency key and resource revision returns the original operation. Resource
-revision includes plugin version and the resource specification, so a new
-plugin version cannot inherit an incompatible old result. Receivers may execute
-a command more than once after a crash unless the concrete effect is idempotent
-or uses a plugin-owned transaction. The SDK therefore guarantees at-least-once
-execution, not exactly-once effects.
+idempotency key and resource revision returns the original operation; if that
+operation is not terminal, Submit is also an idempotent scheduling hint and the
+worker may attempt to claim it again. Resource revision includes plugin version
+and the resource specification, so a new plugin version cannot inherit an
+incompatible old result. Receivers may execute a command more than once after a
+crash unless the concrete effect is idempotent or uses a plugin-owned
+transaction. The SDK therefore guarantees at-least-once execution, not
+exactly-once effects.
+
+Cancel is a control request for the operation target. It validates operation
+kind and resource, but it does not require the caller's currently mounted
+resource revision to match the record being cancelled. Polling and execution do
+validate the resource revision because they consume revision-specific state.
+This split lets stale work be stopped or surfaced after a plugin upgrade
+without allowing old commands to run against a new implementation.
 
 ## Invocation graph and structured concurrency
 
@@ -466,11 +531,16 @@ outputs to a reducer prompt. Failure or cancellation cancels the outstanding
 wave. A swarm is the zero-dependency fanout case; fanout/reduce is the same
 model with a dependent reducer node.
 
-`sdk.LoadInvocationGraph` reconstructs the durable causal graph by root ID.
-Trajectory stores remain responsible for per-agent state and copy-on-write
-history; operation stores remain responsible for invocation lifecycle,
-idempotency, leases, and recovery. These are linked records, not competing
-representations of the same state.
+`sdk.LoadInvocationGraph` reconstructs the durable causal graph through the
+narrow `InvocationGraphStore` read port, which built-in backends satisfy with
+`OperationStore.ListByInvocationRoot`. It then projects a rooted set of
+`InvocationNode` values with parent/child edges, dependency edges, and
+graph-order operations. Presenters may render the graph differently, but they
+must not scan all operations, sort by wall-clock timing, or reinterpret raw
+metadata to rebuild DAG shape. Trajectory stores remain responsible for
+per-agent state and copy-on-write history; operation stores remain responsible
+for invocation lifecycle, idempotency, leases, graph lookup, and recovery.
+These are linked records, not competing representations of the same state.
 
 ## Inbox and outbox
 
@@ -487,17 +557,27 @@ the neutral `DeliveryStore` port and are opened as different named queues
 shares queue mechanics without accidentally sharing queue contents.
 
 An outbox record is appended before publication. An inbox record is persisted
-and deduplicated before acknowledgement. Dispatch workers lease records, renew
-while processing, retry expired leases, and move repeatedly failing records to
-a dead-letter state. Delivery identity includes the target plugin version and
+and deduplicated before acknowledgement. Dispatch workers lease records under a
+subscriber timeout shorter than the lease, retry expired leases, and move
+repeatedly failing records to a dead-letter state. Delivery leases are not
+heartbeat-renewed during handler execution; the timeout-below-lease invariant is
+the concurrency fence. Delivery identity includes the target plugin version and
 resource revision, so stale work is dead-lettered instead of being delivered to
 a newly mounted implementation. Queue storage remains replaceable by an
 external broker-backed `StateBackend`.
+Lifecycle drains read the store's non-terminal delivery view; runtime code does
+not scan delivered/dead-letter history and rederive queue state at shutdown.
+When worker cancellation aborts a leased delivery, the worker releases the
+delivery back to pending through detached finalization. Graceful shutdown
+therefore does not require waiting for lease expiry before another host can
+deliver the same record.
 
-The built-in backends do not offer a transaction spanning event state and the
-delivery queue (`AtomicState` is false). Enqueue errors therefore propagate to
-the caller; the runtime does not claim transactional-outbox semantics it cannot
-provide.
+Backends with `AtomicState=false` do not offer one transaction spanning
+trajectory state and the delivery queue. Runtime-owned execution events therefore
+treat subscriber enqueue failure as delivery degradation: the error is recorded
+and logged, while hook policy and trajectory mutation semantics remain the
+execution gate. Explicit application `Runtime.Emit` keeps enqueue errors visible
+to its caller because that call's purpose is event publication.
 
 ## Trajectory contract
 
@@ -526,6 +606,7 @@ type TrajectoryStore interface {
     ClaimExecution(... owner, now, ttl ...)
     RenewExecution(... executionID, token, now, ttl ...)
     CommitExecution(... expectedHead, token, entries, state ...)
+    CancelExecution(context.Context, TrajectoryExecutionCancelCommit) (TrajectoryExecutionCancelResult, error)
     ListRecoverable(... now ...)
     LoadMetadata(...)
     LoadEntry(...)
@@ -555,6 +636,9 @@ fixed fields above.
 A schema-v2 fork starts with its head pointing at the selected source entry.
 The fork owns no copied entries until its first append; that append names the
 source entry as its parent. Source entries remain immutable and shared.
+Backends should use the shared trajectory model preparation rule for fork
+initialization instead of re-deriving head, checkpoint, and inherited-entry
+counts independently.
 Deleting a trajectory that still has a live fork is rejected. `Load` remains a
 compatibility operation that materializes the inherited prefix plus locally
 owned history; runtime recovery uses metadata, entry, branch, and latest-kind
@@ -567,29 +651,63 @@ remain observable but are not replayed. Legacy schema-v1 stores may derive the
 checkpoint by walking the active branch when loading metadata.
 
 Starting a prompt is a short store transaction: it appends the user-message
-entry and creates a pending `TrajectoryExecution` together. A worker claims the
-execution with a renewable lease and fencing token. While claimed, unfenced
-`Append` calls are rejected; the worker uses `CommitExecution` to atomically
-append entries, advance head/checkpoint pointers, and optionally transition the
-execution to a terminal state.
+entry and creates a pending `TrajectoryExecution` together. When a backend
+advertises `AtomicState`, the runtime uses `StartExecution` so the
+`trajectory_appended` subscriber delivery boundary for that user-message entry
+can be attached to the accepted execution mutation. A worker claims the execution
+with a renewable lease and fencing token. While claimed, unfenced `Append` calls
+are rejected; the worker uses `CommitExecution` to atomically append entries,
+advance head/checkpoint pointers, and optionally transition the execution to a
+terminal state. Hosts run from the accepted execution input recorded in that
+user-message entry, so delayed same-process hosting and crash recovery share the
+same base messages.
+
+`Session.Prompt` is a synchronous presenter convenience over the same durable
+contract: it accepts the prompt as a `PromptSubmission` and immediately hosts
+that accepted execution. It must not reconstruct input from mutable session
+state or bypass the lifecycle used by `SubmitPrompt`, gateway execution
+hosting, and recovery.
+
+Cancellation is also an execution lifecycle transition, not a gateway-local
+presentation concern. `TrajectoryStore.CancelExecution` accepts a
+`TrajectoryExecutionCancelCommit`, so a runtime-owned cancellation can commit
+the cancelled state and terminal/restore trajectory entries through the same
+aggregate mutation on every backend. `FenceExecutionCancellation` is the
+weaker lifecycle-only form: it passes no completion entries and only prevents
+further renew/commit calls for the active execution. When a backend advertises
+`AtomicState`, runtime uses state `CancelExecution` so the cancelled state,
+terminal/restore entries, trajectory events, and `agent_end` subscriber
+deliveries are committed together. Repeating the same cancellation is idempotent
+and must not enqueue another completion event. Runtime-owned restore and
+rollback entries use `AppendTrajectory` on atomic backends, and
+failure/cancellation unwind uses the execution commit boundary, so trajectory
+event subscriber delivery follows the mutation rather than a later best-effort
+dispatch.
+If resume finds the active head already restores the target checkpoint, it
+loads session state without publishing a synthetic trajectory event.
 
 After a process crash, pending executions and running executions with expired
-leases appear in `ListRecoverable`. Once the same plugin composition is
-mounted, `Runtime.RecoverExecutions` claims them. It resumes after the latest
-checkpoint belonging to that execution, or restarts the incomplete first turn
-from its durable input entry. Stable operation keys prevent a new attempt entry
-from accidentally becoming a new provider/tool command.
+leases appear in the execution lifecycle's recovery-candidate view. Once the
+same plugin composition is mounted, `Runtime.RecoverExecutions` claims those
+candidates. It resumes after the latest checkpoint belonging to that execution,
+or restarts the incomplete first turn from its durable input entry. Stable
+operation keys prevent a new attempt entry from accidentally becoming a new
+provider/tool command.
 
-During graceful runtime shutdown, the execution context is cancelled and the
-claimed execution is fenced back to `pending` before plugin and storage
-cleanup completes. A replacement runtime can therefore recover it immediately,
-without waiting for the old lease to expire. A hard process termination cannot
-perform that handoff and instead uses the expired-lease path.
+During graceful runtime shutdown, `Runtime.RequestClose` cancels the execution
+context and the claimed execution is fenced back to `pending` before plugin and
+storage cleanup completes. `Runtime.Close` performs the same request and then
+waits for cleanup. A replacement runtime can therefore recover the execution
+immediately, without waiting for the old lease to expire. A hard process
+termination cannot perform that handoff and instead uses the expired-lease path.
 
-This transaction covers trajectory state, not external side effects or the
+The portable baseline covers trajectory state, not external side effects or the
 separate delivery store. Provider/tool effects and subscriber delivery remain
 at-least-once. A backend that advertises `AtomicState` may additionally couple
-trajectory and outbox projection; the built-in file backend does not.
+runtime-owned trajectory append, execution start, execution progress, and
+cancellation mutations with host outbox projection when the event contract
+keeps subscriber delivery stable before dispatch; the built-in file backend does
+not.
 
 Operation results must outlive every non-terminal trajectory execution that
 can reference them. The bundled state backend rejects operation pruning while
@@ -607,6 +725,11 @@ owning plugin; the kernel never pretends those effects were undone.
 Trajectory and entry payloads carry explicit schema versions. A trajectory also
 captures the runtime version, SDK API version, requested provider, system and
 composition digests, mounted plugin versions, and resource specifications.
+Each execution input is recorded as a typed `user_message` payload that carries
+the accepted base messages, submitted message, and environment snapshot.
+Recovery uses that payload before falling back to checkpoint projection, so a
+fork created after a parent checkpoint still resumes from the state that was
+actually accepted for the child execution.
 Child trajectories additionally capture their parent session, origin
 invocation, and new/fork mode without overloading copy-on-write `ParentID`.
 `ResumeExact` (the default) restores checkpoint state and rejects a changed

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lincyaw/ag/sdk"
 	"github.com/lincyaw/ag/sdk/storage/duckdb"
@@ -18,7 +19,6 @@ type duckDBStateBackend struct {
 	backendStores
 	trajectories *duckdb.Store
 	path         string
-	sidecarRoot  string
 	namespace    string
 	closeOnce    sync.Once
 	closeErr     error
@@ -54,15 +54,12 @@ func newDuckDBStateBackend(
 	if err != nil {
 		return nil, err
 	}
-	sidecarRoot := filepath.Join(
-		absolute+".state",
-		"namespaces",
+	operations := trajectories.OperationStore()
+	if err := migrateDuckDBOperationSidecar(
+		absolute,
 		namespace,
-	)
-	operations, err := NewFileOperationStore(
-		filepath.Join(sidecarRoot, "operations"),
-	)
-	if err != nil {
+		operations,
+	); err != nil {
 		_ = trajectories.Close()
 		return nil, err
 	}
@@ -70,7 +67,6 @@ func newDuckDBStateBackend(
 		backendStores: newBackendStores(trajectories, operations),
 		trajectories:  trajectories,
 		path:          absolute,
-		sidecarRoot:   sidecarRoot,
 		namespace:     namespace,
 	}, nil
 }
@@ -96,13 +92,65 @@ func prepareDuckDBPath(path string) (string, error) {
 	return absolute, nil
 }
 
+func migrateDuckDBOperationSidecar(
+	path string,
+	namespace string,
+	operations *duckdb.OperationStore,
+) error {
+	sidecarDirectory := filepath.Join(
+		path+".state",
+		"namespaces",
+		namespace,
+		"operations",
+	)
+	markerPath := filepath.Join(sidecarDirectory, ".migrated-to-duckdb")
+	if _, err := os.Stat(markerPath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat DuckDB operation migration marker: %w", err)
+	}
+	sidecarPath := filepath.Join(sidecarDirectory, "operations.json")
+	if _, err := os.Stat(sidecarPath); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("stat DuckDB legacy operation sidecar: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	page, err := operations.ListPage(ctx, sdk.PageRequest{Limit: 1})
+	if err != nil {
+		return fmt.Errorf("inspect DuckDB operation table: %w", err)
+	}
+	if len(page.Items) != 0 {
+		return nil
+	}
+	sidecar, err := NewFileOperationStore(sidecarDirectory)
+	if err != nil {
+		return fmt.Errorf("open DuckDB legacy operation sidecar: %w", err)
+	}
+	records, err := sidecar.List(ctx)
+	if err != nil {
+		return fmt.Errorf("read DuckDB legacy operation sidecar: %w", err)
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	if _, err := operations.Import(ctx, records...); err != nil {
+		return fmt.Errorf("migrate DuckDB legacy operation sidecar: %w", err)
+	}
+	_ = os.WriteFile(
+		markerPath,
+		[]byte(time.Now().UTC().Format(time.RFC3339Nano)+"\n"),
+		0o600,
+	)
+	return nil
+}
+
 func (backend *duckDBStateBackend) Deliveries(
 	name string,
 ) (sdk.DeliveryStore, error) {
 	return backend.delivery(name, func() (sdk.DeliveryStore, error) {
-		return NewFileDeliveryStore(
-			filepath.Join(backend.sidecarRoot, "deliveries", name),
-		)
+		return backend.trajectories.DeliveryStore(name)
 	})
 }
 

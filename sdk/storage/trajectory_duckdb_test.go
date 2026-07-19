@@ -419,3 +419,311 @@ func TestDuckDBStorageDriverIsDurableAndNamespaceIsolated(t *testing.T) {
 		t.Fatalf("first namespace lost its trajectory: %v", err)
 	}
 }
+
+func TestDuckDBStateBackendStoresDeliveriesInDuckDB(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "agent-state.duckdb")
+	backend, err := NewDuckDBStateBackend(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbox, err := backend.Deliveries(sdk.HostOutboxQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	delivery := sdk.Delivery{
+		ID:           "duckdb-delivery-1",
+		Plugin:       "observer",
+		Subscription: "events",
+		Partition:    "events/session",
+		Event: sdk.Event{
+			ID:      "duckdb-event-1",
+			Name:    sdk.EventAgentStart,
+			Payload: []byte(`{}`),
+		},
+		CreatedAt: base,
+	}
+	if err := outbox.Enqueue(ctx, delivery); err != nil {
+		t.Fatal(err)
+	}
+	firstLease, err := outbox.Lease(ctx, base, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	deliveryJSON := filepath.Join(
+		path+".state",
+		"namespaces",
+		"default",
+		"deliveries",
+		sdk.HostOutboxQueue,
+		"deliveries.json",
+	)
+	if _, err := os.Stat(deliveryJSON); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("DuckDB delivery unexpectedly used file sidecar %q: %v", deliveryJSON, err)
+	}
+
+	reopened, err := NewDuckDBStateBackend(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(context.Background()); err != nil {
+			t.Errorf("close reopened DuckDB backend: %v", err)
+		}
+	})
+	reopenedOutbox, err := reopened.Deliveries(sdk.HostOutboxQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopenedOutbox.Lease(
+		ctx,
+		base.Add(30*time.Second),
+		time.Minute,
+	); !errors.Is(err, sdk.ErrNoDelivery) {
+		t.Fatalf("unexpired DuckDB delivery lease was redelivered: %v", err)
+	}
+	secondLease, err := reopenedOutbox.Lease(
+		ctx,
+		base.Add(time.Minute),
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondLease.Attempt != 2 || secondLease.Sequence != 1 ||
+		secondLease.LeaseToken == firstLease.LeaseToken {
+		t.Fatalf("recovered DuckDB delivery = %#v, first = %#v", secondLease, firstLease)
+	}
+	if err := reopenedOutbox.Ack(
+		ctx,
+		firstLease.ID,
+		firstLease.LeaseToken,
+		base.Add(time.Minute),
+	); !errors.Is(err, sdk.ErrDeliveryLease) {
+		t.Fatalf("stale DuckDB delivery ack error = %v", err)
+	}
+	if err := reopenedOutbox.Ack(
+		ctx,
+		secondLease.ID,
+		secondLease.LeaseToken,
+		base.Add(time.Minute),
+	); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := reopenedOutbox.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].State != sdk.DeliveryDelivered {
+		t.Fatalf("DuckDB deliveries = %#v", listed)
+	}
+}
+
+func TestDuckDBStateBackendStoresOperationsInDuckDB(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "agent-state.duckdb")
+	backend, err := NewDuckDBStateBackend(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := sdk.Invocation{
+		ID:          "child",
+		RootID:      "root",
+		ParentID:    "parent",
+		GroupID:     "group",
+		SessionID:   "session",
+		ExecutionID: "execution",
+	}
+	record := sdk.OperationRecord{
+		Operation: sdk.Operation{
+			ID:             "duckdb-operation-1",
+			IdempotencyKey: "stable-key",
+		},
+		Kind:             sdk.OperationKindTool,
+		Resource:         "file",
+		ResourceRevision: "rev1",
+		Input:            []byte(`{"path":"a"}`),
+		Invocation:       invocation,
+	}
+	submitted, created, err := backend.Operations().Submit(ctx, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("initial DuckDB operation submit was not created")
+	}
+	replay := record
+	replay.Operation.ID = "ignored-operation-id"
+	replayed, created, err := backend.Operations().Submit(ctx, replay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created || replayed.Operation.ID != submitted.Operation.ID {
+		t.Fatalf("DuckDB operation replay = %#v, created = %v", replayed, created)
+	}
+	rootOperations, err := backend.Operations().ListByInvocationRoot(ctx, "root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rootOperations) != 1 ||
+		rootOperations[0].Operation.ID != submitted.Operation.ID {
+		t.Fatalf("DuckDB operations by invocation root = %#v", rootOperations)
+	}
+	claimTime := time.Date(2026, 7, 19, 13, 0, 0, 0, time.UTC)
+	claimed, err := backend.Operations().Claim(
+		ctx,
+		submitted.Operation.ID,
+		"worker-a",
+		claimTime,
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.Execution == nil || claimed.Execution.Token == "" {
+		t.Fatalf("DuckDB operation claim has no lease: %#v", claimed)
+	}
+	if err := backend.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	operationJSON := filepath.Join(
+		path+".state",
+		"namespaces",
+		"default",
+		"operations",
+		"operations.json",
+	)
+	if _, err := os.Stat(operationJSON); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("DuckDB operation unexpectedly used file sidecar %q: %v", operationJSON, err)
+	}
+
+	reopened, err := NewDuckDBStateBackend(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(context.Background()); err != nil {
+			t.Errorf("close reopened DuckDB backend: %v", err)
+		}
+	})
+	loaded, err := reopened.Operations().Get(ctx, submitted.Operation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Operation.State != sdk.OperationRunning ||
+		loaded.Execution == nil ||
+		loaded.Execution.Token != claimed.Execution.Token {
+		t.Fatalf("reopened DuckDB operation = %#v, claimed = %#v", loaded, claimed)
+	}
+	completed, err := reopened.Operations().Complete(
+		ctx,
+		submitted.Operation.ID,
+		claimed.Execution.Token,
+		sdk.OperationSucceeded,
+		[]byte(`{"ok":true}`),
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Operation.State != sdk.OperationSucceeded ||
+		string(completed.Operation.Output) != `{"ok":true}` {
+		t.Fatalf("completed DuckDB operation = %#v", completed)
+	}
+	if _, err := reopened.Operations().Fail(
+		ctx,
+		submitted.Operation.ID,
+		claimed.Operation.Revision,
+		"late failure",
+	); !errors.Is(err, sdk.ErrOperationConflict) {
+		t.Fatalf("stale DuckDB operation mutation error = %v", err)
+	}
+}
+
+func TestDuckDBStateBackendMigratesLegacyOperationSidecar(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "agent-state.duckdb")
+	sidecarDirectory := filepath.Join(
+		path+".state",
+		"namespaces",
+		"default",
+		"operations",
+	)
+	legacy, err := NewFileOperationStore(sidecarDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submitted, _, err := legacy.Submit(
+		ctx,
+		sdk.OperationRecord{
+			Operation: sdk.Operation{
+				ID:             "legacy-operation-1",
+				IdempotencyKey: "legacy-key",
+			},
+			Kind:     sdk.OperationKindTool,
+			Resource: "file",
+			Input:    []byte(`{"path":"legacy"}`),
+			Invocation: sdk.Invocation{
+				ID:          "legacy-child",
+				RootID:      "legacy-root",
+				SessionID:   "legacy-session",
+				ExecutionID: "legacy-execution",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := legacy.Claim(
+		ctx,
+		submitted.Operation.ID,
+		"legacy-worker",
+		time.Date(2026, 7, 19, 14, 0, 0, 0, time.UTC),
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	backend, err := NewDuckDBStateBackend(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(context.Background()); err != nil {
+			t.Errorf("close migrated DuckDB backend: %v", err)
+		}
+	})
+	loaded, err := backend.Operations().Get(ctx, submitted.Operation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Operation.Revision != claimed.Operation.Revision ||
+		loaded.Operation.State != sdk.OperationRunning ||
+		loaded.Execution == nil ||
+		loaded.Execution.Token != claimed.Execution.Token {
+		t.Fatalf("migrated DuckDB operation = %#v, legacy = %#v", loaded, claimed)
+	}
+	rootOperations, err := backend.Operations().ListByInvocationRoot(
+		ctx,
+		"legacy-root",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rootOperations) != 1 ||
+		rootOperations[0].Operation.ID != submitted.Operation.ID {
+		t.Fatalf("migrated DuckDB root operations = %#v", rootOperations)
+	}
+	markerPath := filepath.Join(sidecarDirectory, ".migrated-to-duckdb")
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("DuckDB operation migration marker missing: %v", err)
+	}
+}

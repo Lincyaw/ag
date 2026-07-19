@@ -36,7 +36,8 @@ const duckDBTrajectoryEntryColumns = `
 	action_kind,
 	payload_version,
 	payload,
-	attributes_json`
+	attributes_json,
+	audit_json`
 
 type duckDBScanner interface {
 	Scan(...any) error
@@ -45,6 +46,10 @@ type duckDBScanner interface {
 type duckDBQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+type duckDBExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
 func (store *duckDBTrajectoryStore) loadStoredTrajectory(
@@ -200,6 +205,7 @@ func scanDuckDBTrajectoryEntry(
 	var turn sql.NullInt64
 	var isError sql.NullBool
 	var attributesJSON sql.NullString
+	var auditJSON sql.NullString
 	if err := scanner.Scan(
 		&entry.TrajectoryID,
 		&entry.ID,
@@ -226,6 +232,7 @@ func scanDuckDBTrajectoryEntry(
 		&entry.PayloadVersion,
 		&entry.Payload,
 		&attributesJSON,
+		&auditJSON,
 	); err != nil {
 		return sdk.TrajectoryEntry{}, err
 	}
@@ -252,6 +259,19 @@ func scanDuckDBTrajectoryEntry(
 				err,
 			)
 		}
+	}
+	if auditJSON.Valid {
+		if err := json.Unmarshal(
+			[]byte(auditJSON.String),
+			&entry.Audit,
+		); err != nil {
+			return sdk.TrajectoryEntry{}, fmt.Errorf(
+				"decode trajectory entry %q audit: %w",
+				entry.ID,
+				err,
+			)
+		}
+		entry.Audit = sdk.CloneEventAudits(entry.Audit)
 	}
 	return entry, nil
 }
@@ -282,6 +302,17 @@ func duckDBAttributesJSON(attributes map[string]string) (any, error) {
 		return nil, nil
 	}
 	raw, err := json.Marshal(attributes)
+	if err != nil {
+		return nil, err
+	}
+	return string(raw), nil
+}
+
+func duckDBAuditJSON(audits []sdk.EventAudit) (any, error) {
+	if len(audits) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(audits)
 	if err != nil {
 		return nil, err
 	}

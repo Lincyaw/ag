@@ -31,8 +31,9 @@ an independent process.
   and rollback;
 - a multi-user HTTP gateway with session-scoped plugin composition,
   asynchronous submit/poll/cancel, and startup execution recovery;
-- DuckDB trajectory storage with immutable rows, native fixed-field indexes,
-  transactional execution fencing, and indexed analysis queries;
+- DuckDB state storage with immutable trajectory rows, indexed operation state,
+  indexed delivery queues, transactional execution fencing, and indexed
+  analysis queries;
 - OpenTelemetry transport instrumentation plus an asynchronous semantic OTel
   subscriber plugin;
 - Cobra CLI/config contract with `flag > AGENTM_* > config file > default`
@@ -176,7 +177,8 @@ ag state prune --before <RFC3339-or-duration>
 ag version
 ```
 
-Use a local DuckDB trajectory backend with:
+Use a local DuckDB state backend with indexed trajectory, operation, and
+delivery storage:
 
 ```text
 ag --storage 'duckdb:///absolute/path/agent-state.duckdb' run
