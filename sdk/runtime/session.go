@@ -38,6 +38,7 @@ type Session struct {
 	executionToken string
 	messages       []sdk.Message
 	head           string
+	contextQueue   contextInjectionQueue
 	pinnedSnapshot *registrySnapshot
 	causal         causalInvocationScope
 }

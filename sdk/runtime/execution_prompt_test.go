@@ -47,6 +47,41 @@ func (observerProvider) Complete(
 	return sdk.ModelResponse{Content: "observer result"}, nil
 }
 
+type contextInjectionCaptureProvider struct {
+	mu       sync.Mutex
+	requests []sdk.ModelRequest
+}
+
+func (provider *contextInjectionCaptureProvider) Spec() sdk.ProviderSpec {
+	return sdk.ProviderSpec{Name: "context-capture", Model: "test"}
+}
+
+func (provider *contextInjectionCaptureProvider) Complete(
+	_ context.Context,
+	request sdk.ModelRequest,
+) (sdk.ModelResponse, error) {
+	provider.mu.Lock()
+	provider.requests = append(provider.requests, sdk.ModelRequest{
+		Messages: sdk.CloneMessages(request.Messages),
+		Tools:    append([]sdk.ToolSpec(nil), request.Tools...),
+	})
+	provider.mu.Unlock()
+	return sdk.ModelResponse{Content: "context accepted"}, nil
+}
+
+func (provider *contextInjectionCaptureProvider) Requests() []sdk.ModelRequest {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	requests := make([]sdk.ModelRequest, len(provider.requests))
+	for index, request := range provider.requests {
+		requests[index] = sdk.ModelRequest{
+			Messages: sdk.CloneMessages(request.Messages),
+			Tools:    append([]sdk.ToolSpec(nil), request.Tools...),
+		}
+	}
+	return requests
+}
+
 func TestEventObserverDoesNotAffectExecution(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -299,6 +334,104 @@ func TestPromptBlockCommitsWithoutCallingProvider(t *testing.T) {
 				want,
 			)
 		}
+	}
+}
+
+func TestQueuedContextInjectionCheckpointsBeforeProvider(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	trajectories := sdkstorage.NewMemoryTrajectoryStore()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: testStateBackendWithStores(trajectories, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	provider := &contextInjectionCaptureProvider{}
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "context-injection-plugin",
+			Version:     "1.0.0",
+			Description: "captures provider requests after queued context drains",
+			APIVersion:  sdk.APIVersion,
+			Registers:   []string{sdk.ProviderResource("context-capture")},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return registrar.RegisterProvider(provider)
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "queued-context",
+		Provider: "context-capture",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = session.EnqueueContextInjection(ctx, sdk.ContextInjection{
+		Priority: sdk.ContextInjectionNext,
+		Mode:     sdk.ContextInjectionTaskNotification,
+		Origin:   "test",
+		IsMeta:   true,
+		Messages: []sdk.Message{{
+			Role:    sdk.RoleUser,
+			Content: "queued context",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("enqueue context injection: %v", err)
+	}
+
+	result, err := session.Prompt(ctx, "base prompt")
+	if err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	if result.Output != "context accepted" {
+		t.Fatalf("result output = %q", result.Output)
+	}
+	requests := provider.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests = %#v", requests)
+	}
+	if got := requests[0].Messages; len(got) != 2 ||
+		got[0].Content != "base prompt" ||
+		got[1].Content != "queued context" {
+		t.Fatalf("provider messages = %#v", got)
+	}
+	if got := result.Messages; len(got) != 3 ||
+		got[0].Content != "base prompt" ||
+		got[1].Content != "queued context" ||
+		got[2].Content != "context accepted" {
+		t.Fatalf("result messages = %#v", got)
+	}
+	trajectory, err := trajectories.Load(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch, err := trajectory.Branch(trajectory.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointBeforeProvider := false
+	for index, entry := range branch {
+		if entry.Kind == sdk.TrajectoryKindProviderRequest &&
+			index > 0 &&
+			branch[index-1].Kind == sdk.TrajectoryKindCheckpoint {
+			checkpointBeforeProvider = true
+			break
+		}
+	}
+	if !checkpointBeforeProvider {
+		t.Fatalf("trajectory branch did not checkpoint context before provider: %#v", branch)
 	}
 }
 

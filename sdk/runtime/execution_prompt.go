@@ -201,6 +201,13 @@ func (execution *promptExecution) executeTurn(
 	}
 	defer lease.release()
 	execution.result.Generation = lease.snapshot.generation
+	if _, err := execution.checkpointQueuedContext(
+		ctx,
+		lease.snapshot,
+		contextInjectionBeforeProvider,
+	); err != nil {
+		return Result{}, false, err
+	}
 
 	call, err := execution.prepareProviderCall(ctx, lease.snapshot, turn)
 	if err != nil {
@@ -546,6 +553,19 @@ func (execution *promptExecution) applyAction(
 			"unknown resolved action %q",
 			action.Kind,
 		)
+	}
+	if action.Kind == sdk.ActionStop && !actionFinal(action) {
+		drained, err := execution.checkpointQueuedContext(
+			ctx,
+			snapshot,
+			contextInjectionBeforeStop,
+		)
+		if err != nil {
+			return Result{}, false, err
+		}
+		if drained {
+			return Result{}, false, nil
+		}
 	}
 	if err := execution.session.checkpointTrajectory(
 		ctx,
