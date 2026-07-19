@@ -603,6 +603,57 @@ func (store *fileTrajectoryStore) FindLatest(
 	return entry, found, nil
 }
 
+func (store *fileTrajectoryStore) AnalyzeEntries(
+	ctx context.Context,
+	query sdk.TrajectoryEntryQuery,
+) ([]sdk.TrajectoryEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	limit, err := validateTrajectoryAnalysisQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	var entries []sdk.TrajectoryEntry
+	collect := func(stored sdk.Trajectory) {
+		for _, entry := range stored.Entries {
+			if trajectoryEntryMatchesQuery(entry, query) {
+				entries = append(entries, entry)
+			}
+		}
+	}
+	err = filestate.WithSharedLock(store.lockPath, func() error {
+		if query.TrajectoryID != "" {
+			stored, readErr := store.readStoredLocked(query.TrajectoryID)
+			if readErr != nil {
+				return readErr
+			}
+			collect(stored)
+			return nil
+		}
+		paths, globErr := filepath.Glob(filepath.Join(store.directory, "*.json"))
+		if globErr != nil {
+			return fmt.Errorf("analyze trajectory entries: %w", globErr)
+		}
+		for _, path := range paths {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			id := strings.TrimSuffix(filepath.Base(path), ".json")
+			stored, readErr := store.readStoredLocked(id)
+			if readErr != nil {
+				return readErr
+			}
+			collect(stored)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return limitTrajectoryAnalysisEntries(entries, limit), nil
+}
+
 func (store *fileTrajectoryStore) Load(
 	ctx context.Context,
 	id string,

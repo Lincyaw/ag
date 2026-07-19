@@ -325,8 +325,8 @@ func LoadExecutionView(
 }
 
 // LoadExecutionViewFromMetadata projects trajectory metadata into the
-// execution read model and, for succeeded executions, attaches the durable
-// checkpoint result when one exists.
+// execution read model and, for terminal executions, attaches the durable
+// result when one exists.
 func LoadExecutionViewFromMetadata(
 	ctx context.Context,
 	store sdk.TrajectoryStore,
@@ -344,7 +344,7 @@ func LoadExecutionViewFromMetadata(
 		TrajectoryID: metadata.ID,
 		Execution:    *metadata.Execution,
 	}
-	if metadata.Execution.State == sdk.TrajectoryExecutionSucceeded {
+	if metadata.Execution.Terminal() {
 		result, err := LoadExecutionResult(ctx, store, metadata)
 		if err != nil {
 			return ExecutionView{}, err

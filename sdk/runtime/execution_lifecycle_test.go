@@ -115,6 +115,129 @@ func TestExecutionViewOmitsCancelledCheckpointResult(t *testing.T) {
 	}
 }
 
+func TestExecutionViewProjectsTerminalResultOffActiveBranch(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := sdkstorage.NewMemoryTrajectoryStore()
+	const trajectoryID = "terminal-view"
+	const executionID = "terminal-view-execution"
+	const terminalID = "terminal-view-end"
+	if err := store.Create(ctx, sdk.Trajectory{ID: trajectoryID}); err != nil {
+		t.Fatal(err)
+	}
+	inputPayload, err := json.Marshal(sdk.Message{
+		Role:    sdk.RoleUser,
+		Content: "stop after this",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := store.BeginExecution(
+		ctx,
+		trajectoryID,
+		"",
+		sdk.TrajectoryExecutionStart{
+			ID:       executionID,
+			Provider: "test",
+			MaxTurns: 1,
+		},
+		sdk.TrajectoryEntry{
+			ID:        "terminal-view-input",
+			Kind:      sdk.TrajectoryKindUserMessage,
+			Timestamp: time.Now().UTC(),
+			Payload:   inputPayload,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := store.ClaimExecution(
+		ctx,
+		trajectoryID,
+		"test-owner",
+		time.Now().UTC(),
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalPayload, err := json.Marshal(sdk.AgentEndPayload{
+		Messages: []sdk.Message{
+			{Role: sdk.RoleUser, Content: "stop after this"},
+			{Role: sdk.RoleAssistant, Content: "stopped cleanly"},
+		},
+		Cause: sdk.Cause{
+			Code:   sdk.CauseCancelled,
+			Detail: "user cancelled",
+			Final:  true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restorePayload, err := json.Marshal(map[string]string{
+		"from": terminalID,
+		"to":   metadata.Execution.BaseHead,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err = store.CommitExecution(
+		ctx,
+		sdk.TrajectoryExecutionCommit{
+			TrajectoryID: trajectoryID,
+			ExecutionID:  executionID,
+			LeaseToken:   execution.LeaseToken,
+			ExpectedHead: metadata.Head,
+			State:        sdk.TrajectoryExecutionCancelled,
+			Error:        "user cancelled",
+			Entries: []sdk.TrajectoryEntry{
+				{
+					ID:         terminalID,
+					ParentID:   metadata.Head,
+					Kind:       sdk.TrajectoryKindTerminal,
+					Generation: 7,
+					Timestamp:  time.Now().UTC(),
+					Payload:    terminalPayload,
+				},
+				{
+					ID:        "terminal-view-restore",
+					ParentID:  metadata.Execution.BaseHead,
+					Kind:      sdk.TrajectoryKindRestore,
+					Timestamp: time.Now().UTC(),
+					Payload:   restorePayload,
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch, err := store.LoadBranch(ctx, trajectoryID, metadata.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range branch {
+		if entry.ID == terminalID {
+			t.Fatalf("terminal entry %q remained on active branch", terminalID)
+		}
+	}
+	view, err := LoadExecutionViewFromMetadata(ctx, store, metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Result == nil {
+		t.Fatal("cancelled execution result is nil")
+	}
+	if view.Result.Output != "stopped cleanly" ||
+		view.Result.Cause.Code != sdk.CauseCancelled ||
+		view.Result.Cause.Detail != "user cancelled" ||
+		!view.Result.Cause.Final ||
+		view.Result.Generation != 7 {
+		t.Fatalf("cancelled execution result = %#v", view.Result)
+	}
+}
+
 func TestExecutionLifecycleClassifiesExecutionLookupStates(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

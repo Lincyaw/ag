@@ -2,27 +2,62 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/lincyaw/ag/sdk"
 	"github.com/lincyaw/ag/sdk/runtime/internal/durability"
 )
 
-// LoadExecutionResult projects the current terminal checkpoint into the runtime
-// execution result read model.
+// LoadExecutionResult projects the durable execution result read model.
 func LoadExecutionResult(
 	ctx context.Context,
 	store sdk.TrajectoryStore,
 	metadata sdk.TrajectoryMetadata,
 ) (*Result, error) {
+	if metadata.Execution != nil &&
+		metadata.Execution.State != sdk.TrajectoryExecutionSucceeded {
+		return LoadExecutionTerminalResult(ctx, store, metadata)
+	}
 	entry, checkpoint, found, err := durability.LatestExecutionCheckpoint(
 		ctx,
 		store,
 		metadata,
 	)
-	if err != nil || !found {
+	if err != nil {
 		return nil, err
 	}
+	if !found {
+		return LoadExecutionTerminalResult(ctx, store, metadata)
+	}
 	return resultFromCheckpoint(entry, checkpoint), nil
+}
+
+// LoadExecutionTerminalResult projects a terminal trajectory entry into the
+// runtime execution result read model. Terminal entries may be off the active
+// branch after failure/cancellation restores the trajectory head.
+func LoadExecutionTerminalResult(
+	ctx context.Context,
+	store sdk.TrajectoryStore,
+	metadata sdk.TrajectoryMetadata,
+) (*Result, error) {
+	if metadata.Execution == nil {
+		return nil, nil
+	}
+	analyzer, ok := store.(sdk.TrajectoryAnalyzer)
+	if !ok {
+		return nil, nil
+	}
+	entries, err := analyzer.AnalyzeEntries(ctx, sdk.TrajectoryEntryQuery{
+		TrajectoryID: metadata.ID,
+		ExecutionID:  metadata.Execution.ID,
+		Kind:         sdk.TrajectoryKindTerminal,
+		Limit:        sdk.MaxPageSize,
+	})
+	if err != nil || len(entries) == 0 {
+		return nil, err
+	}
+	return resultFromTerminal(entries[len(entries)-1])
 }
 
 func latestAssistantOutput(messages []sdk.Message) string {
@@ -58,4 +93,22 @@ func resultFromCheckpoint(
 		result.Cause = *checkpoint.Action.Cause
 	}
 	return result
+}
+
+func resultFromTerminal(entry sdk.TrajectoryEntry) (*Result, error) {
+	var end sdk.AgentEndPayload
+	if err := json.Unmarshal(entry.Payload, &end); err != nil {
+		return nil, fmt.Errorf(
+			"decode trajectory %q terminal entry %q: %w",
+			entry.TrajectoryID,
+			entry.ID,
+			err,
+		)
+	}
+	return &Result{
+		Output:     latestAssistantOutput(end.Messages),
+		Messages:   sdk.CloneMessages(end.Messages),
+		Generation: entry.Generation,
+		Cause:      end.Cause,
+	}, nil
 }

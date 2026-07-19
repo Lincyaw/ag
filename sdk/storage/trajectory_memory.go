@@ -538,6 +538,42 @@ func (store *memoryTrajectoryStore) FindLatest(
 	return store.findLatestLocked(id, head, kind)
 }
 
+func (store *memoryTrajectoryStore) AnalyzeEntries(
+	ctx context.Context,
+	query sdk.TrajectoryEntryQuery,
+) ([]sdk.TrajectoryEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	limit, err := validateTrajectoryAnalysisQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	var entries []sdk.TrajectoryEntry
+	collect := func(trajectory *memoryTrajectory) {
+		for _, entryID := range trajectory.order {
+			entry := trajectory.entries[entryID]
+			if trajectoryEntryMatchesQuery(entry, query) {
+				entries = append(entries, entry)
+			}
+		}
+	}
+	if query.TrajectoryID != "" {
+		trajectory, err := store.trajectoryLocked(query.TrajectoryID)
+		if err != nil {
+			return nil, err
+		}
+		collect(trajectory)
+		return limitTrajectoryAnalysisEntries(entries, limit), nil
+	}
+	for _, trajectory := range store.trajectories {
+		collect(trajectory)
+	}
+	return limitTrajectoryAnalysisEntries(entries, limit), nil
+}
+
 func (store *memoryTrajectoryStore) Load(
 	ctx context.Context,
 	id string,
