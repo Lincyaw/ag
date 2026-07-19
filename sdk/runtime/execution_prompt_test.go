@@ -177,11 +177,14 @@ func TestRuntimeCloseCancelsEventObserverContext(t *testing.T) {
 func TestEventObserverWaitStoppedIsBounded(t *testing.T) {
 	t.Parallel()
 	var observer eventObserverRuntime
-	release := make(chan struct{})
-	observer.wait.Add(1)
+	unblock := make(chan struct{})
+	releaseObserver, ok := observer.work.begin(&Runtime{})
+	if !ok {
+		t.Fatal("event observer work was rejected")
+	}
 	go func() {
-		defer observer.wait.Done()
-		<-release
+		defer releaseObserver()
+		<-unblock
 	}()
 	firstSignal := observer.stoppedSignal()
 	secondSignal := observer.stoppedSignal()
@@ -199,7 +202,7 @@ func TestEventObserverWaitStoppedIsBounded(t *testing.T) {
 	) {
 		t.Fatalf("waitBestEffortStopped() error = %v", err)
 	}
-	close(release)
+	close(unblock)
 	if err := observer.waitBestEffortStopped(
 		context.Background(),
 		time.Second,

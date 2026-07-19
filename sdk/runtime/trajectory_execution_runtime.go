@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/lincyaw/ag/sdk"
@@ -15,7 +14,7 @@ import (
 type trajectoryExecutionRuntime struct {
 	context  context.Context
 	cancel   context.CancelFunc
-	wait     sync.WaitGroup
+	work     runtimeWorkGroup
 	hosts    *hostedExecutionRegistry
 	lease    time.Duration
 	workerID string
@@ -30,13 +29,13 @@ func (trajectory *trajectoryExecutionRuntime) stop() {
 // waitDurableStopped waits for live trajectory execution work to either finish
 // or restore recoverable durable state before runtime-owned cleanup continues.
 func (trajectory *trajectoryExecutionRuntime) waitDurableStopped() {
-	trajectory.wait.Wait()
+	trajectory.work.waitStopped()
 }
 
 func (trajectory *trajectoryExecutionRuntime) beginWork(
 	runtime *Runtime,
 ) (func(), bool) {
-	return runtime.beginRuntimeWork(&trajectory.wait)
+	return trajectory.work.begin(runtime)
 }
 
 func (trajectory *trajectoryExecutionRuntime) stopped() bool {

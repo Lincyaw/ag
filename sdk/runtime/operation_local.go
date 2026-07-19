@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"encoding/json"
-	"sync"
 	"time"
 
 	"github.com/lincyaw/ag/internal/operationworker"
@@ -99,7 +98,7 @@ type operationRuntime struct {
 	context       context.Context
 	cancel        context.CancelFunc
 	inflight      operationworker.Inflight
-	wait          sync.WaitGroup
+	work          runtimeWorkGroup
 	poll          time.Duration
 	cancelTimeout time.Duration
 	lease         time.Duration
@@ -129,13 +128,13 @@ func (operation *operationRuntime) stopped() bool {
 }
 
 func (operation *operationRuntime) beginWork(runtime *Runtime) (func(), bool) {
-	return runtime.beginRuntimeWork(&operation.wait)
+	return operation.work.begin(runtime)
 }
 
 // waitDurableStopped waits for runtime-owned operation work to reach its
 // storage finalization boundary before plugin and backend cleanup continue.
 func (operation *operationRuntime) waitDurableStopped() {
-	operation.wait.Wait()
+	operation.work.waitStopped()
 }
 
 type syncProviderAdapter struct {

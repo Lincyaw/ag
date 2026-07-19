@@ -9,16 +9,25 @@ import (
 // and cannot accept new work.
 var ErrRuntimeClosed = errors.New("runtime is closed")
 
-// beginRuntimeWork enters the runtime-wide close gate and registers work that
-// Close must wait for before plugin/storage cleanup is allowed to finish.
-func (runtime *Runtime) beginRuntimeWork(wait *sync.WaitGroup) (func(), bool) {
+// runtimeWorkGroup tracks short-lived runtime-owned work behind the runtime
+// close gate. It only owns admission and accounting; each subsystem chooses
+// whether close waits for the group as a durable boundary or best-effort cleanup.
+type runtimeWorkGroup struct {
+	wait sync.WaitGroup
+}
+
+func (group *runtimeWorkGroup) begin(runtime *Runtime) (func(), bool) {
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	if runtime.closed {
 		return nil, false
 	}
-	wait.Add(1)
-	return wait.Done, true
+	group.wait.Add(1)
+	return group.wait.Done, true
+}
+
+func (group *runtimeWorkGroup) waitStopped() {
+	group.wait.Wait()
 }
 
 // beginTrajectoryWork joins durable trajectory work with runtime shutdown and

@@ -651,7 +651,7 @@ type eventObserverRuntime struct {
 	observe     func(context.Context, sdk.Event)
 	context     context.Context
 	cancel      context.CancelFunc
-	wait        sync.WaitGroup
+	work        runtimeWorkGroup
 	stoppedOnce sync.Once
 	stopped     chan struct{}
 }
@@ -693,7 +693,7 @@ func (observer *eventObserverRuntime) dispatch(
 }
 
 func (observer *eventObserverRuntime) begin(runtime *Runtime) (func(), bool) {
-	return runtime.beginRuntimeWork(&observer.wait)
+	return observer.work.begin(runtime)
 }
 
 func (observer *eventObserverRuntime) stop() {
@@ -732,7 +732,7 @@ func (observer *eventObserverRuntime) stoppedSignal() <-chan struct{} {
 			observer.stopped = make(chan struct{})
 		}
 		go func() {
-			observer.wait.Wait()
+			observer.work.waitStopped()
 			close(observer.stopped)
 		}()
 	})
