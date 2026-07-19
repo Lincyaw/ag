@@ -837,6 +837,17 @@ func resolveAction(
 		action := sdk.CloneAction(defaultAction)
 		return action, actionResolution(action, nil, "default_final_stop")
 	}
+	// Stop actions are execution-control fences; injected context cannot weaken them.
+	for index, action := range actions {
+		if action.Kind == sdk.ActionStop {
+			action = sdk.CloneAction(action)
+			return action, actionResolution(
+				action,
+				[]int{actionStepAt(actionSteps, index)},
+				"first_stop",
+			)
+		}
+	}
 	var injected []sdk.Message
 	var injectedSteps []int
 	for _, action := range actions {
@@ -852,16 +863,6 @@ func resolveAction(
 	if len(injected) > 0 {
 		action := sdk.Action{Kind: sdk.ActionInject, Messages: injected}
 		return action, actionResolution(action, injectedSteps, "inject_merge")
-	}
-	for index, action := range actions {
-		if action.Kind == sdk.ActionStop {
-			action = sdk.CloneAction(action)
-			return action, actionResolution(
-				action,
-				[]int{actionStepAt(actionSteps, index)},
-				"first_stop",
-			)
-		}
 	}
 	for index, action := range actions {
 		if action.Kind == sdk.ActionStep {

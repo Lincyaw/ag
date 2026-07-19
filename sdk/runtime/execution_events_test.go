@@ -611,10 +611,6 @@ func TestResolveActionAuditRules(t *testing.T) {
 				}},
 			},
 			{
-				Kind:  sdk.ActionStop,
-				Cause: &sdk.Cause{Code: "ignored_stop"},
-			},
-			{
 				Kind: sdk.ActionInject,
 				Messages: []sdk.Message{{
 					Role:    sdk.RoleUser,
@@ -627,23 +623,37 @@ func TestResolveActionAuditRules(t *testing.T) {
 	if injected.Kind != sdk.ActionInject ||
 		len(injected.Messages) != 2 ||
 		resolution.ActionRule != "inject_merge" ||
-		!reflect.DeepEqual(resolution.ActionSteps, []int{2, 5}) {
+		!reflect.DeepEqual(resolution.ActionSteps, []int{2, 3}) {
 		t.Fatalf("inject resolution action=%#v resolution=%#v", injected, resolution)
 	}
 
 	stopped, resolution := resolveAction(
 		sdk.Action{Kind: sdk.ActionStep},
 		[]sdk.Action{
+			{
+				Kind: sdk.ActionInject,
+				Messages: []sdk.Message{{
+					Role:    sdk.RoleUser,
+					Content: "ignored context",
+				}},
+			},
 			{Kind: sdk.ActionStop, Cause: &sdk.Cause{Code: "first_stop"}},
+			{
+				Kind: sdk.ActionInject,
+				Messages: []sdk.Message{{
+					Role:    sdk.RoleUser,
+					Content: "also ignored",
+				}},
+			},
 			{Kind: sdk.ActionStop, Cause: &sdk.Cause{Code: "second_stop"}},
 		},
-		[]int{7, 8},
+		[]int{7, 8, 9, 10},
 	)
 	if stopped.Kind != sdk.ActionStop ||
 		stopped.Cause == nil ||
 		stopped.Cause.Code != "first_stop" ||
 		resolution.ActionRule != "first_stop" ||
-		!reflect.DeepEqual(resolution.ActionSteps, []int{7}) {
+		!reflect.DeepEqual(resolution.ActionSteps, []int{8}) {
 		t.Fatalf("stop resolution action=%#v resolution=%#v", stopped, resolution)
 	}
 
