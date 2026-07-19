@@ -476,14 +476,8 @@ func (server *server) Deliver(
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	target := server.resolveDeliveryTarget(delivery)
-	switch target.state {
-	case serverDeliveryTargetReady:
-	case serverDeliveryTargetWrongPlugin:
-		return nil, status.Error(codes.InvalidArgument, target.cause.Error())
-	case serverDeliveryTargetMissing:
-		return nil, status.Error(codes.NotFound, target.cause.Error())
-	case serverDeliveryTargetStale:
-		return nil, status.Error(codes.FailedPrecondition, target.cause.Error())
+	if err := target.rpcRejection(); err != nil {
+		return nil, err
 	}
 	if err := server.inbox.Enqueue(ctx, delivery); err != nil {
 		return nil, rpcError(err)

@@ -8,20 +8,13 @@ import (
 	"github.com/lincyaw/ag/internal/deliveryworker"
 	"github.com/lincyaw/ag/internal/pluginpolicy"
 	"github.com/lincyaw/ag/sdk"
-)
-
-type serverDeliveryTargetState uint8
-
-const (
-	serverDeliveryTargetReady serverDeliveryTargetState = iota
-	serverDeliveryTargetWrongPlugin
-	serverDeliveryTargetMissing
-	serverDeliveryTargetStale
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type serverDeliveryTarget struct {
-	state      serverDeliveryTargetState
 	cause      error
+	rpcCode    codes.Code
 	subscriber sdk.Subscriber
 	timeout    time.Duration
 }
@@ -45,10 +38,8 @@ func (server *server) receiveDelivery(
 	delivery sdk.Delivery,
 ) error {
 	target := server.resolveDeliveryTarget(delivery)
-	switch target.state {
-	case serverDeliveryTargetReady:
-	default:
-		return deliveryworker.Permanent(target.cause)
+	if err := target.permanentRejection(); err != nil {
+		return deliveryworker.Permanent(err)
 	}
 	return pluginpolicy.ReceiveSubscriber(
 		ctx,
@@ -62,40 +53,57 @@ func (server *server) resolveDeliveryTarget(
 	delivery sdk.Delivery,
 ) serverDeliveryTarget {
 	if delivery.Plugin != server.manifest.Name {
-		return serverDeliveryTarget{
-			state: serverDeliveryTargetWrongPlugin,
-			cause: fmt.Errorf(
+		return rejectServerDeliveryTarget(
+			codes.InvalidArgument,
+			fmt.Errorf(
 				"delivery targets plugin %q",
 				delivery.Plugin,
 			),
-		}
+		)
 	}
 	subscriber, exists := server.registrar.Subscribers[delivery.Subscription]
 	if !exists {
-		return serverDeliveryTarget{
-			state: serverDeliveryTargetMissing,
-			cause: fmt.Errorf(
+		return rejectServerDeliveryTarget(
+			codes.NotFound,
+			fmt.Errorf(
 				"subscriber %q not found",
 				delivery.Subscription,
 			),
-		}
+		)
 	}
 	if err := server.subscriberDeliveryTarget(
 		delivery.Subscription,
 	).Validate(delivery); err != nil {
-		return serverDeliveryTarget{
-			state: serverDeliveryTargetStale,
-			cause: err,
-		}
+		return rejectServerDeliveryTarget(codes.FailedPrecondition, err)
 	}
 	return serverDeliveryTarget{
-		state:      serverDeliveryTargetReady,
 		subscriber: subscriber.Value,
 		timeout: pluginpolicy.SubscriberTimeout(
 			server.subscriberTimeout,
 			subscriber.Spec.Timeout,
 		),
 	}
+}
+
+func rejectServerDeliveryTarget(
+	rpcCode codes.Code,
+	cause error,
+) serverDeliveryTarget {
+	return serverDeliveryTarget{
+		cause:   cause,
+		rpcCode: rpcCode,
+	}
+}
+
+func (target serverDeliveryTarget) permanentRejection() error {
+	return target.cause
+}
+
+func (target serverDeliveryTarget) rpcRejection() error {
+	if target.cause == nil {
+		return nil
+	}
+	return status.Error(target.rpcCode, target.cause.Error())
 }
 
 func (server *server) subscriberDeliveryTarget(
