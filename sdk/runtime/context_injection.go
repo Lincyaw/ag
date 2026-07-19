@@ -18,8 +18,9 @@ const (
 )
 
 type queuedContextInjection struct {
-	injection sdk.ContextInjection
-	sequence  uint64
+	injection   sdk.ContextInjection
+	executionID string
+	sequence    uint64
 }
 
 type contextInjectionQueue struct {
@@ -51,7 +52,79 @@ func (session *Session) EnqueueContextInjection(
 	return session.contextQueue.enqueue(injection)
 }
 
+// EnqueueContextInjection schedules model-visible context for a live hosted
+// execution. State-only controls cannot provide this boundary because the
+// injection queue is intentionally owned by the running session.
+func (runtime *Runtime) EnqueueContextInjection(
+	ctx context.Context,
+	trajectoryID string,
+	executionID string,
+	injection sdk.ContextInjection,
+) error {
+	if runtime == nil {
+		return errors.New("runtime is nil")
+	}
+	releaseWork, err := runtime.beginTrajectoryWork()
+	if err != nil {
+		return err
+	}
+	defer releaseWork()
+	return runtime.trajectoryExecution.enqueueHostedContext(
+		ctx,
+		trajectoryID,
+		executionID,
+		injection,
+	)
+}
+
+func (control ExecutionControl) EnqueueContextInjection(
+	ctx context.Context,
+	trajectoryID string,
+	executionID string,
+	injection sdk.ContextInjection,
+) error {
+	if control.runtime == nil {
+		return errors.New("execution control runtime is nil")
+	}
+	return control.runtime.EnqueueContextInjection(
+		ctx,
+		trajectoryID,
+		executionID,
+		injection,
+	)
+}
+
+func (session *Session) enqueueHostedContextInjection(
+	ctx context.Context,
+	executionID string,
+	injection sdk.ContextInjection,
+) error {
+	if session == nil {
+		return errors.New("session is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	activeID, _ := session.activeExecution()
+	if activeID != executionID {
+		return fmt.Errorf(
+			"%w: trajectory %s execution %s is not active",
+			ErrExecutionNotFound,
+			session.config.ID,
+			executionID,
+		)
+	}
+	return session.contextQueue.enqueueForExecution(executionID, injection)
+}
+
 func (queue *contextInjectionQueue) enqueue(
+	injection sdk.ContextInjection,
+) error {
+	return queue.enqueueForExecution("", injection)
+}
+
+func (queue *contextInjectionQueue) enqueueForExecution(
+	executionID string,
 	injection sdk.ContextInjection,
 ) error {
 	normalized, err := normalizeContextInjection(injection, time.Now().UTC())
@@ -62,8 +135,9 @@ func (queue *contextInjectionQueue) enqueue(
 	defer queue.mu.Unlock()
 	queue.sequence++
 	queue.items = append(queue.items, queuedContextInjection{
-		injection: normalized,
-		sequence:  queue.sequence,
+		injection:   normalized,
+		executionID: executionID,
+		sequence:    queue.sequence,
 	})
 	return nil
 }
@@ -122,7 +196,8 @@ func normalizeContextInjection(
 
 func (queue *contextInjectionQueue) drain(
 	boundary contextInjectionDrainBoundary,
-) []sdk.ContextInjection {
+	executionID string,
+) []queuedContextInjection {
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
 	if len(queue.items) == 0 {
@@ -135,6 +210,7 @@ func (queue *contextInjectionQueue) drain(
 			if contextInjectionPriorityRank(
 				item.injection.Priority,
 			) != rank ||
+				!contextInjectionMatchesExecution(item, executionID) ||
 				!contextInjectionEligible(item.injection, boundary) {
 				continue
 			}
@@ -153,15 +229,11 @@ func (queue *contextInjectionQueue) drain(
 		kept = append(kept, item)
 	}
 	queue.items = kept
-	result := make([]sdk.ContextInjection, len(drained))
-	for index, item := range drained {
-		result[index] = sdk.CloneContextInjection(item.injection)
-	}
-	return result
+	return cloneQueuedContextInjections(drained)
 }
 
 func (queue *contextInjectionQueue) restoreFront(
-	injections []sdk.ContextInjection,
+	injections []queuedContextInjection,
 ) {
 	if len(injections) == 0 {
 		return
@@ -172,11 +244,55 @@ func (queue *contextInjectionQueue) restoreFront(
 	for index, injection := range injections {
 		queue.sequence++
 		restored[index] = queuedContextInjection{
-			injection: sdk.CloneContextInjection(injection),
-			sequence:  queue.sequence,
+			injection:   sdk.CloneContextInjection(injection.injection),
+			executionID: injection.executionID,
+			sequence:    queue.sequence,
 		}
 	}
 	queue.items = append(restored, queue.items...)
+}
+
+func (queue *contextInjectionQueue) discardExecution(executionID string) {
+	if executionID == "" {
+		return
+	}
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	if len(queue.items) == 0 {
+		return
+	}
+	kept := make([]queuedContextInjection, 0, len(queue.items))
+	for _, item := range queue.items {
+		if item.executionID == executionID {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	queue.items = kept
+}
+
+func cloneQueuedContextInjections(
+	injections []queuedContextInjection,
+) []queuedContextInjection {
+	if len(injections) == 0 {
+		return nil
+	}
+	result := make([]queuedContextInjection, len(injections))
+	for index, injection := range injections {
+		result[index] = queuedContextInjection{
+			injection:   sdk.CloneContextInjection(injection.injection),
+			executionID: injection.executionID,
+			sequence:    injection.sequence,
+		}
+	}
+	return result
+}
+
+func contextInjectionMatchesExecution(
+	injection queuedContextInjection,
+	executionID string,
+) bool {
+	return injection.executionID == "" || injection.executionID == executionID
 }
 
 func contextInjectionEligible(
@@ -214,7 +330,8 @@ func (execution *promptExecution) checkpointQueuedContext(
 	snapshot *registrySnapshot,
 	boundary contextInjectionDrainBoundary,
 ) (bool, error) {
-	injections := execution.session.contextQueue.drain(boundary)
+	executionID, _ := execution.session.activeExecution()
+	injections := execution.session.contextQueue.drain(boundary, executionID)
 	if len(injections) == 0 {
 		return false, nil
 	}
@@ -244,15 +361,18 @@ func (execution *promptExecution) checkpointQueuedContext(
 }
 
 func messagesFromContextInjections(
-	injections []sdk.ContextInjection,
+	injections []queuedContextInjection,
 ) []sdk.Message {
 	count := 0
 	for _, injection := range injections {
-		count += len(injection.Messages)
+		count += len(injection.injection.Messages)
 	}
 	messages := make([]sdk.Message, 0, count)
 	for _, injection := range injections {
-		messages = append(messages, sdk.CloneMessages(injection.Messages)...)
+		messages = append(
+			messages,
+			sdk.CloneMessages(injection.injection.Messages)...,
+		)
 	}
 	return messages
 }

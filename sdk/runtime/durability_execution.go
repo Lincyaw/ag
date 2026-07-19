@@ -141,11 +141,16 @@ func (session *Session) executionOperationKey(
 
 func (session *Session) clearExecution(executionID string, token string) {
 	session.executionMu.Lock()
-	defer session.executionMu.Unlock()
+	cleared := false
 	if session.executionID == executionID &&
 		session.executionToken == token {
 		session.executionID = ""
 		session.executionToken = ""
+		cleared = true
+	}
+	session.executionMu.Unlock()
+	if cleared {
+		session.contextQueue.discardExecution(executionID)
 	}
 }
 
@@ -161,6 +166,13 @@ func (session *Session) executionHeartbeat(
 		session.config.ID,
 		executionID,
 		cancel,
+		func(ctx context.Context, injection sdk.ContextInjection) error {
+			return session.enqueueHostedContextInjection(
+				ctx,
+				executionID,
+				injection,
+			)
+		},
 	)
 	go func() {
 		defer close(done)

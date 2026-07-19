@@ -78,11 +78,34 @@ func (trajectory *trajectoryExecutionRuntime) registerHosted(
 	trajectoryID string,
 	executionID string,
 	cancel context.CancelCauseFunc,
+	enqueueContext func(context.Context, sdk.ContextInjection) error,
 ) func() {
 	if trajectory.hosts == nil {
 		return func() {}
 	}
-	return trajectory.hosts.register(trajectoryID, executionID, cancel)
+	return trajectory.hosts.register(
+		trajectoryID,
+		executionID,
+		cancel,
+		enqueueContext,
+	)
+}
+
+func (trajectory *trajectoryExecutionRuntime) enqueueHostedContext(
+	ctx context.Context,
+	trajectoryID string,
+	executionID string,
+	injection sdk.ContextInjection,
+) error {
+	if trajectory.hosts == nil {
+		return hostedExecutionNotFoundError(trajectoryID, executionID)
+	}
+	return trajectory.hosts.enqueueContext(
+		ctx,
+		trajectoryID,
+		executionID,
+		injection,
+	)
 }
 
 func (trajectory *trajectoryExecutionRuntime) cancelHostedAndWait(

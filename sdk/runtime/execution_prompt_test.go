@@ -82,6 +82,78 @@ func (provider *contextInjectionCaptureProvider) Requests() []sdk.ModelRequest {
 	return requests
 }
 
+type hostedContextInjectionProvider struct {
+	mu       sync.Mutex
+	requests []sdk.ModelRequest
+}
+
+func (provider *hostedContextInjectionProvider) Spec() sdk.ProviderSpec {
+	return sdk.ProviderSpec{Name: "hosted-context", Model: "test"}
+}
+
+func (provider *hostedContextInjectionProvider) Complete(
+	_ context.Context,
+	request sdk.ModelRequest,
+) (sdk.ModelResponse, error) {
+	provider.mu.Lock()
+	provider.requests = append(provider.requests, sdk.ModelRequest{
+		Messages: sdk.CloneMessages(request.Messages),
+		Tools:    append([]sdk.ToolSpec(nil), request.Tools...),
+	})
+	callCount := len(provider.requests)
+	provider.mu.Unlock()
+	if callCount == 1 {
+		return sdk.ModelResponse{
+			ToolCalls: []sdk.ToolCall{{
+				ID:        "wait-call",
+				Name:      "wait_for_context",
+				Arguments: json.RawMessage(`{}`),
+			}},
+		}, nil
+	}
+	return sdk.ModelResponse{Content: "hosted context accepted"}, nil
+}
+
+func (provider *hostedContextInjectionProvider) Requests() []sdk.ModelRequest {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	requests := make([]sdk.ModelRequest, len(provider.requests))
+	for index, request := range provider.requests {
+		requests[index] = sdk.ModelRequest{
+			Messages: sdk.CloneMessages(request.Messages),
+			Tools:    append([]sdk.ToolSpec(nil), request.Tools...),
+		}
+	}
+	return requests
+}
+
+type hostedContextInjectionTool struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (tool *hostedContextInjectionTool) Spec() sdk.ToolSpec {
+	return sdk.ToolSpec{
+		Name:        "wait_for_context",
+		Description: "blocks until the test injects hosted context",
+		Parameters:  map[string]any{"type": "object"},
+	}
+}
+
+func (tool *hostedContextInjectionTool) Call(
+	ctx context.Context,
+	_ json.RawMessage,
+) (sdk.ToolResult, error) {
+	tool.once.Do(func() { close(tool.entered) })
+	select {
+	case <-ctx.Done():
+		return sdk.ToolResult{}, ctx.Err()
+	case <-tool.release:
+		return sdk.ToolResult{Content: "tool done"}, nil
+	}
+}
+
 func TestEventObserverDoesNotAffectExecution(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -432,6 +504,119 @@ func TestQueuedContextInjectionCheckpointsBeforeProvider(t *testing.T) {
 	}
 	if !checkpointBeforeProvider {
 		t.Fatalf("trajectory branch did not checkpoint context before provider: %#v", branch)
+	}
+}
+
+func TestRuntimeEnqueuesContextIntoHostedExecution(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	trajectories := sdkstorage.NewMemoryTrajectoryStore()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:       testStateBackendWithStores(trajectories, nil),
+		OperationPoll: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	provider := &hostedContextInjectionProvider{}
+	tool := &hostedContextInjectionTool{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "hosted-context-plugin",
+			Version:     "1.0.0",
+			Description: "captures live execution context injection",
+			APIVersion:  sdk.APIVersion,
+			Registers: []string{
+				sdk.ProviderResource("hosted-context"),
+				sdk.ToolResource("wait_for_context"),
+			},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return errors.Join(
+				registrar.RegisterProvider(provider),
+				registrar.RegisterTool(tool),
+			)
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "hosted-context-session",
+		Provider: "hosted-context",
+		MaxTurns: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultC := make(chan Result, 1)
+	errC := make(chan error, 1)
+	go func() {
+		result, promptErr := session.Prompt(ctx, "base prompt")
+		if promptErr != nil {
+			errC <- promptErr
+			return
+		}
+		resultC <- result
+	}()
+	select {
+	case <-tool.entered:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	metadata, err := trajectories.LoadMetadata(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Execution == nil {
+		t.Fatalf("running execution metadata = %#v", metadata.Execution)
+	}
+	err = runtime.EnqueueContextInjection(
+		ctx,
+		session.ID(),
+		metadata.Execution.ID,
+		sdk.ContextInjection{
+			Priority: sdk.ContextInjectionNow,
+			Mode:     sdk.ContextInjectionTaskNotification,
+			Origin:   "test",
+			Messages: []sdk.Message{{
+				Role:    sdk.RoleUser,
+				Content: "live hosted context",
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("enqueue hosted context: %v", err)
+	}
+	close(tool.release)
+	var result Result
+	select {
+	case err := <-errC:
+		t.Fatal(err)
+	case result = <-resultC:
+	case <-time.After(time.Second):
+		t.Fatal("prompt did not complete")
+	}
+	if result.Output != "hosted context accepted" {
+		t.Fatalf("result output = %q", result.Output)
+	}
+	requests := provider.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %#v", requests)
+	}
+	second := requests[1].Messages
+	if len(second) < 4 || second[len(second)-1].Content != "live hosted context" {
+		t.Fatalf("second provider messages = %#v", second)
 	}
 }
 

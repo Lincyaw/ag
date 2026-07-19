@@ -2,7 +2,10 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"sync"
+
+	"github.com/lincyaw/ag/sdk"
 )
 
 type hostedExecutionRegistry struct {
@@ -11,8 +14,9 @@ type hostedExecutionRegistry struct {
 }
 
 type hostedExecution struct {
-	cancel context.CancelCauseFunc
-	done   chan struct{}
+	cancel         context.CancelCauseFunc
+	enqueueContext func(context.Context, sdk.ContextInjection) error
+	done           chan struct{}
 }
 
 func newHostedExecutionRegistry() *hostedExecutionRegistry {
@@ -29,9 +33,14 @@ func (registry *hostedExecutionRegistry) register(
 	trajectoryID string,
 	executionID string,
 	cancel context.CancelCauseFunc,
+	enqueueContext func(context.Context, sdk.ContextInjection) error,
 ) func() {
 	key := hostedExecutionKey(trajectoryID, executionID)
-	hosted := &hostedExecution{cancel: cancel, done: make(chan struct{})}
+	hosted := &hostedExecution{
+		cancel:         cancel,
+		enqueueContext: enqueueContext,
+		done:           make(chan struct{}),
+	}
 	registry.mu.Lock()
 	registry.hosts[key] = hosted
 	registry.mu.Unlock()
@@ -43,6 +52,52 @@ func (registry *hostedExecutionRegistry) register(
 		registry.mu.Unlock()
 		close(hosted.done)
 	}
+}
+
+func (registry *hostedExecutionRegistry) enqueueContext(
+	ctx context.Context,
+	trajectoryID string,
+	executionID string,
+	injection sdk.ContextInjection,
+) error {
+	hosted, ok := registry.load(trajectoryID, executionID)
+	if !ok {
+		return hostedExecutionNotFoundError(trajectoryID, executionID)
+	}
+	if hosted.enqueueContext == nil {
+		return fmt.Errorf(
+			"%w: trajectory %s execution %s has no context injection boundary",
+			ErrExecutionNotFound,
+			trajectoryID,
+			executionID,
+		)
+	}
+	select {
+	case <-hosted.done:
+		return hostedExecutionNotFoundError(trajectoryID, executionID)
+	default:
+	}
+	if err := hosted.enqueueContext(ctx, injection); err != nil {
+		return err
+	}
+	select {
+	case <-hosted.done:
+		return hostedExecutionNotFoundError(trajectoryID, executionID)
+	default:
+		return nil
+	}
+}
+
+func hostedExecutionNotFoundError(
+	trajectoryID string,
+	executionID string,
+) error {
+	return fmt.Errorf(
+		"%w: trajectory %s execution %s is not hosted",
+		ErrExecutionNotFound,
+		trajectoryID,
+		executionID,
+	)
 }
 
 func (registry *hostedExecutionRegistry) load(
