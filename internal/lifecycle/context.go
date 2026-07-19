@@ -39,7 +39,10 @@ type valuesContext struct {
 }
 
 func (ctx valuesContext) Value(key any) any {
-	return ctx.values.Value(key)
+	if value := ctx.values.Value(key); value != nil {
+		return value
+	}
+	return ctx.Context.Value(key)
 }
 
 // WithValues returns a context that uses parent for cancellation and deadline

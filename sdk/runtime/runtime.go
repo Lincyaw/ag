@@ -209,11 +209,11 @@ func NewRuntimeContext(
 	if err != nil {
 		return nil, err
 	}
-	deliveryContext, cancelDeliveries := context.WithCancel(context.Background())
-	operationContext, cancelOperations := context.WithCancel(context.Background())
-	trajectoryContext, cancelTrajectories :=
-		context.WithCancel(context.Background())
-	observerContext, cancelObservers := context.WithCancel(context.Background())
+	runtimeContext := lifecycle.Detached(ctx)
+	deliveryContext, cancelDeliveries := context.WithCancel(runtimeContext)
+	operationContext, cancelOperations := context.WithCancel(runtimeContext)
+	trajectoryContext, cancelTrajectories := context.WithCancel(runtimeContext)
+	observerContext, cancelObservers := context.WithCancel(runtimeContext)
 	runtime := &Runtime{
 		version:      config.RuntimeVersion,
 		logger:       config.Logger,
