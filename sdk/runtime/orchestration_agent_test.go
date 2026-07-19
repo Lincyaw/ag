@@ -356,26 +356,47 @@ func TestResumeAgentSessionAllowsFreshInvocationOnExistingTrajectory(
 	}
 }
 
-func TestResumeAgentRequestDefaultsToPromptScopedIdempotency(
+func TestResumeAgentRequestDefaultsToCausalIdempotency(
 	t *testing.T,
 ) {
 	first := sdk.AgentRequest{
 		Agent:     "researcher",
-		Prompt:    "first follow-up",
+		Prompt:    "repeat follow-up",
 		SessionID: "child-session",
 		Mode:      sdk.AgentSessionResume,
 	}
 	second := sdk.AgentRequest{
 		Agent:     "researcher",
-		Prompt:    "second follow-up",
+		Prompt:    "repeat follow-up",
 		SessionID: "child-session",
 		Mode:      sdk.AgentSessionResume,
 	}
-	for _, request := range []*sdk.AgentRequest{&first, &second} {
+	retryWithChangedInput := sdk.AgentRequest{
+		Agent:     "researcher",
+		Prompt:    "changed follow-up",
+		SessionID: "child-session",
+		Mode:      sdk.AgentSessionResume,
+	}
+	tests := []struct {
+		request          *sdk.AgentRequest
+		parentInvocation sdk.Invocation
+	}{
+		{request: &first, parentInvocation: sdk.Invocation{ID: "parent-one"}},
+		{request: &second, parentInvocation: sdk.Invocation{ID: "parent-two"}},
+		{
+			request:          &retryWithChangedInput,
+			parentInvocation: sdk.Invocation{ID: "parent-one"},
+		},
+	}
+	for _, test := range tests {
+		request := test.request
 		if err := validateAgentRequest(request); err != nil {
 			t.Fatal(err)
 		}
-		if err := ensureAgentIdempotencyKey(request); err != nil {
+		if err := ensureAgentIdempotencyKey(
+			request,
+			test.parentInvocation,
+		); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -385,8 +406,15 @@ func TestResumeAgentRequestDefaultsToPromptScopedIdempotency(
 	}
 	if first.IdempotencyKey == second.IdempotencyKey {
 		t.Fatalf(
-			"resume prompts share idempotency key %q",
+			"resume parent invocations share idempotency key %q",
 			first.IdempotencyKey,
+		)
+	}
+	if retryWithChangedInput.IdempotencyKey != first.IdempotencyKey {
+		t.Fatalf(
+			"same parent invocation changed resume key from %q to %q",
+			first.IdempotencyKey,
+			retryWithChangedInput.IdempotencyKey,
 		)
 	}
 }

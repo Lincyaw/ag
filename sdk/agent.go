@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strconv"
 )
 
 // AgentSpec declares one same-process agent resource and its execution policy.
@@ -47,8 +48,19 @@ type AgentRequest struct {
 	Ordinal        uint32           `json:"ordinal,omitempty"`
 }
 
-func DefaultAgentResumeIdempotencyKey(sessionID string, prompt string) string {
-	sum := sha256.Sum256([]byte(sessionID + "\x00" + prompt))
+// DefaultAgentResumeIdempotencyKey derives the stable resume operation key for
+// one parent invocation. Replays of that invocation keep the same key; later
+// parent invocations can append the same prompt as new trajectory work.
+func DefaultAgentResumeIdempotencyKey(
+	sessionID string,
+	parentInvocationID string,
+	ordinal uint32,
+) string {
+	sum := sha256.Sum256([]byte(
+		sessionID + "\x00" +
+			parentInvocationID + "\x00" +
+			strconv.FormatUint(uint64(ordinal), 10),
+	))
 	return "resume-" + hex.EncodeToString(sum[:])[:24]
 }
 

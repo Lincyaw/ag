@@ -68,7 +68,10 @@ func (invoker *scopedAgentInvoker) InvokeAgent(
 	if err != nil {
 		return sdk.AgentResult{}, err
 	}
-	if err := ensureAgentIdempotencyKey(&request); err != nil {
+	if err := ensureAgentIdempotencyKey(
+		&request,
+		invoker.parentInvocation,
+	); err != nil {
 		return sdk.AgentResult{}, err
 	}
 	coordinate := request.Agent + "/" + request.IdempotencyKey
@@ -241,16 +244,25 @@ func validateAgentRequest(request *sdk.AgentRequest) error {
 	return nil
 }
 
-func ensureAgentIdempotencyKey(request *sdk.AgentRequest) error {
+func ensureAgentIdempotencyKey(
+	request *sdk.AgentRequest,
+	parentInvocation sdk.Invocation,
+) error {
 	if request.IdempotencyKey == "" {
 		switch request.Mode {
 		case sdk.AgentSessionResume:
 			if request.SessionID == "" {
 				return errors.New("agent resume requires a session ID")
 			}
+			if parentInvocation.ID == "" {
+				return errors.New(
+					"agent resume idempotency key is required without a parent invocation",
+				)
+			}
 			request.IdempotencyKey = sdk.DefaultAgentResumeIdempotencyKey(
 				request.SessionID,
-				request.Prompt,
+				parentInvocation.ID,
+				request.Ordinal,
 			)
 		default:
 			if request.SessionID == "" {
