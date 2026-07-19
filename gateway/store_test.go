@@ -97,6 +97,30 @@ func testSessionStoreContract(t *testing.T, store SessionStore) {
 		page.Next != "" {
 		t.Fatalf("second page = %#v", page)
 	}
+	otherUser := testSession("session-c")
+	otherUser.UserID = "user-b"
+	if _, err := store.Create(ctx, otherUser); err != nil {
+		t.Fatal(err)
+	}
+	page, err = store.ListByUser(ctx, "user-a", sdk.PageRequest{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ID != "session-a" ||
+		page.Next != "session-a" {
+		t.Fatalf("first user page = %#v", page)
+	}
+	page, err = store.ListByUser(ctx, "user-a", sdk.PageRequest{
+		After: page.Next,
+		Limit: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ID != "session-b" ||
+		page.Next != "" {
+		t.Fatalf("second user page = %#v", page)
+	}
 	if err := store.Delete(ctx, updated.ID, updated.Revision); err != nil {
 		t.Fatal(err)
 	}

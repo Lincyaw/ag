@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -19,6 +20,8 @@ var (
 )
 
 type IdleGuard func(context.Context, Session) error
+
+type SessionValidator func(context.Context, Session) error
 
 type PluginCatalog interface {
 	Get(context.Context, registry.InstanceKey) (registry.PluginInstance, error)
@@ -170,9 +173,35 @@ func (manager *Manager) ResolvePlugins(
 	ctx context.Context,
 	session Session,
 ) ([]sdk.PluginReference, error) {
+	return resolvePluginReferences(ctx, manager.directory, session)
+}
+
+func PluginBindingValidator(directory PluginCatalog) SessionValidator {
+	return func(ctx context.Context, session Session) error {
+		return ValidatePluginBindings(ctx, directory, session)
+	}
+}
+
+func ValidatePluginBindings(
+	ctx context.Context,
+	directory PluginCatalog,
+	session Session,
+) error {
+	_, err := resolvePluginReferences(ctx, directory, session)
+	return err
+}
+
+func resolvePluginReferences(
+	ctx context.Context,
+	directory PluginCatalog,
+	session Session,
+) ([]sdk.PluginReference, error) {
+	if directory == nil {
+		return nil, errors.New("gateway plugin directory is nil")
+	}
 	references := make([]sdk.PluginReference, 0, len(session.Plugins))
 	for _, binding := range session.Plugins {
-		instance, err := manager.directory.Get(ctx, registry.InstanceKey{
+		instance, err := directory.Get(ctx, registry.InstanceKey{
 			Namespace:  binding.Namespace,
 			Name:       binding.Name,
 			InstanceID: binding.InstanceID,
@@ -201,10 +230,18 @@ func (manager *Manager) ResolvePlugins(
 			Name:        binding.Name,
 			URI:         binding.URI,
 			Description: binding.Manifest.Description,
-			Labels:      cloneLabels(binding.Labels),
+			Labels:      maps.Clone(binding.Labels),
 		})
 	}
 	return references, nil
+}
+
+func (manager *Manager) validatePluginBindings(
+	ctx context.Context,
+	session Session,
+) error {
+	_, err := manager.ResolvePlugins(ctx, session)
+	return err
 }
 
 func (manager *Manager) ownedSession(
@@ -347,16 +384,8 @@ func bindingFromInstance(instance registry.PluginInstance) PluginBinding {
 		Name:       instance.Name,
 		InstanceID: instance.InstanceID,
 		URI:        instance.URI,
-		Manifest:   cloneManifest(instance.Manifest),
-		Labels:     cloneLabels(instance.Labels),
+		Manifest:   sdk.CloneManifest(instance.Manifest),
+		Labels:     maps.Clone(instance.Labels),
 		Epoch:      instance.Epoch,
 	}
-}
-
-func cloneLabels(labels map[string]string) map[string]string {
-	result := make(map[string]string, len(labels))
-	for key, value := range labels {
-		result[key] = value
-	}
-	return result
 }

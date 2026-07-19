@@ -59,6 +59,7 @@ type SessionStore interface {
 	Create(context.Context, Session) (Session, error)
 	Get(context.Context, string) (Session, error)
 	List(context.Context, sdk.PageRequest) (SessionPage, error)
+	ListByUser(context.Context, string, sdk.PageRequest) (SessionPage, error)
 	Save(context.Context, Session, uint64) (Session, error)
 	Delete(context.Context, string, uint64) error
 	Capabilities() StoreCapabilities
@@ -160,7 +161,7 @@ func normalizeBinding(binding PluginBinding) (PluginBinding, error) {
 			binding.Manifest.Name,
 		)
 	}
-	binding.Manifest = cloneManifest(binding.Manifest)
+	binding.Manifest = sdk.CloneManifest(binding.Manifest)
 	binding.Labels = maps.Clone(binding.Labels)
 	return binding, nil
 }
@@ -189,23 +190,19 @@ func normalizeUserID(value string) (string, error) {
 }
 
 func cloneSession(session Session) Session {
-	session.Plugins = slices.Clone(session.Plugins)
-	for index := range session.Plugins {
-		session.Plugins[index].Manifest = cloneManifest(
-			session.Plugins[index].Manifest,
-		)
-		session.Plugins[index].Labels = maps.Clone(
-			session.Plugins[index].Labels,
-		)
-	}
+	session.Plugins = clonePluginBindings(session.Plugins)
 	return session
 }
 
-func cloneManifest(manifest sdk.Manifest) sdk.Manifest {
-	manifest.Requires = slices.Clone(manifest.Requires)
-	manifest.Conflicts = slices.Clone(manifest.Conflicts)
-	manifest.Registers = slices.Clone(manifest.Registers)
-	return manifest
+func clonePluginBindings(bindings []PluginBinding) []PluginBinding {
+	plugins := slices.Clone(bindings)
+	for index := range plugins {
+		plugins[index].Manifest = sdk.CloneManifest(
+			plugins[index].Manifest,
+		)
+		plugins[index].Labels = maps.Clone(plugins[index].Labels)
+	}
+	return plugins
 }
 
 func prepareSessionUpdate(
@@ -259,9 +256,33 @@ func listSessions(
 	sessions map[string]Session,
 	request sdk.PageRequest,
 ) SessionPage {
+	return listSessionMatches(
+		sessions,
+		request,
+		func(Session) bool { return true },
+	)
+}
+
+func listSessionsByUser(
+	sessions map[string]Session,
+	userID string,
+	request sdk.PageRequest,
+) SessionPage {
+	return listSessionMatches(
+		sessions,
+		request,
+		func(session Session) bool { return session.UserID == userID },
+	)
+}
+
+func listSessionMatches(
+	sessions map[string]Session,
+	request sdk.PageRequest,
+	match func(Session) bool,
+) SessionPage {
 	ids := make([]string, 0, len(sessions))
-	for id := range sessions {
-		if id > request.After {
+	for id, session := range sessions {
+		if id > request.After && match(session) {
 			ids = append(ids, id)
 		}
 	}

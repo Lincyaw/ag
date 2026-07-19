@@ -123,6 +123,29 @@ or replace a plugin with the latest session revision, then submit another
 message. That message resumes from the last successful checkpoint and uses the
 new composition.
 
+Gateway serializes same-session composition changes with prompt submission while
+the submission is establishing its execution reservation. The runtime backend
+then reserves active execution ownership before a prompt is durably accepted.
+That pre-durable reservation is treated as an active execution boundary, so
+cancellation requests wait for the accepted execution ID instead of starting a
+second runtime host through a fallback path.
+Session plugin bindings are validated after that reservation and before the
+runtime host is built; stale bindings therefore fail the submit without reopening
+the check-then-reserve window for concurrent composition changes.
+The execution state returned by polling is always projected from trajectory
+storage. Background runtime hosts log submit, recovery, and close errors through
+the gateway logger, but they do not create a second in-memory result model.
+Gateway closes those hosts through the runtime host's detached close boundary,
+so post-cancel cleanup remains a runtime lifecycle rule instead of a gateway
+workaround.
+
+Cancellation uses the runtime execution-control model in both hosted and
+unhosted cases. If the short-lived runtime host can be opened, it performs the
+runtime-owned cancellation unwind; otherwise the gateway uses a state-only
+`ExecutionHost` command and durably fences that execution. The gateway does not
+inspect raw trajectory metadata or trajectory stores to invent its own
+cancellation or result semantics.
+
 ## Endpoints
 
 | Method | Path | Purpose |
@@ -142,9 +165,14 @@ Session control records are stored under
 `gateway.directory/control/sessions.json`. Each session receives an isolated
 state namespace under `gateway.directory/state`; trajectory, operation, and
 named delivery queue state remain separate SDK ports behind that namespace.
+User-facing session lists are served through a user-scoped session-store query;
+the service layer does not scan every user's sessions and filter them in
+memory.
 
-On startup, the gateway scans sessions for pending or lease-expired
-executions. It rebuilds the persisted session composition and schedules
-recovery. A still-valid worker lease is fenced until it expires. Completed
+On startup, the gateway scans its session control records to recover the
+composition context for each session, then asks the execution backend for a
+runtime recovery candidate. The candidate is the execution lifecycle read
+model: pending and expired-lease executions can run immediately, while a
+still-valid worker lease carries a delay before recovery may claim it. Completed
 results are reconstructed from durable trajectory checkpoints, so polling does
 not depend on process-local result memory.

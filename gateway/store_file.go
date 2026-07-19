@@ -132,6 +132,34 @@ func (store *fileSessionStore) List(
 	return listSessions(state.Sessions, request), nil
 }
 
+func (store *fileSessionStore) ListByUser(
+	ctx context.Context,
+	userID string,
+	request sdk.PageRequest,
+) (SessionPage, error) {
+	if err := ctx.Err(); err != nil {
+		return SessionPage{}, err
+	}
+	userID, err := normalizeUserID(userID)
+	if err != nil {
+		return SessionPage{}, err
+	}
+	request, err = validatePage(request)
+	if err != nil {
+		return SessionPage{}, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.closed {
+		return SessionPage{}, ErrStoreClosed
+	}
+	state, err := store.readLocked()
+	if err != nil {
+		return SessionPage{}, err
+	}
+	return listSessionsByUser(state.Sessions, userID, request), nil
+}
+
 func (store *fileSessionStore) Save(
 	ctx context.Context,
 	session Session,

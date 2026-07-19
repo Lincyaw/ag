@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lincyaw/ag/internal/lifecycle"
 	"github.com/lincyaw/ag/registry"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
@@ -24,7 +25,10 @@ type Execution struct {
 
 type ExecutionBackend interface {
 	CreateSession(context.Context, Session) error
+	// Submit owns the active execution gate for the session. Service-level
+	// check-then-submit would leave a composition mutation race before reservation.
 	Submit(context.Context, Session, string) (Execution, error)
+	RecoveryCandidate(context.Context, Session) (Execution, error)
 	Recover(context.Context, Session) (Execution, error)
 	Current(context.Context, Session) (Execution, error)
 	Get(context.Context, Session, string) (Execution, error)
@@ -47,6 +51,7 @@ type Service struct {
 	directory  PluginDirectory
 	executions ExecutionBackend
 	manager    *Manager
+	gates      *sessionGate
 	defaults   Session
 }
 
@@ -72,6 +77,7 @@ func NewService(config ServiceConfig) (*Service, error) {
 		store:      config.Store,
 		directory:  config.Directory,
 		executions: config.Executions,
+		gates:      newSessionGate(),
 		defaults: Session{
 			Provider: config.DefaultProvider,
 			System:   config.DefaultSystem,
@@ -114,7 +120,7 @@ func (service *Service) CreateSession(
 	}
 	if err := service.executions.CreateSession(ctx, created); err != nil {
 		deleteErr := service.store.Delete(
-			context.WithoutCancel(ctx),
+			lifecycle.Detached(ctx),
 			created.ID,
 			created.Revision,
 		)
@@ -147,34 +153,11 @@ func (service *Service) ListSessions(
 	if err != nil {
 		return SessionPage{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
-	result := SessionPage{Items: make([]Session, 0, request.Limit)}
-	cursor := request.After
-	for len(result.Items) < request.Limit {
-		page, err := service.store.List(ctx, sdk.PageRequest{
-			After: cursor,
-			Limit: sdk.MaxPageSize,
-		})
-		if err != nil {
-			return SessionPage{}, err
-		}
-		for index, session := range page.Items {
-			cursor = session.ID
-			if session.UserID == userID {
-				result.Items = append(result.Items, session)
-				if len(result.Items) == request.Limit {
-					if index+1 < len(page.Items) || page.Next != "" {
-						result.Next = cursor
-					}
-					return result, nil
-				}
-			}
-		}
-		if page.Next == "" {
-			return result, nil
-		}
-		cursor = page.Next
+	page, err := service.store.ListByUser(ctx, userID, request)
+	if err != nil {
+		return SessionPage{}, err
 	}
-	return result, nil
+	return page, nil
 }
 
 func (service *Service) DiscoverPlugins(
@@ -192,6 +175,11 @@ func (service *Service) AttachPlugin(
 	selector string,
 	expectedRevision uint64,
 ) (Session, error) {
+	unlock, err := service.lockSession(ctx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	defer unlock()
 	return service.manager.AttachPlugin(
 		ctx,
 		userID,
@@ -208,6 +196,11 @@ func (service *Service) DetachPlugin(
 	name string,
 	expectedRevision uint64,
 ) (Session, error) {
+	unlock, err := service.lockSession(ctx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	defer unlock()
 	return service.manager.DetachPlugin(
 		ctx,
 		userID,
@@ -229,17 +222,26 @@ func (service *Service) SubmitMessage(
 			ErrInvalidRequest,
 		)
 	}
+	unlock, err := service.lockSession(ctx, sessionID)
+	if err != nil {
+		return Execution{}, err
+	}
+	defer unlock()
 	session, err := service.manager.ownedSession(ctx, userID, sessionID)
 	if err != nil {
 		return Execution{}, err
 	}
-	if err := service.requireIdle(ctx, session); err != nil {
-		return Execution{}, err
-	}
-	if _, err := service.manager.ResolvePlugins(ctx, session); err != nil {
-		return Execution{}, err
-	}
 	return service.executions.Submit(ctx, session, content)
+}
+
+func (service *Service) lockSession(
+	ctx context.Context,
+	sessionID string,
+) (func(), error) {
+	if service.gates == nil {
+		return func() {}, nil
+	}
+	return service.gates.lock(ctx, sessionID)
 }
 
 func (service *Service) GetExecution(
@@ -301,8 +303,9 @@ func (service *Service) RecoverSessions(
 			return scheduled, errors.Join(failures...)
 		}
 		for _, session := range page.Items {
-			current, err := service.executions.Current(ctx, session)
-			if errors.Is(err, ErrExecutionNotFound) {
+			_, err := service.executions.RecoveryCandidate(ctx, session)
+			if errors.Is(err, ErrExecutionNotFound) ||
+				errors.Is(err, ErrExecutionActive) {
 				continue
 			}
 			if err != nil {
@@ -313,10 +316,7 @@ func (service *Service) RecoverSessions(
 				))
 				continue
 			}
-			if current.Execution.Terminal() {
-				continue
-			}
-			if _, err := service.manager.ResolvePlugins(
+			if err := service.manager.validatePluginBindings(
 				ctx,
 				session,
 			); err != nil {

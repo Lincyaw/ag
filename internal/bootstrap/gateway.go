@@ -56,11 +56,12 @@ func StartGateway(
 	logger = logging.WithHandler(logger, observability.LogHandler)
 	directory, err := OpenPluginDirectory(ctx, config.Plugins)
 	if err != nil {
-		return nil, closeGatewayStartup(err, logFile, observability, nil, nil, nil)
+		return nil, closeGatewayStartup(ctx, err, logFile, observability, nil, nil, nil)
 	}
 	root, err := filepath.Abs(config.Gateway.Directory)
 	if err != nil {
 		return nil, closeGatewayStartup(
+			ctx,
 			fmt.Errorf("resolve gateway directory: %w", err),
 			logFile,
 			observability,
@@ -74,6 +75,7 @@ func StartGateway(
 	)
 	if err != nil {
 		return nil, closeGatewayStartup(
+			ctx,
 			err,
 			logFile,
 			observability,
@@ -87,6 +89,7 @@ func StartGateway(
 	)
 	if err != nil {
 		return nil, closeGatewayStartup(
+			ctx,
 			err,
 			logFile,
 			observability,
@@ -97,7 +100,8 @@ func StartGateway(
 	}
 	executions, err := gateway.NewRuntimeExecutionBackend(
 		gateway.RuntimeExecutionConfig{
-			States: stateFactory,
+			States:          stateFactory,
+			ValidateSession: gateway.PluginBindingValidator(directory),
 			Build: GatewayRuntimeBuilder(
 				config,
 				logger,
@@ -105,10 +109,12 @@ func StartGateway(
 				observability.Meter,
 				version,
 			),
+			Logger: logger,
 		},
 	)
 	if err != nil {
 		return nil, closeGatewayStartup(
+			ctx,
 			err,
 			logFile,
 			observability,
@@ -127,6 +133,7 @@ func StartGateway(
 	})
 	if err != nil {
 		return nil, closeGatewayStartup(
+			ctx,
 			err,
 			logFile,
 			observability,
@@ -163,6 +170,7 @@ func (running *RunningGateway) Close(ctx context.Context) error {
 }
 
 func closeGatewayStartup(
+	ctx context.Context,
 	cause error,
 	logFile io.Closer,
 	observability *telemetry.Runtime,
@@ -170,7 +178,7 @@ func closeGatewayStartup(
 	sessionStore gateway.SessionStore,
 	executions gateway.ExecutionBackend,
 ) error {
-	closeCtx, cancel := closeContext()
+	closeCtx, cancel := closeContext(ctx)
 	defer cancel()
 	return errors.Join(
 		cause,

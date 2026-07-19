@@ -3,9 +3,11 @@ package gateway
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/lincyaw/ag/registry"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 )
@@ -18,6 +20,25 @@ type gatewayTestProvider struct {
 
 func (*gatewayTestProvider) Spec() sdk.ProviderSpec {
 	return sdk.ProviderSpec{Name: "gateway-test", Model: "test"}
+}
+
+func TestGatewayExecutionErrorsPreserveRuntimeSemantics(t *testing.T) {
+	t.Parallel()
+	if err := gatewayExecutionViewError(
+		agentruntime.ErrExecutionNotFound,
+	); !errors.Is(err, ErrExecutionNotFound) {
+		t.Fatalf("view not found error = %v", err)
+	}
+	if err := gatewayExecutionViewError(
+		sdk.ErrTrajectoryExecution,
+	); errors.Is(err, ErrExecutionNotFound) {
+		t.Fatalf("trajectory conflict collapsed to not found: %v", err)
+	}
+	if err := gatewayRecoveryCandidateError(
+		agentruntime.ErrExecutionNotRecoverable,
+	); !errors.Is(err, ErrExecutionNotFound) {
+		t.Fatalf("non-recoverable candidate error = %v", err)
+	}
 }
 
 func (provider *gatewayTestProvider) Complete(
@@ -75,7 +96,7 @@ func TestRuntimeExecutionBackendRecoversPendingExecution(t *testing.T) {
 	}
 	runtime, err := testGatewayRuntimeBuilder(
 		&gatewayTestProvider{},
-	)(t.Context(), session, state)
+	)(t.Context(), runtimeBuildSpec(session), state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +118,10 @@ func TestRuntimeExecutionBackendRecoversPendingExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	executionID := submission.Execution().ID
-	if err := closeExecutionHost(runtime, state); err != nil {
+	if err := (agentruntime.ExecutionHost{
+		Runtime: runtime,
+		State:   state,
+	}).Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -211,6 +235,222 @@ func TestRuntimeExecutionBackendClosePreservesExecutionForRecovery(
 	}
 }
 
+func TestRuntimeExecutionBackendCancelsUnhostedThroughRuntime(
+	t *testing.T,
+) {
+	t.Parallel()
+	root := t.TempDir()
+	states, err := NewFileSessionStateFactory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := Session{
+		ID: "runtime-cancel-unhosted", UserID: "user-a",
+		Provider: "gateway-test", MaxTurns: 3,
+	}
+	executionID := createUnhostedGatewayExecution(
+		t,
+		states,
+		session,
+		&gatewayTestProvider{},
+	)
+	var builds atomic.Int64
+	backend, err := NewRuntimeExecutionBackend(RuntimeExecutionConfig{
+		States: states,
+		Build: func(
+			ctx context.Context,
+			spec RuntimeBuildSpec,
+			state sdk.StateBackend,
+		) (*agentruntime.Runtime, error) {
+			builds.Add(1)
+			return testGatewayRuntimeBuilder(&gatewayTestProvider{})(
+				ctx,
+				spec,
+				state,
+			)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			3*time.Second,
+		)
+		defer cancel()
+		if err := backend.Close(ctx); err != nil {
+			t.Errorf("close execution backend: %v", err)
+		}
+	})
+	cancelled, err := backend.Cancel(t.Context(), session, executionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builds.Load() != 1 {
+		t.Fatalf("runtime builds = %d, want 1", builds.Load())
+	}
+	if cancelled.Execution.State != sdk.TrajectoryExecutionCancelled {
+		t.Fatalf("cancelled execution = %#v", cancelled)
+	}
+}
+
+func TestRuntimeExecutionBackendCancelFallsBackToFenceWhenRuntimeBuildFails(
+	t *testing.T,
+) {
+	t.Parallel()
+	root := t.TempDir()
+	states, err := NewFileSessionStateFactory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := Session{
+		ID: "runtime-cancel-fallback", UserID: "user-a",
+		Provider: "gateway-test", MaxTurns: 3,
+	}
+	executionID := createUnhostedGatewayExecution(
+		t,
+		states,
+		session,
+		&gatewayTestProvider{},
+	)
+	backend, err := NewRuntimeExecutionBackend(RuntimeExecutionConfig{
+		States: states,
+		Build: func(
+			context.Context,
+			RuntimeBuildSpec,
+			sdk.StateBackend,
+		) (*agentruntime.Runtime, error) {
+			return nil, errors.New("runtime unavailable")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			3*time.Second,
+		)
+		defer cancel()
+		if err := backend.Close(ctx); err != nil {
+			t.Errorf("close execution backend: %v", err)
+		}
+	})
+	cancelled, err := backend.Cancel(t.Context(), session, executionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Execution.State != sdk.TrajectoryExecutionCancelled {
+		t.Fatalf("cancelled execution = %#v", cancelled)
+	}
+}
+
+func TestRuntimeExecutionBackendCancelDrainsRecoveryBeforeFallback(
+	t *testing.T,
+) {
+	t.Parallel()
+	root := t.TempDir()
+	states, err := NewFileSessionStateFactory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := Session{
+		ID: "runtime-cancel-active-recovery", UserID: "user-a",
+		Provider: "gateway-test", MaxTurns: 3,
+	}
+	executionID := createUnhostedGatewayExecution(
+		t,
+		states,
+		session,
+		&gatewayTestProvider{},
+	)
+	firstBuildEntered := make(chan struct{})
+	var (
+		builds          atomic.Int64
+		concurrentBuild atomic.Bool
+		inBuild         atomic.Int64
+	)
+	backend, err := NewRuntimeExecutionBackend(RuntimeExecutionConfig{
+		States: states,
+		Build: func(
+			ctx context.Context,
+			spec RuntimeBuildSpec,
+			state sdk.StateBackend,
+		) (*agentruntime.Runtime, error) {
+			if inBuild.Add(1) > 1 {
+				concurrentBuild.Store(true)
+			}
+			defer inBuild.Add(-1)
+			if builds.Add(1) == 1 {
+				close(firstBuildEntered)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return testGatewayRuntimeBuilder(&gatewayTestProvider{})(
+				ctx,
+				spec,
+				state,
+			)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			3*time.Second,
+		)
+		defer cancel()
+		if err := backend.Close(ctx); err != nil {
+			t.Errorf("close execution backend: %v", err)
+		}
+	})
+	if _, err := backend.Recover(t.Context(), session); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-firstBuildEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("recovery runtime build did not start")
+	}
+	cancelled, err := backend.Cancel(t.Context(), session, executionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if concurrentBuild.Load() {
+		t.Fatal("cancel built a fallback runtime before recovery host drained")
+	}
+	if builds.Load() != 2 {
+		t.Fatalf("runtime builds = %d, want 2", builds.Load())
+	}
+	if cancelled.Execution.State != sdk.TrajectoryExecutionCancelled {
+		t.Fatalf("cancelled execution = %#v", cancelled)
+	}
+}
+
+func TestExpectedHostCancellationRequiresOnlyCancellationErrors(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if !expectedHostCancellation(
+		ctx,
+		errors.Join(context.Canceled, context.DeadlineExceeded),
+	) {
+		t.Fatal("pure cancellation join was not recognized")
+	}
+	if expectedHostCancellation(
+		ctx,
+		errors.Join(context.Canceled, errors.New("close failed")),
+	) {
+		t.Fatal("joined close failure was hidden as cancellation")
+	}
+	if expectedHostCancellation(context.Background(), context.Canceled) {
+		t.Fatal("uncancelled host context was treated as expected cancellation")
+	}
+}
+
 func TestRuntimeExecutionBackendPollWaitsForHostClose(t *testing.T) {
 	provider := &gatewayTestProvider{}
 	backend := newTestRuntimeExecutionBackend(t, provider)
@@ -255,6 +495,439 @@ func TestRuntimeExecutionBackendPollWaitsForHostClose(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("poll did not return after execution host closed")
+	}
+}
+
+func TestRuntimeExecutionBackendReservesSessionBeforeDurableSubmit(
+	t *testing.T,
+) {
+	t.Parallel()
+	root := t.TempDir()
+	states, err := NewFileSessionStateFactory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := Session{
+		ID: "runtime-submit-reservation", UserID: "user-a",
+		Provider: "gateway-test", MaxTurns: 3,
+	}
+	state, err := states.Open(t.Context(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := testGatewayRuntimeBuilder(
+		&gatewayTestProvider{},
+	)(t.Context(), runtimeBuildSpec(session), state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.NewSession(
+		t.Context(),
+		agentruntime.SessionConfig{
+			ID:       session.ID,
+			Provider: session.Provider,
+			MaxTurns: session.MaxTurns,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := (agentruntime.ExecutionHost{
+		Runtime: runtime,
+		State:   state,
+	}).Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	buildEntered := make(chan struct{}, 1)
+	releaseBuild := make(chan struct{})
+	provider := &gatewayTestProvider{}
+	backend, err := NewRuntimeExecutionBackend(RuntimeExecutionConfig{
+		States: states,
+		Build: func(
+			ctx context.Context,
+			spec RuntimeBuildSpec,
+			state sdk.StateBackend,
+		) (*agentruntime.Runtime, error) {
+			select {
+			case buildEntered <- struct{}{}:
+			default:
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-releaseBuild:
+			}
+			return testGatewayRuntimeBuilder(provider)(
+				ctx,
+				spec,
+				state,
+			)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			3*time.Second,
+		)
+		defer cancel()
+		if err := backend.Close(ctx); err != nil {
+			t.Errorf("close execution backend: %v", err)
+		}
+	})
+
+	firstDone := make(chan struct {
+		execution Execution
+		err       error
+	}, 1)
+	go func() {
+		execution, err := backend.Submit(
+			context.Background(),
+			session,
+			"first",
+		)
+		firstDone <- struct {
+			execution Execution
+			err       error
+		}{execution: execution, err: err}
+	}()
+	select {
+	case <-buildEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("runtime builder did not start")
+	}
+	state, err = states.Open(t.Context(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, viewErr := agentruntime.LoadExecutionView(
+		t.Context(),
+		state.Trajectories(),
+		session.ID,
+	)
+	closeErr := state.Close(context.Background())
+	if !errors.Is(viewErr, sdk.ErrTrajectoryExecution) ||
+		closeErr != nil {
+		t.Fatalf(
+			"execution view before durable submit error=%v close=%v",
+			viewErr,
+			closeErr,
+		)
+	}
+	if _, err := backend.Submit(t.Context(), session, "second"); !errors.Is(
+		err,
+		ErrExecutionActive,
+	) {
+		t.Fatalf("second submit error = %v, want ErrExecutionActive", err)
+	}
+	close(releaseBuild)
+	var first struct {
+		execution Execution
+		err       error
+	}
+	select {
+	case first = <-firstDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first submit did not finish")
+	}
+	if first.err != nil {
+		t.Fatal(first.err)
+	}
+	completed := waitGatewayExecution(
+		t,
+		backend,
+		session,
+		first.execution.Execution.ID,
+	)
+	if completed.Execution.State != sdk.TrajectoryExecutionSucceeded {
+		t.Fatalf("completed execution = %#v", completed)
+	}
+}
+
+func TestRuntimeExecutionBackendGatesCompositionDuringPreDurableReservation(
+	t *testing.T,
+) {
+	t.Parallel()
+	root := t.TempDir()
+	states, err := NewFileSessionStateFactory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := registry.NewMemoryDirectory(registry.MemoryConfig{})
+	t.Cleanup(func() {
+		if err := directory.Close(context.Background()); err != nil {
+			t.Errorf("close directory: %v", err)
+		}
+	})
+	if _, err := directory.Register(
+		t.Context(),
+		testRegistration("file", "node-a"),
+		registry.LeaseOptions{TTL: time.Minute},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	buildEntered := make(chan struct{}, 1)
+	releaseBuild := make(chan struct{})
+	var blockBuild atomic.Bool
+	provider := &gatewayTestProvider{}
+	backend, err := NewRuntimeExecutionBackend(RuntimeExecutionConfig{
+		States: states,
+		Build: func(
+			ctx context.Context,
+			spec RuntimeBuildSpec,
+			state sdk.StateBackend,
+		) (*agentruntime.Runtime, error) {
+			if blockBuild.Load() {
+				select {
+				case buildEntered <- struct{}{}:
+				default:
+				}
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-releaseBuild:
+				}
+			}
+			return testGatewayRuntimeBuilder(provider)(
+				ctx,
+				spec,
+				state,
+			)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemorySessionStore()
+	service, err := NewService(ServiceConfig{
+		Store: store, Directory: directory, Executions: backend,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			3*time.Second,
+		)
+		defer cancel()
+		if err := service.Close(ctx); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+	session, err := service.CreateSession(t.Context(), Session{
+		ID: "runtime-predurable-idle-guard", UserID: "user-a",
+		Provider: "gateway-test", MaxTurns: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockBuild.Store(true)
+	submitDone := make(chan error, 1)
+	go func() {
+		_, err := service.SubmitMessage(
+			context.Background(),
+			"user-a",
+			session.ID,
+			"first",
+		)
+		submitDone <- err
+	}()
+	select {
+	case <-buildEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("runtime builder did not start")
+	}
+	state, err := states.Open(t.Context(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, viewErr := agentruntime.LoadExecutionView(
+		t.Context(),
+		state.Trajectories(),
+		session.ID,
+	)
+	closeErr := state.Close(context.Background())
+	if !errors.Is(viewErr, sdk.ErrTrajectoryExecution) ||
+		closeErr != nil {
+		t.Fatalf(
+			"execution view before durable submit error=%v close=%v",
+			viewErr,
+			closeErr,
+		)
+	}
+
+	attachCtx, cancelAttach := context.WithTimeout(
+		t.Context(),
+		100*time.Millisecond,
+	)
+	_, err = service.AttachPlugin(
+		attachCtx,
+		"user-a",
+		session.ID,
+		"file@node-a",
+		session.Revision,
+	)
+	cancelAttach()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf(
+			"pre-durable attach error = %v, want context deadline",
+			err,
+		)
+	}
+
+	cancelCtx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	_, err = backend.Cancel(cancelCtx, session, "not-yet-durable")
+	cancel()
+	if !errors.Is(err, ErrExecutionActive) {
+		t.Fatalf("pre-durable cancel error = %v, want ErrExecutionActive", err)
+	}
+
+	close(releaseBuild)
+	select {
+	case err := <-submitDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("submit did not finish")
+	}
+}
+
+func TestRuntimeExecutionBackendValidatesSessionAfterReservation(
+	t *testing.T,
+) {
+	t.Parallel()
+	root := t.TempDir()
+	states, err := NewFileSessionStateFactory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := Session{
+		ID: "runtime-validator-reservation", UserID: "user-a",
+		Provider: "gateway-test", MaxTurns: 3,
+	}
+	state, err := states.Open(t.Context(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := testGatewayRuntimeBuilder(
+		&gatewayTestProvider{},
+	)(t.Context(), runtimeBuildSpec(session), state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.NewSession(
+		t.Context(),
+		agentruntime.SessionConfig{
+			ID:       session.ID,
+			Provider: session.Provider,
+			MaxTurns: session.MaxTurns,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := (agentruntime.ExecutionHost{
+		Runtime: runtime,
+		State:   state,
+	}).Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	validatorEntered := make(chan struct{}, 1)
+	releaseValidator := make(chan struct{})
+	validatorErr := errors.New("session plugin binding is stale")
+	var buildCalls atomic.Int32
+	backend, err := NewRuntimeExecutionBackend(RuntimeExecutionConfig{
+		States: states,
+		ValidateSession: func(ctx context.Context, _ Session) error {
+			select {
+			case validatorEntered <- struct{}{}:
+			default:
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-releaseValidator:
+			}
+			return validatorErr
+		},
+		Build: func(
+			ctx context.Context,
+			spec RuntimeBuildSpec,
+			state sdk.StateBackend,
+		) (*agentruntime.Runtime, error) {
+			buildCalls.Add(1)
+			return testGatewayRuntimeBuilder(&gatewayTestProvider{})(
+				ctx,
+				spec,
+				state,
+			)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			3*time.Second,
+		)
+		defer cancel()
+		if err := backend.Close(ctx); err != nil {
+			t.Errorf("close execution backend: %v", err)
+		}
+	})
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := backend.Submit(context.Background(), session, "first")
+		firstDone <- err
+	}()
+	select {
+	case <-validatorEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("session validator did not start")
+	}
+	state, err = states.Open(t.Context(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, viewErr := agentruntime.LoadExecutionView(
+		t.Context(),
+		state.Trajectories(),
+		session.ID,
+	)
+	closeErr := state.Close(context.Background())
+	if !errors.Is(viewErr, sdk.ErrTrajectoryExecution) ||
+		closeErr != nil {
+		t.Fatalf(
+			"execution view before validator release error=%v close=%v",
+			viewErr,
+			closeErr,
+		)
+	}
+	if _, err := backend.Submit(t.Context(), session, "second"); !errors.Is(
+		err,
+		ErrExecutionActive,
+	) {
+		t.Fatalf("second submit error = %v, want ErrExecutionActive", err)
+	}
+	close(releaseValidator)
+	select {
+	case err := <-firstDone:
+		if !errors.Is(err, validatorErr) {
+			t.Fatalf("first submit error = %v, want validator error", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("first submit did not finish")
+	}
+	if got := buildCalls.Load(); got != 0 {
+		t.Fatalf("runtime build calls = %d, want 0 before validation succeeds", got)
 	}
 }
 
@@ -331,6 +1004,50 @@ func testRuntimeExecutionBackendCancel(t *testing.T) {
 	}
 }
 
+func createUnhostedGatewayExecution(
+	t *testing.T,
+	states StateBackendFactory,
+	session Session,
+	provider sdk.Provider,
+) string {
+	t.Helper()
+	state, err := states.Open(t.Context(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := testGatewayRuntimeBuilder(provider)(
+		t.Context(),
+		runtimeBuildSpec(session),
+		state,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeSession, err := runtime.NewSession(
+		t.Context(),
+		agentruntime.SessionConfig{
+			ID:       session.ID,
+			Provider: session.Provider,
+			MaxTurns: session.MaxTurns,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submission, err := runtimeSession.SubmitPrompt(t.Context(), "cancel me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionID := submission.Execution().ID
+	if err := (agentruntime.ExecutionHost{
+		Runtime: runtime,
+		State:   state,
+	}).Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return executionID
+}
+
 func newTestRuntimeExecutionBackend(
 	t *testing.T,
 	provider sdk.Provider,
@@ -372,7 +1089,7 @@ func newTestRuntimeExecutionBackendAt(
 func testGatewayRuntimeBuilder(provider sdk.Provider) RuntimeBuilder {
 	return func(
 		ctx context.Context,
-		_ Session,
+		_ RuntimeBuildSpec,
 		state sdk.StateBackend,
 	) (*agentruntime.Runtime, error) {
 		runtime, err := agentruntime.NewRuntime(

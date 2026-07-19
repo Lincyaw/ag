@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
-	"time"
 
 	"github.com/lincyaw/ag/gateway"
 	appconfig "github.com/lincyaw/ag/internal/config"
@@ -31,13 +30,14 @@ func GatewayRuntimeBuilder(
 	)
 	return func(
 		ctx context.Context,
-		session gateway.Session,
+		spec gateway.RuntimeBuildSpec,
 		state sdk.StateBackend,
 	) (*agentruntime.Runtime, error) {
 		if catalogErr != nil {
 			return nil, catalogErr
 		}
-		runtime, err := agentruntime.NewRuntime(
+		runtime, err := agentruntime.NewRuntimeContext(
+			ctx,
 			agentruntime.RuntimeConfig{
 				RuntimeVersion:   version,
 				Logger:           logger,
@@ -51,15 +51,12 @@ func GatewayRuntimeBuilder(
 			return nil, err
 		}
 		fail := func(cause error) (*agentruntime.Runtime, error) {
-			closeCtx, cancel := context.WithTimeout(
-				context.Background(),
-				5*time.Second,
-			)
+			closeCtx, cancel := closeContext(ctx)
 			defer cancel()
 			return nil, errors.Join(cause, runtime.Close(closeCtx))
 		}
-		bound := make(map[string]struct{}, len(session.Plugins))
-		for _, binding := range session.Plugins {
+		bound := make(map[string]struct{}, len(spec.Plugins))
+		for _, binding := range spec.Plugins {
 			bound[binding.Name] = struct{}{}
 		}
 		mountLocal := func(plugin sdk.Plugin) error {
@@ -79,7 +76,7 @@ func GatewayRuntimeBuilder(
 			}
 		}
 
-		for _, binding := range session.Plugins {
+		for _, binding := range spec.Plugins {
 			source, err := catalog.Resolve(ctx, binding.URI)
 			if err != nil {
 				return fail(err)
@@ -115,10 +112,7 @@ func (source expectedManifestSource) Open(
 	if reflect.DeepEqual(actual, source.expected) {
 		return connection, nil
 	}
-	closeCtx, cancel := context.WithTimeout(
-		context.Background(),
-		5*time.Second,
-	)
+	closeCtx, cancel := closeContext(ctx)
 	defer cancel()
 	return nil, errors.Join(
 		fmt.Errorf(

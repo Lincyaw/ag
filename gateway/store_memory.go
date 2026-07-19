@@ -89,6 +89,30 @@ func (store *memorySessionStore) List(
 	return listSessions(store.sessions, request), nil
 }
 
+func (store *memorySessionStore) ListByUser(
+	ctx context.Context,
+	userID string,
+	request sdk.PageRequest,
+) (SessionPage, error) {
+	if err := ctx.Err(); err != nil {
+		return SessionPage{}, err
+	}
+	userID, err := normalizeUserID(userID)
+	if err != nil {
+		return SessionPage{}, err
+	}
+	request, err = validatePage(request)
+	if err != nil {
+		return SessionPage{}, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.closed {
+		return SessionPage{}, ErrStoreClosed
+	}
+	return listSessionsByUser(store.sessions, userID, request), nil
+}
+
 func (store *memorySessionStore) Save(
 	ctx context.Context,
 	session Session,

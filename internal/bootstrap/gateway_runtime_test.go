@@ -36,8 +36,7 @@ func TestGatewayRuntimeBuilderSessionBindingOverridesLocalPlugin(t *testing.T) {
 		"test",
 	)(
 		t.Context(),
-		gateway.Session{
-			ID: "session-plugin-override",
+		gateway.RuntimeBuildSpec{
 			Plugins: []gateway.PluginBinding{{
 				Name:       "file",
 				InstanceID: "remote",

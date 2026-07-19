@@ -4,40 +4,40 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
-	"time"
+	"log/slog"
 
+	"github.com/lincyaw/ag/internal/lifecycle"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 )
 
 type RuntimeBuilder func(
 	context.Context,
-	Session,
+	RuntimeBuildSpec,
 	sdk.StateBackend,
 ) (*agentruntime.Runtime, error)
 
-type RuntimeExecutionConfig struct {
-	States StateBackendFactory
-	Build  RuntimeBuilder
+type RuntimeBuildSpec struct {
+	Plugins []PluginBinding
 }
+
+type RuntimeExecutionConfig struct {
+	States          StateBackendFactory
+	Build           RuntimeBuilder
+	ValidateSession SessionValidator
+	Logger          *slog.Logger
+}
+
+const gatewayCancellationReason = "user requested cancellation"
 
 type runtimeExecutionBackend struct {
-	states StateBackendFactory
-	build  RuntimeBuilder
-	ctx    context.Context
-	cancel context.CancelFunc
-	mu     sync.Mutex
-	active map[string]*activeRuntimeExecution
-	closed bool
-	wait   sync.WaitGroup
-}
-
-type activeRuntimeExecution struct {
-	id      string
-	cancel  context.CancelFunc
-	done    chan struct{}
-	runtime *agentruntime.Runtime
+	states          StateBackendFactory
+	build           RuntimeBuilder
+	validateSession SessionValidator
+	logger          *slog.Logger
+	ctx             context.Context
+	cancel          context.CancelFunc
+	hosts           *activeHostRegistry
 }
 
 func NewRuntimeExecutionBackend(
@@ -49,13 +49,18 @@ func NewRuntimeExecutionBackend(
 	if config.Build == nil {
 		return nil, errors.New("gateway runtime builder is nil")
 	}
+	if config.Logger == nil {
+		config.Logger = slog.Default()
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &runtimeExecutionBackend{
-		states: config.States,
-		build:  config.Build,
-		ctx:    ctx,
-		cancel: cancel,
-		active: make(map[string]*activeRuntimeExecution),
+		states:          config.States,
+		build:           config.Build,
+		validateSession: config.ValidateSession,
+		logger:          config.Logger,
+		ctx:             ctx,
+		cancel:          cancel,
+		hosts:           newActiveHostRegistry(),
 	}, nil
 }
 
@@ -63,17 +68,20 @@ func (backend *runtimeExecutionBackend) CreateSession(
 	ctx context.Context,
 	session Session,
 ) error {
-	runtime, state, err := backend.openRuntime(ctx, session)
+	if err := backend.validateSessionBinding(ctx, session); err != nil {
+		return err
+	}
+	host, err := backend.openRuntime(ctx, session)
 	if err != nil {
 		return err
 	}
-	if _, err := runtime.NewSession(ctx, agentruntime.SessionConfig{
+	if _, err := host.Runtime.NewSession(ctx, agentruntime.SessionConfig{
 		ID: session.ID, Provider: session.Provider,
 		System: session.System, MaxTurns: session.MaxTurns,
 	}); err != nil {
-		return errors.Join(err, closeExecutionHost(runtime, state))
+		return errors.Join(err, host.CloseDetached(ctx))
 	}
-	return closeExecutionHost(runtime, state)
+	return host.CloseDetached(ctx)
 }
 
 func (backend *runtimeExecutionBackend) Submit(
@@ -81,27 +89,35 @@ func (backend *runtimeExecutionBackend) Submit(
 	session Session,
 	content string,
 ) (Execution, error) {
-	backend.mu.Lock()
-	if backend.closed {
-		backend.mu.Unlock()
-		return Execution{}, errors.New("gateway execution backend is closed")
-	}
-	if active := backend.active[session.ID]; active != nil {
-		backend.mu.Unlock()
-		return Execution{}, fmt.Errorf(
-			"%w: %s",
-			ErrExecutionActive,
-			active.id,
-		)
-	}
-	backend.mu.Unlock()
-
-	runtime, state, err := backend.openRuntime(ctx, session)
-	if err != nil {
+	slot, runCtx := newActiveHostSlot(backend.ctx, "")
+	if _, err := backend.hosts.reserve(session.ID, slot); err != nil {
+		slot.cancel()
 		return Execution{}, err
 	}
-	resumed, err := runtime.ResumeSession(
-		ctx,
+
+	cleanup := func(
+		cause error,
+		host agentruntime.ExecutionHost,
+	) (Execution, error) {
+		slot.cancel()
+		backend.hosts.complete(session.ID, slot)
+		return Execution{}, errors.Join(cause, host.CloseDetached(ctx))
+	}
+	setupCtx, stopSetup := context.WithCancel(ctx)
+	stopBackendCancel := context.AfterFunc(backend.ctx, stopSetup)
+	defer func() {
+		stopBackendCancel()
+		stopSetup()
+	}()
+	if err := backend.validateSessionBinding(setupCtx, session); err != nil {
+		return cleanup(err, agentruntime.ExecutionHost{})
+	}
+	host, err := backend.openRuntime(setupCtx, session)
+	if err != nil {
+		return cleanup(err, agentruntime.ExecutionHost{})
+	}
+	resumed, err := host.Runtime.ResumeSession(
+		setupCtx,
 		session.ID,
 		agentruntime.SessionConfig{
 			Provider: session.Provider, System: session.System,
@@ -110,154 +126,113 @@ func (backend *runtimeExecutionBackend) Submit(
 		},
 	)
 	if err != nil {
-		return Execution{}, errors.Join(
-			err,
-			closeExecutionHost(runtime, state),
-		)
+		return cleanup(err, host)
 	}
-	submission, err := resumed.SubmitPrompt(ctx, content)
+	submission, err := resumed.SubmitPrompt(setupCtx, content)
 	if err != nil {
-		return Execution{}, errors.Join(
-			err,
-			closeExecutionHost(runtime, state),
-		)
+		return cleanup(err, host)
 	}
 	execution := submission.Execution()
-	runCtx, cancel := context.WithCancel(backend.ctx)
-	active := &activeRuntimeExecution{
-		id: execution.ID, cancel: cancel, done: make(chan struct{}),
-		runtime: runtime,
+	if err := backend.hosts.bind(
+		session.ID,
+		slot,
+		execution.ID,
+		host.Runtime,
+		host.Control(),
+	); err != nil {
+		return cleanup(err, host)
 	}
-	backend.mu.Lock()
-	if backend.closed {
-		backend.mu.Unlock()
-		cancel()
-		return Execution{}, errors.Join(
-			errors.New("gateway execution backend closed during submit"),
-			closeExecutionHost(runtime, state),
-		)
-	}
-	if existing := backend.active[session.ID]; existing != nil {
-		backend.mu.Unlock()
-		cancel()
-		return Execution{}, errors.Join(
-			fmt.Errorf("%w: %s", ErrExecutionActive, existing.id),
-			closeExecutionHost(runtime, state),
-		)
-	}
-	backend.active[session.ID] = active
-	backend.wait.Add(1)
-	backend.mu.Unlock()
 
 	go backend.runSubmission(
 		runCtx,
 		session.ID,
-		active,
+		slot,
 		submission,
-		runtime,
-		state,
+		host,
 	)
-	return Execution{
-		SessionID: session.ID,
-		Execution: execution,
-	}, nil
+	return gatewayExecutionFromView(submission.ExecutionView()), nil
 }
 
 func (backend *runtimeExecutionBackend) Recover(
 	ctx context.Context,
 	session Session,
 ) (Execution, error) {
-	state, err := backend.states.Open(ctx, session)
+	candidate, err := backend.loadRecoveryCandidate(ctx, session)
 	if err != nil {
 		return Execution{}, err
 	}
-	metadata, loadErr := state.Trajectories().LoadMetadata(
-		ctx,
-		session.ID,
+	slot, runCtx := newActiveHostSlot(
+		backend.ctx,
+		candidate.Execution.ID,
 	)
-	closeErr := state.Close(context.Background())
-	if loadErr != nil || closeErr != nil {
-		return Execution{}, errors.Join(loadErr, closeErr)
-	}
-	if metadata.Execution == nil || metadata.Execution.Terminal() {
-		return Execution{}, ErrExecutionNotFound
-	}
-	execution := *metadata.Execution
-	delay := time.Duration(0)
-	if execution.State == sdk.TrajectoryExecutionRunning &&
-		execution.LeaseExpiresAt.After(time.Now()) {
-		delay = time.Until(execution.LeaseExpiresAt)
-	}
-	runCtx, cancel := context.WithCancel(backend.ctx)
-	active := &activeRuntimeExecution{
-		id: execution.ID, cancel: cancel, done: make(chan struct{}),
-	}
-	backend.mu.Lock()
-	if backend.closed {
-		backend.mu.Unlock()
-		cancel()
-		return Execution{}, errors.New("gateway execution backend is closed")
-	}
-	if existing := backend.active[session.ID]; existing != nil {
-		backend.mu.Unlock()
-		cancel()
-		if existing.id == execution.ID {
-			return Execution{
-				SessionID: session.ID,
-				Execution: execution,
-			}, nil
+	if existing, err := backend.hosts.reserve(
+		session.ID,
+		slot,
+	); err != nil {
+		slot.cancel()
+		if existing.matchesExecution(candidate.Execution.ID) {
+			return gatewayExecutionFromView(candidate.ExecutionView()), nil
 		}
-		return Execution{}, fmt.Errorf(
-			"%w: %s",
-			ErrExecutionActive,
-			existing.id,
-		)
+		return Execution{}, err
 	}
-	backend.active[session.ID] = active
-	backend.wait.Add(1)
-	backend.mu.Unlock()
+	if err := backend.validateSessionBinding(ctx, session); err != nil {
+		slot.cancel()
+		backend.hosts.complete(session.ID, slot)
+		return Execution{}, err
+	}
 
-	go backend.runRecovery(runCtx, session, active, delay)
-	return Execution{
-		SessionID: session.ID,
-		Execution: execution,
-	}, nil
+	go backend.runRecovery(runCtx, session, slot, candidate)
+	return gatewayExecutionFromView(candidate.ExecutionView()), nil
+}
+
+func (backend *runtimeExecutionBackend) RecoveryCandidate(
+	ctx context.Context,
+	session Session,
+) (Execution, error) {
+	candidate, err := backend.loadRecoveryCandidate(ctx, session)
+	if err != nil {
+		return Execution{}, err
+	}
+	return gatewayExecutionFromView(candidate.ExecutionView()), nil
+}
+
+func (backend *runtimeExecutionBackend) loadRecoveryCandidate(
+	ctx context.Context,
+	session Session,
+) (agentruntime.ExecutionRecoveryCandidate, error) {
+	candidate, err := backend.loadStateRecoveryCandidate(ctx, session)
+	return candidate, gatewayRecoveryCandidateError(err)
+}
+
+func (backend *runtimeExecutionBackend) validateSessionBinding(
+	ctx context.Context,
+	session Session,
+) error {
+	if backend.validateSession == nil {
+		return nil
+	}
+	return backend.validateSession(ctx, session)
 }
 
 func (backend *runtimeExecutionBackend) Current(
 	ctx context.Context,
 	session Session,
 ) (Execution, error) {
-	state, err := backend.states.Open(ctx, session)
-	if err != nil {
+	if err := backend.hosts.pendingReservationError(session.ID); err != nil {
 		return Execution{}, err
 	}
-	defer state.Close(context.Background())
-	metadata, err := state.Trajectories().LoadMetadata(ctx, session.ID)
-	if err != nil {
+
+	view, err := backend.loadStateExecutionView(ctx, session)
+	if err := gatewayExecutionViewError(err); err != nil {
 		return Execution{}, err
 	}
-	if metadata.Execution == nil {
-		return Execution{}, ErrExecutionNotFound
-	}
-	value := Execution{
-		SessionID: session.ID,
-		Execution: *metadata.Execution,
-	}
-	if metadata.Execution.Terminal() {
-		if err := backend.waitForExecutionHost(
+	value := gatewayExecutionFromView(view)
+	if view.Execution.Terminal() {
+		if err := backend.hosts.waitForExecution(
 			ctx,
 			session.ID,
-			metadata.Execution.ID,
+			view.Execution.ID,
 		); err != nil {
-			return Execution{}, err
-		}
-		value.Result, err = agentruntime.LoadExecutionResult(
-			ctx,
-			state.Trajectories(),
-			metadata,
-		)
-		if err != nil {
 			return Execution{}, err
 		}
 	}
@@ -288,208 +263,308 @@ func (backend *runtimeExecutionBackend) Cancel(
 	session Session,
 	executionID string,
 ) (Execution, error) {
-	state, err := backend.states.Open(ctx, session)
-	if err != nil {
-		return Execution{}, err
+	cancelPlan, activeErr := backend.hosts.cancelPlan(
+		session.ID,
+		executionID,
+	)
+	if activeErr != nil {
+		return Execution{}, activeErr
 	}
-	defer state.Close(context.Background())
-	cancelled, err := state.Trajectories().CancelExecution(
+
+	view, err := cancelPlan.cancelExecution(
 		ctx,
-		sdk.TrajectoryExecutionCancelCommit{
-			TrajectoryID: session.ID,
-			ExecutionID:  executionID,
-			Reason:       "user requested cancellation",
-			At:           time.Now().UTC(),
+		func(control agentruntime.ExecutionControl) (
+			agentruntime.ExecutionView,
+			error,
+		) {
+			return control.CancelWithAvailableBoundary(
+				ctx,
+				session.ID,
+				executionID,
+				gatewayCancellationReason,
+			)
+		},
+		func() (agentruntime.ExecutionView, error) {
+			return backend.cancelUnhosted(
+				ctx,
+				session,
+				executionID,
+			)
 		},
 	)
 	if err != nil {
 		return Execution{}, err
 	}
-	metadata := cancelled.Trajectory
-	if metadata.Execution == nil {
-		return Execution{}, ErrExecutionNotFound
+	return gatewayExecutionFromView(view), nil
+}
+
+func (backend *runtimeExecutionBackend) cancelUnhosted(
+	ctx context.Context,
+	session Session,
+	executionID string,
+) (agentruntime.ExecutionView, error) {
+	host, err := backend.openRuntime(ctx, session)
+	if err == nil {
+		return host.CancelWithAvailableBoundary(
+			ctx,
+			session.ID,
+			executionID,
+			gatewayCancellationReason,
+		)
 	}
-	backend.mu.Lock()
-	active := backend.active[session.ID]
-	if active != nil && active.id == executionID {
-		active.cancel()
+
+	stateHost, stateErr := backend.openStateExecutionHost(ctx, session)
+	if stateErr != nil {
+		return agentruntime.ExecutionView{}, errors.Join(err, stateErr)
 	}
-	backend.mu.Unlock()
-	if err := backend.waitForExecutionHost(
+	view, cancelErr := stateHost.CancelWithAvailableBoundary(
 		ctx,
 		session.ID,
 		executionID,
-	); err != nil {
-		return Execution{}, err
+		gatewayCancellationReason,
+	)
+	if cancelErr != nil {
+		return agentruntime.ExecutionView{}, errors.Join(err, cancelErr)
 	}
-	return Execution{
-		SessionID: session.ID,
-		Execution: *metadata.Execution,
-	}, nil
+	return view, nil
 }
 
-func (backend *runtimeExecutionBackend) waitForExecutionHost(
+func (backend *runtimeExecutionBackend) loadStateExecutionView(
 	ctx context.Context,
-	sessionID string,
-	executionID string,
+	session Session,
+) (agentruntime.ExecutionView, error) {
+	host, err := backend.openStateExecutionHost(ctx, session)
+	if err != nil {
+		return agentruntime.ExecutionView{}, err
+	}
+	return host.LoadExecutionView(ctx, session.ID)
+}
+
+func (backend *runtimeExecutionBackend) loadStateRecoveryCandidate(
+	ctx context.Context,
+	session Session,
+) (agentruntime.ExecutionRecoveryCandidate, error) {
+	host, err := backend.openStateExecutionHost(ctx, session)
+	if err != nil {
+		return agentruntime.ExecutionRecoveryCandidate{}, err
+	}
+	return host.LoadRecoveryCandidate(ctx, session.ID)
+}
+
+func (backend *runtimeExecutionBackend) openStateExecutionHost(
+	ctx context.Context,
+	session Session,
+) (agentruntime.ExecutionHost, error) {
+	state, err := backend.states.Open(ctx, session)
+	if err != nil {
+		return agentruntime.ExecutionHost{}, err
+	}
+	return agentruntime.ExecutionHost{State: state}, nil
+}
+
+func closeGatewayState(ctx context.Context, state sdk.StateBackend) error {
+	if state == nil {
+		return nil
+	}
+	return closeGatewayHost(ctx, agentruntime.ExecutionHost{State: state})
+}
+
+func closeGatewayHost(
+	ctx context.Context,
+	host agentruntime.ExecutionHost,
 ) error {
-	backend.mu.Lock()
-	active := backend.active[sessionID]
-	var done <-chan struct{}
-	if active != nil && active.id == executionID {
-		done = active.done
+	return host.CloseDetached(ctx)
+}
+
+func gatewayExecutionViewError(err error) error {
+	if errors.Is(err, agentruntime.ErrExecutionNotFound) {
+		return ErrExecutionNotFound
 	}
-	backend.mu.Unlock()
-	if done == nil {
-		return nil
+	return err
+}
+
+func gatewayRecoveryCandidateError(err error) error {
+	if errors.Is(err, agentruntime.ErrExecutionNotFound) ||
+		errors.Is(err, agentruntime.ErrExecutionNotRecoverable) {
+		return ErrExecutionNotFound
 	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-done:
-		return nil
+	return err
+}
+
+func gatewayExecutionFromView(view agentruntime.ExecutionView) Execution {
+	return Execution{
+		SessionID: view.TrajectoryID,
+		Execution: view.Execution,
+		Result:    view.Result,
 	}
 }
 
 func (backend *runtimeExecutionBackend) Close(ctx context.Context) error {
-	backend.mu.Lock()
-	var runtimes []*agentruntime.Runtime
-	if !backend.closed {
-		backend.closed = true
-		runtimes = make([]*agentruntime.Runtime, 0, len(backend.active))
-		for _, active := range backend.active {
-			if active.runtime != nil {
-				runtimes = append(runtimes, active.runtime)
-			}
-		}
-	}
-	backend.mu.Unlock()
-	if runtimes != nil {
-		cancelled, cancel := context.WithCancel(context.Background())
-		cancel()
+	runtimes, startedClose := backend.hosts.beginClose()
+	if startedClose {
 		for _, runtime := range runtimes {
-			_ = runtime.Close(cancelled)
+			runtime.RequestClose(ctx)
 		}
 		backend.cancel()
 	}
-	done := make(chan struct{})
-	go func() {
-		backend.wait.Wait()
-		close(done)
-	}()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-done:
-		return nil
-	}
+	return backend.hosts.waitClosed(ctx)
 }
 
 func (backend *runtimeExecutionBackend) openRuntime(
 	ctx context.Context,
 	session Session,
-) (*agentruntime.Runtime, sdk.StateBackend, error) {
+) (agentruntime.ExecutionHost, error) {
 	state, err := backend.states.Open(ctx, session)
 	if err != nil {
-		return nil, nil, fmt.Errorf(
+		return agentruntime.ExecutionHost{}, fmt.Errorf(
 			"open gateway session %s state: %w",
 			session.ID,
 			err,
 		)
 	}
-	runtime, err := backend.build(ctx, session, state)
+	runtime, err := backend.build(ctx, runtimeBuildSpec(session), state)
 	if err != nil {
-		closeErr := state.Close(context.Background())
-		return nil, nil, errors.Join(err, closeErr)
+		closeErr := closeGatewayState(ctx, state)
+		return agentruntime.ExecutionHost{}, errors.Join(err, closeErr)
 	}
 	if runtime == nil {
-		closeErr := state.Close(context.Background())
-		return nil, nil, errors.Join(
+		closeErr := closeGatewayState(ctx, state)
+		return agentruntime.ExecutionHost{}, errors.Join(
 			errors.New("gateway runtime builder returned nil"),
 			closeErr,
 		)
 	}
-	return runtime, state, nil
+	return agentruntime.ExecutionHost{
+		Runtime: runtime,
+		State:   state,
+	}, nil
+}
+
+func runtimeBuildSpec(session Session) RuntimeBuildSpec {
+	return RuntimeBuildSpec{
+		Plugins: clonePluginBindings(session.Plugins),
+	}
 }
 
 func (backend *runtimeExecutionBackend) runSubmission(
 	ctx context.Context,
 	sessionID string,
-	active *activeRuntimeExecution,
+	slot *activeHostSlot,
 	submission *agentruntime.PromptSubmission,
-	runtime *agentruntime.Runtime,
-	state sdk.StateBackend,
+	host agentruntime.ExecutionHost,
 ) {
-	defer backend.wait.Done()
-	defer backend.releaseActive(sessionID, active)
-	_, _ = submission.Run(ctx)
-	_ = closeExecutionHost(runtime, state)
+	defer backend.hosts.complete(sessionID, slot)
+	_, runErr := host.RunPromptSubmission(ctx, submission)
+	backend.observeHostCompletion(
+		ctx,
+		"submit",
+		sessionID,
+		slot.executionID,
+		runErr,
+	)
 }
 
 func (backend *runtimeExecutionBackend) runRecovery(
 	ctx context.Context,
 	session Session,
-	active *activeRuntimeExecution,
-	delay time.Duration,
+	slot *activeHostSlot,
+	candidate agentruntime.ExecutionRecoveryCandidate,
 ) {
-	defer backend.wait.Done()
-	defer backend.releaseActive(session.ID, active)
-	if delay > 0 {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-		}
+	defer backend.hosts.complete(session.ID, slot)
+	if err := candidate.Wait(ctx); err != nil {
+		return
 	}
-	runtime, state, err := backend.openRuntime(ctx, session)
+	host, err := backend.openRuntime(ctx, session)
 	if err != nil {
+		backend.observeHostCompletion(
+			ctx,
+			"recover",
+			session.ID,
+			slot.executionID,
+			err,
+		)
 		return
 	}
-	backend.mu.Lock()
-	if backend.closed {
-		backend.mu.Unlock()
-		_ = closeExecutionHost(runtime, state)
+	if err := backend.hosts.bind(
+		session.ID,
+		slot,
+		slot.executionID,
+		host.Runtime,
+		host.Control(),
+	); err != nil {
+		closeErr := host.CloseDetached(ctx)
+		backend.observeHostCompletion(
+			ctx,
+			"recover",
+			session.ID,
+			slot.executionID,
+			errors.Join(err, closeErr),
+		)
 		return
 	}
-	active.runtime = runtime
-	backend.mu.Unlock()
-	_, _ = runtime.RecoverExecution(ctx, session.ID)
-	_ = closeExecutionHost(runtime, state)
+	_, recoverErr := host.RecoverExecution(ctx, session.ID)
+	backend.observeHostCompletion(
+		ctx,
+		"recover",
+		session.ID,
+		slot.executionID,
+		recoverErr,
+	)
 }
 
-func (backend *runtimeExecutionBackend) releaseActive(
+func (backend *runtimeExecutionBackend) observeHostCompletion(
+	ctx context.Context,
+	operation string,
 	sessionID string,
-	active *activeRuntimeExecution,
+	executionID string,
+	err error,
 ) {
-	backend.mu.Lock()
-	if current := backend.active[sessionID]; current == active {
-		delete(backend.active, sessionID)
+	if err == nil || expectedHostCancellation(ctx, err) {
+		return
 	}
-	close(active.done)
-	backend.mu.Unlock()
+	backend.logger.WarnContext(
+		lifecycle.Detached(ctx),
+		"gateway execution host completed with error",
+		"operation",
+		operation,
+		"session_id",
+		sessionID,
+		"execution_id",
+		executionID,
+		"error",
+		err,
+	)
 }
 
-func closeExecutionHost(
-	runtime *agentruntime.Runtime,
-	state sdk.StateBackend,
-) error {
-	var result error
-	if runtime != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		result = errors.Join(result, runtime.DrainDeliveries(ctx))
-		cancel()
-		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-		result = errors.Join(result, runtime.Close(ctx))
-		cancel()
+func expectedHostCancellation(ctx context.Context, err error) bool {
+	if ctx == nil || ctx.Err() == nil || err == nil {
+		return false
 	}
-	if state != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		result = errors.Join(result, state.Close(ctx))
-		cancel()
+	return onlyExpectedCancellationError(ctx, err)
+}
+
+func onlyExpectedCancellationError(ctx context.Context, err error) bool {
+	if err == nil {
+		return true
 	}
-	return result
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !onlyExpectedCancellationError(ctx, child) {
+				return false
+			}
+		}
+		return true
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return onlyExpectedCancellationError(ctx, wrapped.Unwrap())
+	}
+	return errors.Is(err, ctx.Err()) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
 }
 
 var _ ExecutionBackend = (*runtimeExecutionBackend)(nil)
