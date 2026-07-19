@@ -449,6 +449,12 @@ shutdown as an operation failure.
 state-transition CAS method; generic transition helpers stay inside storage
 model code where they cannot bypass claim, cancellation, and stale-resource
 rules.
+Awaiting an operation preserves non-success terminal states as structured SDK
+errors: callers should use `errors.Is(err, sdk.ErrOperationFailed)` or
+`errors.Is(err, sdk.ErrOperationCancelled)` for control flow, and
+`errors.As(err, &terminalErr)` when they need the terminal
+operation snapshot. Presentation and gateway code must not parse terminal
+operation error strings.
 Recovery scheduling consumes the store's non-terminal operation view and turns
 each record into a worker recovery candidate. Pending operations and running
 operations without an active lease can start immediately; running operations

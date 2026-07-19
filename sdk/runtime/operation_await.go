@@ -90,13 +90,13 @@ func (runtime *Runtime) awaitOperation(
 	case sdk.OperationSucceeded:
 		return current, nil
 	case sdk.OperationFailed:
-		return sdk.Operation{}, fmt.Errorf(
-			"operation %q failed: %s",
-			current.ID,
-			current.Error,
-		)
+		return sdk.Operation{}, &sdk.OperationTerminalError{
+			Operation: sdk.CloneOperation(current),
+		}
 	case sdk.OperationCancelled:
-		return sdk.Operation{}, fmt.Errorf("operation %q was cancelled", current.ID)
+		return sdk.Operation{}, &sdk.OperationTerminalError{
+			Operation: sdk.CloneOperation(current),
+		}
 	default:
 		return sdk.Operation{}, fmt.Errorf(
 			"operation %q reached unsupported terminal state %q",

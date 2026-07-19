@@ -10,10 +10,12 @@ import (
 )
 
 var (
-	ErrOperationNotFound = errors.New("operation not found")
-	ErrOperationConflict = errors.New("operation revision conflict")
-	ErrOperationClaimed  = errors.New("operation is claimed by another worker")
-	ErrOperationFence    = errors.New("operation execution lease is no longer valid")
+	ErrOperationNotFound  = errors.New("operation not found")
+	ErrOperationConflict  = errors.New("operation revision conflict")
+	ErrOperationClaimed   = errors.New("operation is claimed by another worker")
+	ErrOperationFence     = errors.New("operation execution lease is no longer valid")
+	ErrOperationFailed    = errors.New("operation failed")
+	ErrOperationCancelled = errors.New("operation cancelled")
 )
 
 type OperationKind string
@@ -70,6 +72,48 @@ func (operation Operation) Terminal() bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// OperationTerminalError preserves the terminal operation snapshot when an
+// awaited operation reaches a non-success terminal state.
+type OperationTerminalError struct {
+	Operation Operation
+}
+
+func (err *OperationTerminalError) Error() string {
+	if err == nil {
+		return "<nil>"
+	}
+	switch err.Operation.State {
+	case OperationFailed:
+		return fmt.Sprintf(
+			"operation %q failed: %s",
+			err.Operation.ID,
+			err.Operation.Error,
+		)
+	case OperationCancelled:
+		return fmt.Sprintf("operation %q was cancelled", err.Operation.ID)
+	default:
+		return fmt.Sprintf(
+			"operation %q reached unsupported terminal state %q",
+			err.Operation.ID,
+			err.Operation.State,
+		)
+	}
+}
+
+func (err *OperationTerminalError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	switch err.Operation.State {
+	case OperationFailed:
+		return ErrOperationFailed
+	case OperationCancelled:
+		return ErrOperationCancelled
+	default:
+		return nil
 	}
 }
 

@@ -118,6 +118,68 @@ func TestAwaitOperationCancellationUsesFreshContext(t *testing.T) {
 	}
 }
 
+func TestAwaitOperationReturnsStructuredTerminalErrors(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		operation sdk.Operation
+		want      error
+	}{
+		"failed": {
+			operation: sdk.Operation{
+				ID:             "operation-failed",
+				IdempotencyKey: "entry-failed",
+				State:          sdk.OperationFailed,
+				Revision:       2,
+				Error:          "provider rejected request",
+			},
+			want: sdk.ErrOperationFailed,
+		},
+		"cancelled": {
+			operation: sdk.Operation{
+				ID:             "operation-cancelled",
+				IdempotencyKey: "entry-cancelled",
+				State:          sdk.OperationCancelled,
+				Revision:       2,
+			},
+			want: sdk.ErrOperationCancelled,
+		},
+	}
+	for name, tt := range tests {
+		tt := tt
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			runtime := &Runtime{operation: operationRuntime{poll: time.Microsecond}}
+			_, err := runtime.awaitOperation(
+				context.Background(),
+				operationAwait{
+					expectedIdempotencyKey: tt.operation.IdempotencyKey,
+					initial:                tt.operation,
+					poll: func(context.Context, string, uint64) (sdk.Operation, error) {
+						t.Fatal("poll called for terminal operation")
+						return sdk.Operation{}, nil
+					},
+					cancel: func(context.Context, string) (sdk.Operation, error) {
+						t.Fatal("cancel called for terminal operation")
+						return sdk.Operation{}, nil
+					},
+				},
+			)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("await error = %v, want %v", err, tt.want)
+			}
+			var terminalErr *sdk.OperationTerminalError
+			if !errors.As(err, &terminalErr) {
+				t.Fatalf("await error = %T, want OperationTerminalError", err)
+			}
+			if terminalErr.Operation.ID != tt.operation.ID ||
+				terminalErr.Operation.State != tt.operation.State ||
+				terminalErr.Operation.Error != tt.operation.Error {
+				t.Fatalf("terminal snapshot = %#v, want %#v", terminalErr.Operation, tt.operation)
+			}
+		})
+	}
+}
+
 func TestAwaitOperationShutdownHandoffLeavesOperationRecoverable(t *testing.T) {
 	t.Parallel()
 	runtime := &Runtime{
