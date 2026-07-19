@@ -28,6 +28,14 @@ type ExecutionBackend interface {
 	// Submit owns the active execution gate for the session. Service-level
 	// check-then-submit would leave a composition mutation race before reservation.
 	Submit(context.Context, Session, string) (Execution, error)
+	// EnqueueContextInjection schedules model-visible context for a live hosted
+	// execution without starting a new user turn.
+	EnqueueContextInjection(
+		context.Context,
+		Session,
+		string,
+		sdk.ContextInjection,
+	) (Execution, error)
 	// Recover owns the recoverability check, active execution gate, and session
 	// binding validation before it builds or hosts runtime recovery.
 	Recover(context.Context, Session) (Execution, error)
@@ -235,6 +243,36 @@ func (service *Service) SubmitMessage(
 	return service.executions.Submit(ctx, session, content)
 }
 
+func (service *Service) EnqueueContextInjection(
+	ctx context.Context,
+	userID string,
+	sessionID string,
+	executionID string,
+	injection sdk.ContextInjection,
+) (Execution, error) {
+	session, err := service.manager.ownedSession(ctx, userID, sessionID)
+	if err != nil {
+		return Execution{}, err
+	}
+	executionID = strings.TrimSpace(executionID)
+	if executionID == "" {
+		return Execution{}, fmt.Errorf(
+			"%w: gateway execution ID is empty",
+			ErrInvalidRequest,
+		)
+	}
+	injection, err = validateGatewayContextInjection(injection)
+	if err != nil {
+		return Execution{}, err
+	}
+	return service.executions.EnqueueContextInjection(
+		ctx,
+		session,
+		executionID,
+		injection,
+	)
+}
+
 func (service *Service) lockSession(
 	ctx context.Context,
 	sessionID string,
@@ -287,6 +325,46 @@ func (service *Service) CancelExecution(
 		session,
 		executionID,
 	)
+}
+
+func validateGatewayContextInjection(
+	injection sdk.ContextInjection,
+) (sdk.ContextInjection, error) {
+	if len(injection.Messages) == 0 {
+		return sdk.ContextInjection{}, fmt.Errorf(
+			"%w: gateway context injection has no messages",
+			ErrInvalidRequest,
+		)
+	}
+	switch injection.Priority {
+	case "",
+		sdk.ContextInjectionNow,
+		sdk.ContextInjectionNext,
+		sdk.ContextInjectionLater:
+	default:
+		return sdk.ContextInjection{}, fmt.Errorf(
+			"%w: unknown context injection priority %q",
+			ErrInvalidRequest,
+			injection.Priority,
+		)
+	}
+	switch injection.Mode {
+	case "",
+		sdk.ContextInjectionPrompt,
+		sdk.ContextInjectionHook,
+		sdk.ContextInjectionPermission,
+		sdk.ContextInjectionTaskNotification,
+		sdk.ContextInjectionInterAgent,
+		sdk.ContextInjectionLocalCommand,
+		sdk.ContextInjectionSystem:
+	default:
+		return sdk.ContextInjection{}, fmt.Errorf(
+			"%w: unknown context injection mode %q",
+			ErrInvalidRequest,
+			injection.Mode,
+		)
+	}
+	return sdk.CloneContextInjection(injection), nil
 }
 
 func (service *Service) RecoverSessions(

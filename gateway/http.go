@@ -67,6 +67,10 @@ func NewHTTPHandler(
 		api.getExecution,
 	)
 	mux.HandleFunc(
+		"POST /v1/sessions/{session}/executions/{execution}/context-injections",
+		api.enqueueContextInjection,
+	)
+	mux.HandleFunc(
 		"POST /v1/sessions/{session}/executions/{execution}/cancel",
 		api.cancelExecution,
 	)
@@ -309,6 +313,32 @@ func (api *httpAPI) getExecution(
 		return
 	}
 	writeJSON(writer, http.StatusOK, execution)
+}
+
+func (api *httpAPI) enqueueContextInjection(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	userID, ok := api.user(writer, request)
+	if !ok {
+		return
+	}
+	var input sdk.ContextInjection
+	if !decodeRequest(writer, request, &input) {
+		return
+	}
+	execution, err := api.service.EnqueueContextInjection(
+		request.Context(),
+		userID,
+		request.PathValue("session"),
+		request.PathValue("execution"),
+		input,
+	)
+	if err != nil {
+		writeHTTPError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusAccepted, execution)
 }
 
 func (api *httpAPI) cancelExecution(

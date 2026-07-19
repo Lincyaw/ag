@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +18,17 @@ type gatewayTestProvider struct {
 	block        chan struct{}
 	closeStarted chan struct{}
 	closeRelease chan struct{}
+}
+
+type gatewayContextInjectionProvider struct {
+	mu       sync.Mutex
+	requests []sdk.ModelRequest
+}
+
+type gatewayContextInjectionTool struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
 }
 
 func (*gatewayTestProvider) Spec() sdk.ProviderSpec {
@@ -68,6 +81,71 @@ func (provider *gatewayTestProvider) Close(ctx context.Context) error {
 		return ctx.Err()
 	case <-provider.closeRelease:
 		return nil
+	}
+}
+
+func (*gatewayContextInjectionProvider) Spec() sdk.ProviderSpec {
+	return sdk.ProviderSpec{Name: "gateway-context", Model: "test"}
+}
+
+func (provider *gatewayContextInjectionProvider) Complete(
+	_ context.Context,
+	request sdk.ModelRequest,
+) (sdk.ModelResponse, error) {
+	provider.mu.Lock()
+	provider.requests = append(provider.requests, sdk.ModelRequest{
+		Messages: sdk.CloneMessages(request.Messages),
+		Tools:    append([]sdk.ToolSpec(nil), request.Tools...),
+	})
+	callCount := len(provider.requests)
+	provider.mu.Unlock()
+	if callCount == 1 {
+		return sdk.ModelResponse{
+			ToolCalls: []sdk.ToolCall{{
+				ID:        "gateway-wait-call",
+				Name:      "gateway_wait_for_context",
+				Arguments: json.RawMessage(`{}`),
+			}},
+		}, nil
+	}
+	return sdk.ModelResponse{
+		Content:      "gateway context accepted",
+		FinishReason: "stop",
+		Model:        "test",
+	}, nil
+}
+
+func (provider *gatewayContextInjectionProvider) Requests() []sdk.ModelRequest {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	requests := make([]sdk.ModelRequest, len(provider.requests))
+	for index, request := range provider.requests {
+		requests[index] = sdk.ModelRequest{
+			Messages: sdk.CloneMessages(request.Messages),
+			Tools:    append([]sdk.ToolSpec(nil), request.Tools...),
+		}
+	}
+	return requests
+}
+
+func (*gatewayContextInjectionTool) Spec() sdk.ToolSpec {
+	return sdk.ToolSpec{
+		Name:        "gateway_wait_for_context",
+		Description: "blocks until gateway injects context",
+		Parameters:  map[string]any{"type": "object"},
+	}
+}
+
+func (tool *gatewayContextInjectionTool) Call(
+	ctx context.Context,
+	_ json.RawMessage,
+) (sdk.ToolResult, error) {
+	tool.once.Do(func() { close(tool.entered) })
+	select {
+	case <-ctx.Done():
+		return sdk.ToolResult{}, ctx.Err()
+	case <-tool.release:
+		return sdk.ToolResult{Content: "tool done"}, nil
 	}
 }
 
@@ -150,6 +228,92 @@ func TestRuntimeExecutionBackendRecoversPendingExecution(t *testing.T) {
 		completed.Result == nil ||
 		completed.Result.Output != "gateway result" {
 		t.Fatalf("completed recovery = %#v", completed)
+	}
+}
+
+func TestRuntimeExecutionBackendEnqueuesContextIntoLiveHostedExecution(
+	t *testing.T,
+) {
+	t.Parallel()
+	states, err := NewFileSessionStateFactory(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &gatewayContextInjectionProvider{}
+	tool := &gatewayContextInjectionTool{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	backend, err := NewRuntimeExecutionBackend(RuntimeExecutionConfig{
+		States: states,
+		Build:  testGatewayContextRuntimeBuilder(provider, tool),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := backend.Close(ctx); err != nil {
+			t.Errorf("close execution backend: %v", err)
+		}
+	})
+	session := Session{
+		ID: "gateway-context-session", UserID: "user-a",
+		Provider: "gateway-context", MaxTurns: 3,
+	}
+	if err := backend.CreateSession(t.Context(), session); err != nil {
+		t.Fatal(err)
+	}
+	submitted, err := backend.Submit(t.Context(), session, "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-tool.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("tool did not start")
+	}
+	enqueued, err := backend.EnqueueContextInjection(
+		t.Context(),
+		session,
+		submitted.Execution.ID,
+		sdk.ContextInjection{
+			Priority: sdk.ContextInjectionNext,
+			Mode:     sdk.ContextInjectionTaskNotification,
+			Origin:   "gateway-test",
+			Messages: []sdk.Message{{
+				Role:    sdk.RoleUser,
+				Content: "live gateway context",
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("enqueue context injection: %v", err)
+	}
+	if enqueued.Execution.ID != submitted.Execution.ID {
+		t.Fatalf("enqueued execution = %#v", enqueued)
+	}
+	close(tool.release)
+	completed := waitGatewayExecution(
+		t,
+		backend,
+		session,
+		submitted.Execution.ID,
+	)
+	if completed.Execution.State != sdk.TrajectoryExecutionSucceeded ||
+		completed.Result == nil ||
+		completed.Result.Output != "gateway context accepted" {
+		t.Fatalf("completed execution = %#v", completed)
+	}
+	requests := provider.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %#v", requests)
+	}
+	second := requests[1].Messages
+	if len(second) == 0 ||
+		second[len(second)-1].Content != "live gateway context" {
+		t.Fatalf("second provider messages = %#v", second)
 	}
 }
 
@@ -1177,6 +1341,60 @@ func testGatewayRuntimeBuilder(provider sdk.Provider) RuntimeBuilder {
 				return registrar.RegisterProvider(provider)
 			},
 		}, provider: provider}
+		if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+			closeCtx, cancel := context.WithTimeout(
+				context.Background(),
+				time.Second,
+			)
+			closeErr := runtime.Close(closeCtx)
+			cancel()
+			return nil, errors.Join(err, closeErr)
+		}
+		return runtime, nil
+	}
+}
+
+func testGatewayContextRuntimeBuilder(
+	provider sdk.Provider,
+	tool sdk.Tool,
+) RuntimeBuilder {
+	return func(
+		ctx context.Context,
+		_ RuntimeBuildSpec,
+		state sdk.StateBackend,
+	) (*agentruntime.Runtime, error) {
+		runtime, err := agentruntime.NewRuntime(
+			agentruntime.RuntimeConfig{
+				Storage:          state,
+				StorageOwnership: agentruntime.StorageBorrowed,
+				OperationPoll:    time.Millisecond,
+				TrajectoryLease:  time.Second,
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+		plugin := sdk.PluginFunc{
+			PluginManifest: sdk.Manifest{
+				Name:        "gateway-context",
+				Version:     "1.0.0",
+				Description: "gateway context injection test resources",
+				APIVersion:  sdk.APIVersion,
+				Registers: []string{
+					sdk.ProviderResource("gateway-context"),
+					sdk.ToolResource("gateway_wait_for_context"),
+				},
+			},
+			InstallFunc: func(
+				_ context.Context,
+				registrar sdk.Registrar,
+			) error {
+				return errors.Join(
+					registrar.RegisterProvider(provider),
+					registrar.RegisterTool(tool),
+				)
+			},
+		}
 		if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
 			closeCtx, cancel := context.WithTimeout(
 				context.Background(),

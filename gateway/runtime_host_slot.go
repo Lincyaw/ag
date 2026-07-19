@@ -55,6 +55,10 @@ type activeHostReadPlan struct {
 	done    <-chan struct{}
 }
 
+type activeHostContextPlan struct {
+	control agentruntime.ExecutionControl
+}
+
 func newActiveHostRegistry() *activeHostRegistry {
 	return &activeHostRegistry{
 		hosts:     make(map[string]*activeHostSlot),
@@ -144,6 +148,16 @@ func (registry *activeHostRegistry) cancelPlan(
 	defer registry.mu.Unlock()
 	slot := registry.hosts[sessionID]
 	return slot.cancelPlan(executionID)
+}
+
+func (registry *activeHostRegistry) contextPlan(
+	sessionID string,
+	executionID string,
+) (activeHostContextPlan, error) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	slot := registry.hosts[sessionID]
+	return slot.contextPlan(executionID)
 }
 
 func (registry *activeHostRegistry) beginClose() (
@@ -240,6 +254,21 @@ func (slot *activeHostSlot) cancelPlan(
 		done:    slot.done,
 		control: slot.control,
 	}, nil
+}
+
+func (slot *activeHostSlot) contextPlan(
+	executionID string,
+) (activeHostContextPlan, error) {
+	if slot == nil {
+		return activeHostContextPlan{}, ErrExecutionNotFound
+	}
+	if !slot.matchesExecution(executionID) {
+		return activeHostContextPlan{}, slot.activeError()
+	}
+	if slot.state != activeHostSlotBound {
+		return activeHostContextPlan{}, ErrExecutionActive
+	}
+	return activeHostContextPlan{control: slot.control}, nil
 }
 
 func (plan activeHostCancelPlan) cancelActive() {

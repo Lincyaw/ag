@@ -15,6 +15,7 @@ import (
 
 type fakeExecutionBackend struct {
 	executions map[string]Execution
+	injections []sdk.ContextInjection
 }
 
 func newFakeExecutionBackend() *fakeExecutionBackend {
@@ -72,6 +73,23 @@ func (backend *fakeExecutionBackend) Get(
 	if execution.Execution.ID != executionID {
 		return Execution{}, ErrExecutionNotFound
 	}
+	return execution, nil
+}
+
+func (backend *fakeExecutionBackend) EnqueueContextInjection(
+	_ context.Context,
+	session Session,
+	executionID string,
+	injection sdk.ContextInjection,
+) (Execution, error) {
+	execution, exists := backend.executions[session.ID]
+	if !exists || execution.Execution.ID != executionID {
+		return Execution{}, ErrExecutionNotFound
+	}
+	backend.injections = append(
+		backend.injections,
+		sdk.CloneContextInjection(injection),
+	)
 	return execution, nil
 }
 
@@ -187,6 +205,36 @@ func TestHTTPGatewaySessionPluginMessageAndCancelFlow(t *testing.T) {
 	)
 	if polled.Code != http.StatusOK {
 		t.Fatalf("poll status=%d body=%s", polled.Code, polled.Body.String())
+	}
+
+	injected := serveJSON(
+		t,
+		handler,
+		http.MethodPost,
+		"/v1/sessions/web-session/executions/"+execution.Execution.ID+
+			"/context-injections",
+		"user-a",
+		map[string]any{
+			"priority": "next",
+			"mode":     "task_notification",
+			"origin":   "test",
+			"messages": []map[string]any{{
+				"role":    "user",
+				"content": "background task finished",
+			}},
+		},
+	)
+	if injected.Code != http.StatusAccepted {
+		t.Fatalf(
+			"inject status=%d body=%s",
+			injected.Code,
+			injected.Body.String(),
+		)
+	}
+	if len(executions.injections) != 1 ||
+		executions.injections[0].Messages[0].Content !=
+			"background task finished" {
+		t.Fatalf("context injections = %#v", executions.injections)
 	}
 
 	busy := serveJSON(

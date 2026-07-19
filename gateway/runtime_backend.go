@@ -182,6 +182,31 @@ func (backend *runtimeExecutionBackend) Recover(
 	return gatewayExecutionFromView(candidate.ExecutionView()), nil
 }
 
+func (backend *runtimeExecutionBackend) EnqueueContextInjection(
+	ctx context.Context,
+	session Session,
+	executionID string,
+	injection sdk.ContextInjection,
+) (Execution, error) {
+	plan, err := backend.hosts.contextPlan(session.ID, executionID)
+	if err != nil {
+		return Execution{}, err
+	}
+	if err := plan.control.EnqueueContextInjection(
+		ctx,
+		session.ID,
+		executionID,
+		injection,
+	); err != nil {
+		return Execution{}, gatewayExecutionViewError(err)
+	}
+	view, err := plan.control.LoadView(ctx, session.ID)
+	if err := gatewayExecutionViewError(err); err != nil {
+		return Execution{}, err
+	}
+	return gatewayExecutionFromView(view), nil
+}
+
 func (backend *runtimeExecutionBackend) loadRecoveryCandidate(
 	ctx context.Context,
 	session Session,
