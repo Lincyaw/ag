@@ -42,6 +42,7 @@ func TestBuiltinTrajectoryEnvironmentEventScope(t *testing.T) {
 	t.Parallel()
 	tests := map[string]bool{
 		sdk.EventBeforeProvider:    true,
+		sdk.EventProviderOutcome:   false,
 		sdk.EventTrajectoryAppend:  true,
 		sdk.EventAgentEnd:          true,
 		sdk.EventPluginMounted:     false,
@@ -51,6 +52,23 @@ func TestBuiltinTrajectoryEnvironmentEventScope(t *testing.T) {
 	for name, want := range tests {
 		if got := builtinEventInTrajectoryEnvironment(name); got != want {
 			t.Fatalf("builtinEventInTrajectoryEnvironment(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestBuiltinSessionExecutionEventScope(t *testing.T) {
+	t.Parallel()
+	tests := map[string]bool{
+		sdk.EventBeforeProvider:    true,
+		sdk.EventProviderOutcome:   true,
+		sdk.EventTrajectoryAppend:  true,
+		sdk.EventPluginMounted:     false,
+		sdk.EventPluginUnmounted:   false,
+		"plugin.unknown.execution": false,
+	}
+	for name, want := range tests {
+		if got := builtinEventInSessionExecution(name); got != want {
+			t.Fatalf("builtinEventInSessionExecution(%q) = %v, want %v", name, got, want)
 		}
 	}
 }

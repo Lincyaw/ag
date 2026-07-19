@@ -24,7 +24,7 @@ line-by-line emulation of Claude Code's JSONL or UI implementation.
 | Token budget continuation | Runtime policy + context injection | Not yet first-class | It can be approximated by injected nudges, but there is no SDK budget controller or durable budget state. |
 | Auto-compact and reactive compact | Trajectory/checkpoint policy | Not yet first-class | Checkpoints and branch projection can host compacted state, but there is no SDK compact scheduler, compact boundary entry, or retry policy. |
 | Content replacement state for large tool results | Checkpoint/resume metadata | Not yet covered | This should be durable checkpoint/resume state so fork/resume stay prompt-cache stable. |
-| Streaming provider deltas and early tool execution | Provider completion + tool scheduler | Not yet covered | The public provider contract still returns a completed `ModelResponse`. `sdk.OperationWatcher` now gives async resources an event-driven operation progress path, but content deltas/tool-use-ready events still need a provider outcome stream. |
+| Streaming provider deltas and early tool execution | Provider completion + tool scheduler | Not yet covered | The public provider contract still returns a completed `ModelResponse`. `sdk.OperationWatcher` gives async resources an event-driven operation progress path and `provider_outcome` exposes coarse live provider observations, but content deltas/tool-use-ready events still need a true provider outcome stream. |
 | Recursive fork ban | Runtime policy | Covered by configuration | The SDK can represent nested forks by default, and `AgentForkPolicyDenyNested` lets Claude-compatible hosts reject fork-child fork requests without weakening trajectory storage. |
 
 ## Covered By The SDK Kernel
@@ -185,16 +185,19 @@ arriving, as soon as a `tool_use` block is observed. The current SDK provider
 contract returns a completed `ModelResponse` before tool preparation begins.
 
 Async operations cover long-running provider calls and tools, but they do not
-expose a provider-delta stream or a tool-use-ready event. Full compatibility
-with Claude Code's streaming executor requires a new provider streaming
-abstraction, with durable ordering rules for partial assistant content and
-early tool-call preparation.
+expose a provider-delta stream or a tool-use-ready event. `provider_outcome`
+currently reports terminal provider completion/failure as a live observation,
+not as durable resume state and not as a token/content stream. Full
+compatibility with Claude Code's streaming executor requires a new provider
+streaming abstraction, with durable ordering rules for partial assistant content
+and early tool-call preparation.
 
 The non-streaming runtime path now separates provider terminal completion from
 the trajectory response append. That keeps today's completed `ModelResponse`
 contract intact while giving streaming a single internal replacement point:
-stream deltas should produce ordered provider outcomes, and the trajectory
-projection should remain the durable source for fork/resume.
+future stream deltas and tool-ready signals should produce ordered provider
+outcomes, and the trajectory projection should remain the durable source for
+fork/resume.
 
 Async resources can also implement `sdk.OperationWatcher`, so provider, tool,
 and capability waits no longer have to rely only on fixed-interval polling.

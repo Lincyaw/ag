@@ -388,6 +388,7 @@ before_agent_start
 agent_start
 turn_start
 before_provider
+provider_outcome
 after_provider
 before_tool
 tool_error

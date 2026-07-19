@@ -356,6 +356,74 @@ func TestExecutionEventSubscriberEnqueueFailureDoesNotAbortDispatch(t *testing.T
 	}
 }
 
+func TestExecutionObservationEventSkipsHooks(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{Storage: newTestStateBackend()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	hookCalled := false
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "provider-outcome-hook",
+			Version:     "1.0.0",
+			Description: "registers a hook that observations must skip",
+			APIVersion:  sdk.APIVersion,
+			Registers:   []string{sdk.HookResource("fail-provider-outcome")},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return registrar.RegisterHook(sdk.HookFunc{
+				HookSpec: sdk.HookSpec{
+					Name:  "fail-provider-outcome",
+					Event: sdk.EventProviderOutcome,
+				},
+				HandleFunc: func(context.Context, sdk.Event) (sdk.Effect, error) {
+					hookCalled = true
+					return sdk.Effect{}, errors.New("hook should not run")
+				},
+			})
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := runtime.acquireSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := lease.snapshot
+	lease.release()
+	result, err := runtime.dispatchExecutionObservationEvent(
+		ctx,
+		snapshot,
+		sdk.EventProviderOutcome,
+		"observation-session",
+		sdk.ProviderOutcomePayload{
+			Turn:     0,
+			Provider: "provider",
+			Kind:     sdk.ProviderOutcomeCompleted,
+		},
+	)
+	if err != nil {
+		t.Fatalf("dispatch observation: %v", err)
+	}
+	if hookCalled || len(result.Audit.Steps) != 0 {
+		t.Fatalf(
+			"observation invoked hooks: called=%v audit=%#v",
+			hookCalled,
+			result.Audit,
+		)
+	}
+}
+
 func TestExecutionEventSubscriberEnqueueOutlivesRequestCancellation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

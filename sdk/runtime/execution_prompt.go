@@ -238,6 +238,26 @@ func (completion providerCompletion) afterPayload(
 	return payload
 }
 
+func (completion providerCompletion) outcomePayload(
+	turn int,
+	call providerCall,
+) sdk.ProviderOutcomePayload {
+	payload := sdk.ProviderOutcomePayload{
+		Turn:          turn,
+		Provider:      call.name,
+		OperationKey:  call.invocation.ID,
+		CorrelationID: call.invocation.ID,
+	}
+	if completion.err != nil {
+		payload.Kind = sdk.ProviderOutcomeFailed
+		payload.Error = completion.err.Error()
+		return payload
+	}
+	payload.Kind = sdk.ProviderOutcomeCompleted
+	payload.Response = &completion.response
+	return payload
+}
+
 func (execution *promptExecution) executeTurn(
 	ctx context.Context,
 	turn int,
@@ -460,6 +480,13 @@ func (execution *promptExecution) callProvider(
 	call providerCall,
 ) (sdk.ModelResponse, error) {
 	completion := execution.completeProvider(operationCtx, call)
+	outcomeErr := execution.session.runtime.dispatchProviderOutcome(
+		ctx,
+		snapshot,
+		turn,
+		call,
+		completion,
+	)
 	after := completion.afterPayload(turn, call.name)
 	trajectoryErr := execution.session.appendTrajectoryWithExecutionEvent(
 		ctx,
@@ -473,7 +500,11 @@ func (execution *promptExecution) callProvider(
 		sdk.EventAfterProvider,
 		after,
 	)
-	return completion.response, errors.Join(completion.err, trajectoryErr)
+	return completion.response, errors.Join(
+		completion.err,
+		outcomeErr,
+		trajectoryErr,
+	)
 }
 
 func (execution *promptExecution) completeProvider(
@@ -494,6 +525,23 @@ func (execution *promptExecution) completeProvider(
 		response: response,
 		err:      err,
 	}
+}
+
+func (runtime *Runtime) dispatchProviderOutcome(
+	ctx context.Context,
+	snapshot *registrySnapshot,
+	turn int,
+	call providerCall,
+	completion providerCompletion,
+) error {
+	_, err := runtime.dispatchExecutionObservationEvent(
+		ctx,
+		snapshot,
+		sdk.EventProviderOutcome,
+		call.invocation.SessionID,
+		completion.outcomePayload(turn, call),
+	)
+	return err
 }
 
 func (execution *promptExecution) nextProviderAttempt(

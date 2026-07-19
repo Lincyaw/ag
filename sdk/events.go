@@ -5,6 +5,7 @@ const (
 	EventAgentStart         = "agent_start"
 	EventTurnStart          = "turn_start"
 	EventBeforeProvider     = "before_provider"
+	EventProviderOutcome    = "provider_outcome"
 	EventAfterProvider      = "after_provider"
 	EventBeforeTool         = "before_tool"
 	EventToolError          = "tool_error"
@@ -46,6 +47,23 @@ type AfterProviderPayload struct {
 	Provider string         `json:"provider"`
 	Response *ModelResponse `json:"response,omitempty"`
 	Error    string         `json:"error,omitempty"`
+}
+
+type ProviderOutcomeKind string
+
+const (
+	ProviderOutcomeCompleted ProviderOutcomeKind = "completed"
+	ProviderOutcomeFailed    ProviderOutcomeKind = "failed"
+)
+
+type ProviderOutcomePayload struct {
+	Turn          int                 `json:"turn"`
+	Provider      string              `json:"provider"`
+	OperationKey  string              `json:"operation_key,omitempty"`
+	CorrelationID string              `json:"correlation_id,omitempty"`
+	Kind          ProviderOutcomeKind `json:"kind"`
+	Response      *ModelResponse      `json:"response,omitempty"`
+	Error         string              `json:"error,omitempty"`
 }
 
 type BeforeToolPayload struct {

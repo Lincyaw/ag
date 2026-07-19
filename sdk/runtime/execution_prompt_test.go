@@ -368,6 +368,222 @@ func TestEventObserverDoesNotAffectExecution(t *testing.T) {
 	}
 }
 
+func TestProviderOutcomeIsLiveEventNotTrajectoryEntry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	trajectories := sdkstorage.NewMemoryTrajectoryStore()
+	outcomes := make(chan sdk.ProviderOutcomePayload, 1)
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: testStateBackendWithStores(trajectories, nil),
+		EventObserver: func(_ context.Context, event sdk.Event) {
+			if event.Name != sdk.EventProviderOutcome {
+				return
+			}
+			var payload sdk.ProviderOutcomePayload
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				return
+			}
+			outcomes <- payload
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "provider-outcome-plugin",
+			Version:     "1.0.0",
+			Description: "emits provider outcome observations",
+			APIVersion:  sdk.APIVersion,
+			Registers:   []string{sdk.ProviderResource("observer-provider")},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return registrar.RegisterProvider(observerProvider{})
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "provider-outcome-session",
+		Provider: "observer-provider",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := session.Prompt(ctx, "observe provider outcome")
+	if err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	if result.Output != "observer result" {
+		t.Fatalf("result = %#v", result)
+	}
+
+	var outcome sdk.ProviderOutcomePayload
+	select {
+	case outcome = <-outcomes:
+	case <-time.After(time.Second):
+		t.Fatal("provider outcome event was not observed")
+	}
+	if outcome.Kind != sdk.ProviderOutcomeCompleted ||
+		outcome.Provider != "observer-provider" ||
+		outcome.Response == nil ||
+		outcome.Response.Content != "observer result" ||
+		outcome.OperationKey == "" ||
+		outcome.CorrelationID != outcome.OperationKey {
+		t.Fatalf("provider outcome = %#v", outcome)
+	}
+	trajectory, err := trajectories.Load(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, contract := range trajectory.Environment.Events {
+		if contract.Name == sdk.EventProviderOutcome {
+			t.Fatalf(
+				"provider outcome was persisted in trajectory environment: %#v",
+				trajectory.Environment.Events,
+			)
+		}
+	}
+	branch, err := trajectory.Branch(trajectory.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range branch {
+		if string(entry.Kind) == sdk.EventProviderOutcome {
+			t.Fatalf("provider outcome was persisted as trajectory entry: %#v", branch)
+		}
+	}
+}
+
+func TestProviderOutcomeSubscriberIsLiveOnly(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	trajectories := sdkstorage.NewMemoryTrajectoryStore()
+	deliveries := make(chan sdk.Delivery, 1)
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:      testStateBackendWithStores(trajectories, nil),
+		DeliveryPoll: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	providerPlugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "provider-outcome-provider",
+			Version:     "1.0.0",
+			Description: "owns the prompt provider",
+			APIVersion:  sdk.APIVersion,
+			Registers:   []string{sdk.ProviderResource("observer-provider")},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return registrar.RegisterProvider(observerProvider{})
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(providerPlugin)); err != nil {
+		t.Fatal(err)
+	}
+	subscriberPlugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "provider-outcome-subscriber",
+			Version:     "1.0.0",
+			Description: "observes only live provider outcomes",
+			APIVersion:  sdk.APIVersion,
+			Registers:   []string{sdk.SubscriberResource("provider-outcome-live")},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return registrar.RegisterSubscriber(sdk.SubscriberFunc{
+				SubscriberSpec: sdk.SubscriberSpec{
+					Name:   "provider-outcome-live",
+					Events: []string{sdk.EventProviderOutcome},
+				},
+				ReceiveFunc: func(_ context.Context, delivery sdk.Delivery) error {
+					deliveries <- delivery
+					return nil
+				},
+			})
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(subscriberPlugin)); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "provider-outcome-subscriber-session",
+		Provider: "observer-provider",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Prompt(ctx, "deliver provider outcome"); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	drainCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := runtime.DrainDeliveries(drainCtx); err != nil {
+		t.Fatalf("drain deliveries: %v", err)
+	}
+	var delivery sdk.Delivery
+	select {
+	case delivery = <-deliveries:
+	default:
+		t.Fatal("provider outcome subscriber did not receive delivery")
+	}
+	if delivery.Event.Name != sdk.EventProviderOutcome {
+		t.Fatalf("delivery event = %#v", delivery.Event)
+	}
+	var payload sdk.ProviderOutcomePayload
+	if err := json.Unmarshal(delivery.Event.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Kind != sdk.ProviderOutcomeCompleted ||
+		payload.Provider != "observer-provider" {
+		t.Fatalf("delivery payload = %#v", payload)
+	}
+
+	trajectory, err := trajectories.Load(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, plugin := range trajectory.Environment.Plugins {
+		if plugin.Name == "provider-outcome-subscriber" {
+			t.Fatalf(
+				"live-only subscriber plugin persisted in trajectory environment: %#v",
+				trajectory.Environment.Plugins,
+			)
+		}
+	}
+	for _, subscriber := range trajectory.Environment.Subscribers {
+		if subscriber.Name == "provider-outcome-live" {
+			t.Fatalf(
+				"live-only subscriber persisted in trajectory environment: %#v",
+				trajectory.Environment.Subscribers,
+			)
+		}
+	}
+	for _, contract := range trajectory.Environment.Events {
+		if contract.Name == sdk.EventProviderOutcome {
+			t.Fatalf(
+				"live provider outcome event persisted in trajectory environment: %#v",
+				trajectory.Environment.Events,
+			)
+		}
+	}
+}
+
 func TestRuntimeCloseCancelsEventObserverContext(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

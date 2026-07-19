@@ -69,11 +69,15 @@ func newTrajectoryEnvironment(
 		Tools:             append([]sdk.ToolSpec(nil), catalog.Tools...),
 		Agents:            append([]sdk.AgentSpec(nil), catalog.Agents...),
 		Hooks:             append([]sdk.HookSpec(nil), catalog.Hooks...),
-		Subscribers:       append([]sdk.SubscriberSpec(nil), catalog.Subscribers...),
+		Subscribers:       trajectoryEnvironmentSubscriberSpecs(catalog.Subscribers),
 		Capabilities:      append([]sdk.CapabilitySpec(nil), catalog.Capabilities...),
-		Events:            append([]sdk.EventContract(nil), catalog.Events...),
+		Events:            trajectoryEnvironmentEventContracts(catalog.Events),
 	}
+	pluginNames := trajectoryEnvironmentPluginNames(snapshot, environment)
 	for _, plugin := range catalog.Plugins {
+		if _, include := pluginNames[plugin.Name]; !include {
+			continue
+		}
 		environment.Plugins = append(environment.Plugins, sdk.TrajectoryPlugin{
 			Name:      plugin.Name,
 			Version:   plugin.Version,
@@ -88,6 +92,60 @@ func newTrajectoryEnvironment(
 		)
 	}
 	return environment, nil
+}
+
+func trajectoryEnvironmentPluginNames(
+	snapshot *registrySnapshot,
+	environment sdk.TrajectoryEnvironment,
+) map[string]struct{} {
+	names := make(map[string]struct{})
+	addOwner := func(owner *mountState) {
+		if owner != nil {
+			names[owner.manifest.Name] = struct{}{}
+		}
+	}
+	for _, spec := range environment.Providers {
+		if provider, exists := snapshot.providers[spec.Name]; exists {
+			addOwner(provider.owner)
+		}
+	}
+	for _, spec := range environment.Tools {
+		if tool, exists := snapshot.tools[spec.Name]; exists {
+			addOwner(tool.owner)
+		}
+	}
+	for _, spec := range environment.Agents {
+		if agent, exists := snapshot.agents[spec.Name]; exists {
+			addOwner(agent.owner)
+		}
+	}
+	hookNames := make(map[string]struct{}, len(environment.Hooks))
+	for _, spec := range environment.Hooks {
+		hookNames[spec.Name] = struct{}{}
+	}
+	for _, hooks := range snapshot.hooks {
+		for _, hook := range hooks {
+			if _, include := hookNames[hook.spec.Name]; include {
+				addOwner(hook.owner)
+			}
+		}
+	}
+	for _, spec := range environment.Subscribers {
+		if subscriber, exists := snapshot.subscribers[spec.Name]; exists {
+			addOwner(subscriber.owner)
+		}
+	}
+	for _, spec := range environment.Capabilities {
+		if capability, exists := snapshot.capabilities[spec.Name]; exists {
+			addOwner(capability.owner)
+		}
+	}
+	for _, contract := range environment.Events {
+		if event, exists := snapshot.events[contract.Name]; exists {
+			addOwner(event.owner)
+		}
+	}
+	return names
 }
 
 func newExecutionEnvironment(
@@ -116,7 +174,7 @@ func executionSnapshotForSession(current *registrySnapshot) *registrySnapshot {
 		events:       make(map[string]ownedEvent),
 	}
 	for name, event := range current.events {
-		if builtinEventInTrajectoryEnvironment(name) {
+		if builtinEventInSessionExecution(name) {
 			result.events[name] = event
 		}
 	}
@@ -144,7 +202,7 @@ func executionSnapshotForSession(current *registrySnapshot) *registrySnapshot {
 		}
 	}
 	for name, subscriber := range current.subscribers {
-		if !subscriberObservesTrajectoryEnvironment(subscriber.spec) {
+		if !subscriberObservesSessionExecution(subscriber.spec) {
 			continue
 		}
 		result.subscribers[name] = subscriber
@@ -158,13 +216,55 @@ func executionCanInvokeAgents(snapshot *registrySnapshot) bool {
 	return len(snapshot.tools) != 0
 }
 
-func subscriberObservesTrajectoryEnvironment(spec sdk.SubscriberSpec) bool {
+func subscriberObservesSessionExecution(spec sdk.SubscriberSpec) bool {
 	for _, event := range spec.Events {
-		if builtinEventInTrajectoryEnvironment(event) {
+		if builtinEventInSessionExecution(event) {
 			return true
 		}
 	}
 	return false
+}
+
+func subscriberObservesLiveExecutionOnly(spec sdk.SubscriberSpec) bool {
+	for _, event := range spec.Events {
+		if builtinEventInSessionExecution(event) &&
+			!builtinEventInTrajectoryEnvironment(event) {
+			return true
+		}
+	}
+	return false
+}
+
+func trajectoryEnvironmentEventContracts(
+	contracts []sdk.EventContract,
+) []sdk.EventContract {
+	result := make([]sdk.EventContract, 0, len(contracts))
+	for _, contract := range contracts {
+		if builtinEventInTrajectoryEnvironment(contract.Name) {
+			result = append(result, sdk.CloneEventContract(contract))
+		}
+	}
+	return result
+}
+
+func trajectoryEnvironmentSubscriberSpecs(
+	specs []sdk.SubscriberSpec,
+) []sdk.SubscriberSpec {
+	result := make([]sdk.SubscriberSpec, 0, len(specs))
+	for _, spec := range specs {
+		filtered := sdk.CloneSubscriberSpec(spec)
+		filtered.Events = filtered.Events[:0]
+		for _, event := range spec.Events {
+			if builtinEventInTrajectoryEnvironment(event) {
+				filtered.Events = append(filtered.Events, event)
+			}
+		}
+		if len(filtered.Events) == 0 {
+			continue
+		}
+		result = append(result, filtered)
+	}
+	return result
 }
 
 func validateResumeEnvironment(
@@ -304,9 +404,13 @@ func snapshotForTrajectoryEnvironment(
 	if err := copyEnvironmentEvents(result.events, current.events, environment.Events); err != nil {
 		return nil, err
 	}
+	if err := copyLiveExecutionEvents(result.events, current.events); err != nil {
+		return nil, err
+	}
 	for _, event := range result.events {
 		result.includePluginOwner(event.owner)
 	}
+	includeLiveExecutionSubscribers(result, current)
 	return result, nil
 }
 
@@ -354,6 +458,44 @@ func copyEnvironmentEvents(
 		dst[contract.Name] = event
 	}
 	return nil
+}
+
+func copyLiveExecutionEvents(
+	dst map[string]ownedEvent,
+	src map[string]ownedEvent,
+) error {
+	for _, contract := range builtinEventContracts {
+		if !contract.sessionExecutionScoped ||
+			contract.trajectoryEnvironmentScoped {
+			continue
+		}
+		event, exists := src[contract.Name]
+		if !exists {
+			return fmt.Errorf(
+				"trajectory environment: live event %q is unavailable",
+				contract.Name,
+			)
+		}
+		event.contract = sdk.CloneEventContract(event.contract)
+		dst[contract.Name] = event
+	}
+	return nil
+}
+
+func includeLiveExecutionSubscribers(
+	dst *registrySnapshot,
+	current *registrySnapshot,
+) {
+	for name, subscriber := range current.subscribers {
+		if _, exists := dst.subscribers[name]; exists {
+			continue
+		}
+		if !subscriberObservesLiveExecutionOnly(subscriber.spec) {
+			continue
+		}
+		dst.subscribers[name] = subscriber
+		dst.includePluginOwner(subscriber.owner)
+	}
 }
 
 func snapshotSourceForRecordedEnvironment(

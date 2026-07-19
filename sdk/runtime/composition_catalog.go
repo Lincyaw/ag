@@ -30,6 +30,9 @@ type CatalogSnapshot struct {
 
 type builtinEventContract struct {
 	sdk.EventContract
+	// sessionExecutionScoped marks built-in events that can be dispatched while
+	// a prompt execution is running.
+	sessionExecutionScoped bool
 	// trajectoryEnvironmentScoped marks built-in events that must remain part
 	// of the durable trajectory environment used for resume and recovery.
 	trajectoryEnvironmentScoped bool
@@ -47,6 +50,7 @@ var builtinEventContracts = [...]builtinEventContract{
 		Name:          sdk.EventBeforeProvider,
 		MutableFields: []string{"messages", "provider", "system", "tools"},
 	}),
+	sessionExecutionEvent(sdk.EventContract{Name: sdk.EventProviderOutcome}),
 	trajectoryEnvironmentEvent(sdk.EventContract{Name: sdk.EventAfterProvider}),
 	trajectoryEnvironmentEvent(sdk.EventContract{
 		Name:          sdk.EventBeforeTool,
@@ -77,8 +81,25 @@ var builtinEventContracts = [...]builtinEventContract{
 func trajectoryEnvironmentEvent(contract sdk.EventContract) builtinEventContract {
 	return builtinEventContract{
 		EventContract:               contract,
+		sessionExecutionScoped:      true,
 		trajectoryEnvironmentScoped: true,
 	}
+}
+
+func sessionExecutionEvent(contract sdk.EventContract) builtinEventContract {
+	return builtinEventContract{
+		EventContract:          contract,
+		sessionExecutionScoped: true,
+	}
+}
+
+func builtinEventInSessionExecution(name string) bool {
+	for _, contract := range builtinEventContracts {
+		if contract.Name == name {
+			return contract.sessionExecutionScoped
+		}
+	}
+	return false
 }
 
 func builtinEventInTrajectoryEnvironment(name string) bool {

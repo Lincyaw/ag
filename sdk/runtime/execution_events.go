@@ -30,6 +30,7 @@ type DispatchResult struct {
 type eventDispatchOptions struct {
 	scope                       eventDispatchScope
 	enqueueSubscriberDeliveries bool
+	invokeHooks                 bool
 }
 
 type eventDispatchScope uint8
@@ -44,6 +45,7 @@ func emitEventDispatchOptions() eventDispatchOptions {
 	return eventDispatchOptions{
 		scope:                       eventDispatchEmit,
 		enqueueSubscriberDeliveries: true,
+		invokeHooks:                 true,
 	}
 }
 
@@ -51,6 +53,15 @@ func executionEventDispatchOptions() eventDispatchOptions {
 	return eventDispatchOptions{
 		scope:                       eventDispatchExecution,
 		enqueueSubscriberDeliveries: true,
+		invokeHooks:                 true,
+	}
+}
+
+func executionObservationEventDispatchOptions() eventDispatchOptions {
+	return eventDispatchOptions{
+		scope:                       eventDispatchExecution,
+		enqueueSubscriberDeliveries: true,
+		invokeHooks:                 false,
 	}
 }
 
@@ -60,6 +71,7 @@ func postCommitEventDispatchOptions(
 	return eventDispatchOptions{
 		scope:                       eventDispatchPostCommit,
 		enqueueSubscriberDeliveries: delivery.enqueueAfterDispatch(),
+		invokeHooks:                 true,
 	}
 }
 
@@ -139,6 +151,23 @@ func (runtime *Runtime) dispatchExecutionEvent(
 		sessionID,
 		payload,
 		executionEventDispatchOptions(),
+	)
+}
+
+func (runtime *Runtime) dispatchExecutionObservationEvent(
+	ctx context.Context,
+	snapshot *registrySnapshot,
+	eventName string,
+	sessionID string,
+	payload any,
+) (DispatchResult, error) {
+	return runtime.dispatchEvent(
+		ctx,
+		snapshot,
+		eventName,
+		sessionID,
+		payload,
+		executionObservationEventDispatchOptions(),
 	)
 }
 
@@ -228,7 +257,10 @@ func (runtime *Runtime) dispatchPreparedEvent(
 	if !exists {
 		return DispatchResult{}, fmt.Errorf("event %q is not registered", event.Name)
 	}
-	hooks := snapshot.hooks[event.Name]
+	var hooks []ownedHook
+	if options.invokeHooks {
+		hooks = snapshot.hooks[event.Name]
+	}
 
 	ctx, span := runtime.tracer.Start(
 		ctx,
