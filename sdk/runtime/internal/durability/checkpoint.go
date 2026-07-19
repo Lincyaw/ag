@@ -212,6 +212,10 @@ func LoadSessionResumeBase(
 	if err != nil {
 		return SessionResumeBase{}, err
 	}
+	head, preserveCheckpoint := sessionResumeBranchHead(
+		metadata,
+		checkpointEntry,
+	)
 	base := SessionResumeBase{
 		BranchBase: BranchBase{
 			Head:     checkpointEntry.ID,
@@ -220,40 +224,31 @@ func LoadSessionResumeBase(
 		CheckpointEntry: checkpointEntry,
 		Checkpoint:      checkpoint,
 	}
-	if resumeHead, ok := terminalExecutionResumeHead(metadata); ok {
+	if head != checkpointEntry.ID || !preserveCheckpoint {
 		branchBase, err := LoadBranchBase(
 			ctx,
 			store,
 			metadata.ID,
-			resumeHead,
+			head,
 		)
 		if err != nil {
+			if !preserveCheckpoint {
+				return SessionResumeBase{}, fmt.Errorf(
+					"project forked trajectory %q base branch at %q: %w",
+					metadata.ID,
+					head,
+					err,
+				)
+			}
 			return SessionResumeBase{}, err
 		}
 		base.BranchBase = branchBase
-		return base, nil
 	}
-	if metadata.ParentID == "" ||
-		trajectoryOwnsEntry(metadata, checkpointEntry) {
-		return base, nil
+	if !preserveCheckpoint {
+		base.CheckpointEntry = sdk.TrajectoryEntry{}
+		base.Checkpoint = nil
 	}
-	baseBranch, err := LoadBranchBase(
-		ctx,
-		store,
-		metadata.ID,
-		metadata.ParentEntryID,
-	)
-	if err != nil {
-		return SessionResumeBase{}, fmt.Errorf(
-			"project forked trajectory %q base branch at %q: %w",
-			metadata.ID,
-			metadata.ParentEntryID,
-			err,
-		)
-	}
-	return SessionResumeBase{
-		BranchBase: baseBranch,
-	}, nil
+	return base, nil
 }
 
 // ExecutionCompletionBase is the durable branch projection used when an active
@@ -360,6 +355,24 @@ func terminalExecutionResumeHead(
 	default:
 		return "", false
 	}
+}
+
+// sessionResumeBranchHead chooses the branch head visible to a resumed session.
+// preserveCheckpoint reports whether the latest checkpoint still belongs to the
+// resumed trajectory's own continuation context. Fork anchors inherited from a
+// parent seed messages, but they must not masquerade as child-owned checkpoints.
+func sessionResumeBranchHead(
+	metadata sdk.TrajectoryMetadata,
+	checkpointEntry sdk.TrajectoryEntry,
+) (head string, preserveCheckpoint bool) {
+	if resumeHead, ok := terminalExecutionResumeHead(metadata); ok {
+		return resumeHead, true
+	}
+	if metadata.ParentID != "" &&
+		!trajectoryOwnsEntry(metadata, checkpointEntry) {
+		return metadata.ParentEntryID, false
+	}
+	return checkpointEntry.ID, true
 }
 
 func trajectoryOwnsEntry(
