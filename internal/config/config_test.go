@@ -139,7 +139,8 @@ func TestDefaultRegistryConfigurationUsesDotAG(t *testing.T) {
 	if loaded.Config.Registry.Listen != "127.0.0.1:9090" ||
 		parsed.Scheme != "file" ||
 		parsed.Path != filepath.Join(home, ".ag", "registry") ||
-		loaded.Config.Plugins.RegistryNamespace != "default" {
+		loaded.Config.Plugins.RegistryNamespace != "default" ||
+		!loaded.Config.Plugins.GitEnabled {
 		t.Fatalf(
 			"registry defaults = %#v, plugins = %#v",
 			loaded.Config.Registry,

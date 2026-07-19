@@ -209,6 +209,7 @@ func addRunConfigFlags(flags *pflag.FlagSet) {
 	flags.Int64("max-write-bytes", 0, "Maximum bytes per file write.")
 	flags.Int("max-entries", 0, "Maximum entries per directory listing.")
 	flags.Bool("bash", false, "Mount the local bash plugin.")
+	flags.Bool("git", true, "Mount the local read-only git plugin.")
 	flags.String("shell", "", "Absolute shell path for the bash plugin.")
 	flags.Duration("bash-timeout", 0, "Default bash operation timeout.")
 	flags.Duration("bash-max-timeout", 0, "Maximum bash operation timeout.")

@@ -6,6 +6,7 @@ import (
 	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/lincyaw/ag/plugins/bash"
 	fileplugin "github.com/lincyaw/ag/plugins/file"
+	gitplugin "github.com/lincyaw/ag/plugins/git"
 	"github.com/lincyaw/ag/plugins/openai"
 	otelplugin "github.com/lincyaw/ag/plugins/otel"
 	"github.com/lincyaw/ag/sdk"
@@ -56,6 +57,12 @@ func configuredLocalPlugins(
 			MaxTimeout:     config.Bash.MaxTimeout,
 			MaxOutputBytes: config.Bash.MaxOutputBytes,
 			Environment:    config.Bash.Environment,
+		}))
+	}
+	if config.Plugins.GitEnabled {
+		plugins = append(plugins, gitplugin.New(gitplugin.Config{
+			Root:           config.Workspace.Root,
+			MaxOutputBytes: config.Bash.MaxOutputBytes,
 		}))
 	}
 	return plugins, nil
