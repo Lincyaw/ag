@@ -27,18 +27,34 @@ type Checkpoint struct {
 
 // ProviderRequest is the durable projection of one model invocation request.
 type ProviderRequest struct {
-	Turn         int              `json:"turn"`
-	Provider     string           `json:"provider"`
-	Model        string           `json:"model,omitempty"`
-	OperationKey string           `json:"operation_key"`
-	Request      sdk.ModelRequest `json:"request"`
+	Turn          int              `json:"turn"`
+	Provider      string           `json:"provider"`
+	Model         string           `json:"model,omitempty"`
+	OperationKey  string           `json:"operation_key"`
+	CorrelationID string           `json:"correlation_id,omitempty"`
+	Request       sdk.ModelRequest `json:"request"`
+}
+
+// ProviderResponse preserves event-payload compatibility while adding durable
+// trajectory correlation metadata for one model round.
+type ProviderResponse struct {
+	sdk.AfterProviderPayload
+	CorrelationID string `json:"correlation_id,omitempty"`
 }
 
 // ToolCall is the durable projection of one tool invocation request.
 type ToolCall struct {
-	Turn         int          `json:"turn"`
-	Call         sdk.ToolCall `json:"call"`
-	OperationKey string       `json:"operation_key"`
+	Turn          int          `json:"turn"`
+	Call          sdk.ToolCall `json:"call"`
+	OperationKey  string       `json:"operation_key"`
+	CorrelationID string       `json:"correlation_id,omitempty"`
+}
+
+// ToolResult preserves event-payload compatibility while adding durable
+// trajectory correlation metadata for the provider round that emitted the call.
+type ToolResult struct {
+	sdk.AfterToolPayload
+	CorrelationID string `json:"correlation_id,omitempty"`
 }
 
 // Decision records the action selected at the end of one agent turn.
@@ -58,6 +74,21 @@ func EntryFields(payload any) sdk.TrajectoryEntryFields {
 		fields.Provider = value.Provider
 		fields.Model = value.Model
 		fields.OperationKey = value.OperationKey
+		fields.CorrelationID = value.CorrelationID
+		if fields.CorrelationID == "" {
+			fields.CorrelationID = value.OperationKey
+		}
+	case ProviderResponse:
+		setTurn(value.Turn)
+		fields.Provider = value.Provider
+		fields.CorrelationID = value.CorrelationID
+		setError(value.Error != "")
+		if value.Response != nil {
+			fields.Model = value.Response.Model
+			fields.FinishReason = value.Response.FinishReason
+			fields.InputTokens = value.Response.Usage.InputTokens
+			fields.OutputTokens = value.Response.Usage.OutputTokens
+		}
 	case sdk.AfterProviderPayload:
 		setTurn(value.Turn)
 		fields.Provider = value.Provider
@@ -77,6 +108,13 @@ func EntryFields(payload any) sdk.TrajectoryEntryFields {
 		fields.ToolName = value.Call.Name
 		fields.ToolCallID = value.Call.ID
 		fields.OperationKey = value.OperationKey
+		fields.CorrelationID = value.CorrelationID
+	case ToolResult:
+		setTurn(value.Turn)
+		fields.ToolName = value.Call.Name
+		fields.ToolCallID = value.Call.ID
+		fields.CorrelationID = value.CorrelationID
+		setError(value.Result.IsError)
 	case sdk.AfterToolPayload:
 		setTurn(value.Turn)
 		fields.ToolName = value.Call.Name

@@ -433,7 +433,9 @@ func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 	}
 	completedExecutionID := trajectory.Execution.ID
 	var providerRequestIDs, providerOperationKeys []string
+	var providerResponseCorrelations []string
 	var toolCallIDs, toolOperationKeys, checkpoints []string
+	var toolCallCorrelations, toolResultCorrelations []string
 	var providerResponses, toolResults, decisions int
 	for _, entry := range trajectory.Entries {
 		if entry.Kind != sdk.TrajectoryKindRestore &&
@@ -456,16 +458,22 @@ func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 			if entry.Fields.Turn == nil ||
 				entry.Fields.Provider != "scripted" ||
 				entry.Fields.Model != "scripted-v1" ||
-				entry.Fields.OperationKey == "" {
+				entry.Fields.OperationKey == "" ||
+				entry.Fields.CorrelationID != entry.Fields.OperationKey {
 				t.Fatalf("provider request fields = %#v", entry.Fields)
 			}
 		case sdk.TrajectoryKindProviderResponse:
 			providerResponses++
+			providerResponseCorrelations = append(
+				providerResponseCorrelations,
+				entry.Fields.CorrelationID,
+			)
 			if entry.Fields.Turn == nil ||
 				entry.Fields.Provider != "scripted" ||
 				entry.Fields.Model != "scripted-v1" ||
 				entry.Fields.IsError == nil ||
-				*entry.Fields.IsError {
+				*entry.Fields.IsError ||
+				entry.Fields.CorrelationID == "" {
 				t.Fatalf("provider response fields = %#v", entry.Fields)
 			}
 		case sdk.TrajectoryKindToolCall:
@@ -474,19 +482,29 @@ func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 				toolOperationKeys,
 				entry.Fields.OperationKey,
 			)
+			toolCallCorrelations = append(
+				toolCallCorrelations,
+				entry.Fields.CorrelationID,
+			)
 			if entry.Fields.Turn == nil ||
 				entry.Fields.ToolName != "echo" ||
 				entry.Fields.ToolCallID != "tool-call-1" ||
-				entry.Fields.OperationKey == "" {
+				entry.Fields.OperationKey == "" ||
+				entry.Fields.CorrelationID == "" {
 				t.Fatalf("tool call fields = %#v", entry.Fields)
 			}
 		case sdk.TrajectoryKindToolResult:
 			toolResults++
+			toolResultCorrelations = append(
+				toolResultCorrelations,
+				entry.Fields.CorrelationID,
+			)
 			if entry.Fields.Turn == nil ||
 				entry.Fields.ToolName != "echo" ||
 				entry.Fields.ToolCallID != "tool-call-1" ||
 				entry.Fields.IsError == nil ||
-				*entry.Fields.IsError {
+				*entry.Fields.IsError ||
+				entry.Fields.CorrelationID == "" {
 				t.Fatalf("tool result fields = %#v", entry.Fields)
 			}
 		case sdk.TrajectoryKindDecision:
@@ -528,6 +546,18 @@ func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 			toolKey,
 			providerOperationKeys,
 			toolOperationKeys,
+		)
+	}
+	if providerResponseCorrelations[0] != providerOperationKeys[0] ||
+		providerResponseCorrelations[1] != providerOperationKeys[1] ||
+		toolCallCorrelations[0] != providerOperationKeys[0] ||
+		toolResultCorrelations[0] != providerOperationKeys[0] {
+		t.Fatalf(
+			"round correlations provider responses=%v tool calls=%v tool results=%v provider operations=%v",
+			providerResponseCorrelations,
+			toolCallCorrelations,
+			toolResultCorrelations,
+			providerOperationKeys,
 		)
 	}
 

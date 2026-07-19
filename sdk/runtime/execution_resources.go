@@ -147,6 +147,7 @@ func resolveAdvertisedTools(
 type preparedToolCall struct {
 	call          sdk.ToolCall
 	invocation    sdk.Invocation
+	correlationID string
 	asynchronous  sdk.AsyncTool
 	initial       sdk.Operation
 	failureKind   string
@@ -198,18 +199,20 @@ func (session *Session) prepareToolCall(
 		uint32(index),
 	)
 	prepared := preparedToolCall{
-		call:       call,
-		invocation: invocation,
-		interrupt:  sdk.ToolInterruptBlock,
+		call:          call,
+		invocation:    invocation,
+		correlationID: providerInvocationID,
+		interrupt:     sdk.ToolInterruptBlock,
 	}
 	if err := session.appendTrajectoryWithAudit(
 		ctx,
 		snapshot,
 		sdk.TrajectoryKindToolCall,
 		durability.ToolCall{
-			Turn:         turn,
-			Call:         call,
-			OperationKey: invocation.ID,
+			Turn:          turn,
+			Call:          call,
+			OperationKey:  invocation.ID,
+			CorrelationID: providerInvocationID,
 		},
 		trajectoryAudits(before.Audit),
 	); err != nil {
@@ -402,7 +405,7 @@ func (session *Session) finalizeToolCall(
 				ctx,
 				snapshot,
 				turn,
-				call.call,
+				call,
 				"interrupted",
 				outcome.err.Error(),
 				outcome.result,
@@ -412,7 +415,7 @@ func (session *Session) finalizeToolCall(
 			ctx,
 			snapshot,
 			turn,
-			call.call,
+			call,
 			"execution_failed",
 			outcome.err.Error(),
 			outcome.result,
@@ -423,7 +426,7 @@ func (session *Session) finalizeToolCall(
 			ctx,
 			snapshot,
 			turn,
-			call.call,
+			call,
 			call.failureKind,
 			call.failureReason,
 			outcome.result,
@@ -433,7 +436,7 @@ func (session *Session) finalizeToolCall(
 		ctx,
 		snapshot,
 		turn,
-		call.call,
+		call,
 		outcome.result,
 	)
 }
@@ -442,7 +445,7 @@ func (session *Session) afterToolError(
 	ctx context.Context,
 	snapshot *registrySnapshot,
 	turn int,
-	call sdk.ToolCall,
+	call preparedToolCall,
 	kind string,
 	reason string,
 	result sdk.ToolResult,
@@ -455,7 +458,7 @@ func (session *Session) afterToolError(
 		session.config.ID,
 		sdk.ToolErrorPayload{
 			Turn:   turn,
-			Call:   call,
+			Call:   call.call,
 			Kind:   kind,
 			Reason: reason,
 			Result: result,
@@ -478,7 +481,7 @@ func (session *Session) afterTool(
 	ctx context.Context,
 	snapshot *registrySnapshot,
 	turn int,
-	call sdk.ToolCall,
+	call preparedToolCall,
 	result sdk.ToolResult,
 	audits ...sdk.EventAudit,
 ) (sdk.ToolCall, sdk.ToolResult, error) {
@@ -488,7 +491,11 @@ func (session *Session) afterTool(
 		snapshot,
 		sdk.EventAfterTool,
 		session.config.ID,
-		sdk.AfterToolPayload{Turn: turn, Call: call, Result: result},
+		sdk.AfterToolPayload{
+			Turn:   turn,
+			Call:   call.call,
+			Result: result,
+		},
 	)
 	if err != nil {
 		return sdk.ToolCall{}, sdk.ToolResult{}, err
@@ -499,10 +506,13 @@ func (session *Session) afterTool(
 		ctx,
 		snapshot,
 		sdk.TrajectoryKindToolResult,
-		payload,
+		durability.ToolResult{
+			AfterToolPayload: payload,
+			CorrelationID:    call.correlationID,
+		},
 		trajectoryAudits(combinedAudits...),
 	); err != nil {
 		return sdk.ToolCall{}, sdk.ToolResult{}, err
 	}
-	return call, payload.Result, nil
+	return call.call, payload.Result, nil
 }
