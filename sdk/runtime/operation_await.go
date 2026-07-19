@@ -66,10 +66,7 @@ func (runtime *Runtime) awaitOperation(
 	}
 	for !current.Terminal() {
 		if !waitContext(ctx, runtime.operation.poll) {
-			runtime.mu.Lock()
-			closed := runtime.closed
-			runtime.mu.Unlock()
-			if closed {
+			if runtime.operationRecoveryHandoffActive() {
 				return sdk.Operation{}, ctx.Err()
 			}
 			cancelCtx, cancelFunc := lifecycle.WithDetachedTimeout(

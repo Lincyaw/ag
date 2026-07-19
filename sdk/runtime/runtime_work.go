@@ -51,3 +51,15 @@ func (runtime *Runtime) executionRecoveryHandoffActive() bool {
 	runtime.mu.Unlock()
 	return closed || runtime.trajectoryExecution.stopped()
 }
+
+// operationRecoveryHandoffActive reports whether an interrupted operation await
+// should leave the durable operation non-terminal for recovery instead of
+// recording a durable cancellation. Runtime close cancels local operation worker
+// contexts to release host resources; the operation lease and idempotency record
+// remain the recovery boundary.
+func (runtime *Runtime) operationRecoveryHandoffActive() bool {
+	runtime.mu.Lock()
+	closed := runtime.closed
+	runtime.mu.Unlock()
+	return closed || runtime.operation.stopped()
+}

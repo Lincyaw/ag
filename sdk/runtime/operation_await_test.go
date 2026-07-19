@@ -118,7 +118,7 @@ func TestAwaitOperationCancellationUsesFreshContext(t *testing.T) {
 	}
 }
 
-func TestAwaitOperationShutdownDoesNotCancelResource(t *testing.T) {
+func TestAwaitOperationShutdownHandoffLeavesOperationRecoverable(t *testing.T) {
 	t.Parallel()
 	runtime := &Runtime{
 		closed:    true,

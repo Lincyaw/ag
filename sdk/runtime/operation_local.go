@@ -91,8 +91,12 @@ func (target localOperationTarget) cancel(
 	)
 }
 
+// operationRuntime owns the live host boundary for durable operations. The
+// operation store remains the state port; this type owns local worker lifecycle,
+// in-flight cancellation, polling, and shutdown participation.
 type operationRuntime struct {
 	store         sdk.OperationStore
+	context       context.Context
 	cancel        context.CancelFunc
 	inflight      operationworker.Inflight
 	wait          sync.WaitGroup
@@ -118,6 +122,10 @@ func (operation *operationRuntime) stop() {
 	if operation.cancel != nil {
 		operation.cancel()
 	}
+}
+
+func (operation *operationRuntime) stopped() bool {
+	return operation.context != nil && operation.context.Err() != nil
 }
 
 func (operation *operationRuntime) beginWork(runtime *Runtime) (func(), bool) {

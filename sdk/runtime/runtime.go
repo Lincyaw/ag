@@ -258,6 +258,7 @@ func NewRuntimeContext(
 		},
 		operation: operationRuntime{
 			store:         storage.operations,
+			context:       operationContext,
 			cancel:        cancelOperations,
 			inflight:      operationworker.NewInflight(operationContext),
 			poll:          config.OperationPoll,
