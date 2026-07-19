@@ -19,7 +19,7 @@ import (
 type duckDBTrajectoryStore struct {
 	db        *sql.DB
 	namespace string
-	writeMu   sync.Mutex
+	writeMu   sync.RWMutex
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -93,17 +93,11 @@ func (store *duckDBTrajectoryStore) Create(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	normalizeTrajectory(&trajectory)
-	if err := validateNewTrajectory(trajectory); err != nil {
+	prepared, err := prepareNewTrajectory(trajectory, time.Now().UTC())
+	if err != nil {
 		return err
 	}
-	now := time.Now().UTC()
-	if trajectory.CreatedAt.IsZero() {
-		trajectory.CreatedAt = now
-	}
-	if trajectory.UpdatedAt.IsZero() {
-		trajectory.UpdatedAt = trajectory.CreatedAt
-	}
+	trajectory = prepared.Trajectory
 	environmentJSON, err := duckDBEnvironmentJSON(trajectory.Environment)
 	if err != nil {
 		return fmt.Errorf("encode trajectory environment: %w", err)
@@ -140,14 +134,12 @@ func (store *duckDBTrajectoryStore) Create(
 				err,
 			)
 		}
-		inheritedCount = uint64(len(branch))
-		trajectory.Head = trajectory.ParentEntryID
-		if checkpoint, found := findLatestInBranch(
-			branch,
-			sdk.TrajectoryKindCheckpoint,
-		); found {
-			trajectory.Checkpoint = checkpoint.ID
+		prepared, err = prepareNewTrajectoryFork(prepared, branch)
+		if err != nil {
+			return err
 		}
+		trajectory = prepared.Trajectory
+		inheritedCount = prepared.InheritedEntryCount
 	}
 	_, err = tx.ExecContext(
 		ctx,
@@ -209,25 +201,14 @@ func (store *duckDBTrajectoryStore) Append(
 		return "", fmt.Errorf("begin DuckDB trajectory append: %w", err)
 	}
 	defer tx.Rollback()
-	trajectory, _, ownedCount, err := store.loadStoredTrajectory(ctx, tx, id)
-	if err != nil {
-		return "", err
-	}
-	if trajectory.Execution != nil && !trajectory.Execution.Terminal() {
-		return "", fmt.Errorf(
-			"%w: trajectory %s has active execution %s",
-			sdk.ErrTrajectoryExecution,
-			id,
-			trajectory.Execution.ID,
-		)
-	}
-	head, err := store.appendEntries(
+	metadata, err := store.appendTrajectoryInTx(
 		ctx,
 		tx,
-		trajectory,
-		ownedCount,
-		expectedHead,
-		entries,
+		sdk.TrajectoryAppendCommit{
+			TrajectoryID: id,
+			ExpectedHead: expectedHead,
+			Entries:      entries,
+		},
 	)
 	if err != nil {
 		return "", err
@@ -235,7 +216,47 @@ func (store *duckDBTrajectoryStore) Append(
 	if err := tx.Commit(); err != nil {
 		return "", mapDuckDBTrajectoryWriteError(err)
 	}
-	return head, nil
+	return metadata.Head, nil
+}
+
+func (store *duckDBTrajectoryStore) appendTrajectoryInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	commit sdk.TrajectoryAppendCommit,
+) (sdk.TrajectoryMetadata, error) {
+	if err := sdk.ValidateResourceName(
+		"trajectory",
+		commit.TrajectoryID,
+	); err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	trajectory, _, ownedCount, err := store.loadStoredTrajectory(
+		ctx,
+		tx,
+		commit.TrajectoryID,
+	)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	if trajectory.Execution != nil && !trajectory.Execution.Terminal() {
+		return sdk.TrajectoryMetadata{}, fmt.Errorf(
+			"%w: trajectory %s has active execution %s",
+			sdk.ErrTrajectoryExecution,
+			commit.TrajectoryID,
+			trajectory.Execution.ID,
+		)
+	}
+	if _, err := store.appendEntries(
+		ctx,
+		tx,
+		trajectory,
+		ownedCount,
+		commit.ExpectedHead,
+		commit.Entries,
+	); err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	return store.metadataInTransaction(ctx, tx, commit.TrajectoryID)
 }
 
 func (store *duckDBTrajectoryStore) LoadMetadata(

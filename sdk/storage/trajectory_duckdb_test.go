@@ -381,9 +381,12 @@ func TestDuckDBStorageDriverIsDurableAndNamespaceIsolated(t *testing.T) {
 	capabilities := backend.Capabilities()
 	if !capabilities.Durable ||
 		capabilities.MultiProcessSafe ||
-		capabilities.AtomicState ||
+		!capabilities.AtomicState ||
 		!capabilities.NamespaceIsolation {
 		t.Fatalf("DuckDB capabilities = %#v", capabilities)
+	}
+	if _, ok := backend.(sdk.AtomicStateBackend); !ok {
+		t.Fatalf("DuckDB backend does not implement AtomicStateBackend")
 	}
 	if err := backend.Trajectories().Create(
 		ctx,
@@ -524,6 +527,134 @@ func TestDuckDBStateBackendStoresDeliveriesInDuckDB(t *testing.T) {
 	}
 }
 
+func TestDuckDBAtomicCommitRollsBackTrajectoryAndOutboxOnConflict(
+	t *testing.T,
+) {
+	t.Parallel()
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "agent-state.duckdb")
+	backend, err := NewDuckDBStateBackend(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(context.Background()); err != nil {
+			t.Errorf("close DuckDB atomic backend: %v", err)
+		}
+	})
+	atomicBackend, ok := backend.(sdk.AtomicStateBackend)
+	if !ok {
+		t.Fatalf("DuckDB backend does not implement AtomicStateBackend")
+	}
+	trajectoryID := "duckdb-atomic-trajectory"
+	if err := backend.Trajectories().Create(
+		ctx,
+		sdk.Trajectory{ID: trajectoryID},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.Trajectories().BeginExecution(
+		ctx,
+		trajectoryID,
+		"",
+		sdk.TrajectoryExecutionStart{
+			ID:       "duckdb-atomic-execution",
+			Provider: "test-provider",
+			MaxTurns: 2,
+		},
+		trajectoryTestEntry(
+			"duckdb-atomic-input",
+			"",
+			sdk.TrajectoryKindUserMessage,
+			`{"role":"user","content":"atomic"}`,
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	execution, err := backend.Trajectories().ClaimExecution(
+		ctx,
+		trajectoryID,
+		"duckdb-atomic-worker",
+		time.Now().UTC(),
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbox, err := backend.Deliveries(sdk.HostOutboxQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.Enqueue(
+		ctx,
+		duckDBTestDelivery("duckdb-atomic-conflict", "original-event"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := trajectoryTestEntry(
+		"duckdb-atomic-checkpoint",
+		"duckdb-atomic-input",
+		sdk.TrajectoryKindCheckpoint,
+		`{"checkpoint":"state"}`,
+	)
+	mutation := sdk.ExecutionMutationCommit{
+		Trajectory: sdk.TrajectoryExecutionCommit{
+			TrajectoryID: trajectoryID,
+			ExecutionID:  execution.ID,
+			LeaseToken:   execution.LeaseToken,
+			ExpectedHead: "duckdb-atomic-input",
+			Entries:      []sdk.TrajectoryEntry{checkpoint},
+		},
+		Outbox: []sdk.StateMutationDeliveries{{
+			Queue: sdk.HostOutboxQueue,
+			Deliveries: []sdk.Delivery{
+				duckDBTestDelivery(
+					"duckdb-atomic-conflict",
+					"different-event",
+				),
+			},
+		}},
+	}
+	if _, err := atomicBackend.CommitExecution(ctx, mutation); err == nil {
+		t.Fatal("conflicting DuckDB atomic outbox unexpectedly committed")
+	}
+	metadata, err := backend.Trajectories().LoadMetadata(ctx, trajectoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Head != "duckdb-atomic-input" {
+		t.Fatalf("DuckDB trajectory head after rollback = %q", metadata.Head)
+	}
+	outboxItems, err := outbox.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outboxItems) != 1 ||
+		outboxItems[0].ID != "duckdb-atomic-conflict" ||
+		outboxItems[0].Event.ID != "original-event" {
+		t.Fatalf("DuckDB outbox after rollback = %#v", outboxItems)
+	}
+
+	mutation.Outbox[0].Deliveries[0] = duckDBTestDelivery(
+		"duckdb-atomic-result",
+		"result-event",
+	)
+	result, err := atomicBackend.CommitExecution(ctx, mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Trajectory.Head != "duckdb-atomic-checkpoint" {
+		t.Fatalf("DuckDB atomic result = %#v", result)
+	}
+	outboxItems, err = outbox.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outboxItems) != 2 {
+		t.Fatalf("committed DuckDB outbox = %#v", outboxItems)
+	}
+}
+
 func TestDuckDBStateBackendStoresOperationsInDuckDB(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -643,6 +774,19 @@ func TestDuckDBStateBackendStoresOperationsInDuckDB(t *testing.T) {
 		"late failure",
 	); !errors.Is(err, sdk.ErrOperationConflict) {
 		t.Fatalf("stale DuckDB operation mutation error = %v", err)
+	}
+}
+
+func duckDBTestDelivery(id string, eventID string) sdk.Delivery {
+	return sdk.Delivery{
+		ID:           id,
+		Plugin:       "observer",
+		Subscription: "events",
+		Event: sdk.Event{
+			ID:      eventID,
+			Name:    sdk.EventAgentStart,
+			Payload: []byte(`{}`),
+		},
 	}
 }
 

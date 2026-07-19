@@ -32,8 +32,8 @@ an independent process.
 - a multi-user HTTP gateway with session-scoped plugin composition,
   asynchronous submit/poll/cancel, and startup execution recovery;
 - DuckDB state storage with immutable trajectory rows, indexed operation state,
-  indexed delivery queues, transactional execution fencing, and indexed
-  analysis queries;
+  indexed delivery queues, transactional execution fencing, atomic subscriber
+  outbox commits, and indexed analysis queries;
 - OpenTelemetry transport instrumentation plus an asynchronous semantic OTel
   subscriber plugin;
 - Cobra CLI/config contract with `flag > AGENTM_* > config file > default`

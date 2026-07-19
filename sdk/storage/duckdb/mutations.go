@@ -110,6 +110,14 @@ func (store *duckDBTrajectoryStore) insertEntry(
 			err,
 		)
 	}
+	auditJSON, err := duckDBAuditJSON(entry.Audit)
+	if err != nil {
+		return fmt.Errorf(
+			"encode trajectory entry %q audit: %w",
+			entry.ID,
+			err,
+		)
+	}
 	_, err = tx.ExecContext(
 		ctx,
 		`INSERT INTO ag_trajectory_entries (
@@ -138,10 +146,12 @@ func (store *duckDBTrajectoryStore) insertEntry(
 			action_kind,
 			payload_version,
 			payload,
-			attributes_json
+			attributes_json,
+			audit_json
 		) VALUES (
 			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+			?
 		)`,
 		store.namespace,
 		entry.TrajectoryID,
@@ -169,6 +179,7 @@ func (store *duckDBTrajectoryStore) insertEntry(
 		entry.PayloadVersion,
 		[]byte(entry.Payload),
 		attributesJSON,
+		auditJSON,
 	)
 	if err != nil {
 		return mapDuckDBTrajectoryWriteError(
@@ -271,10 +282,44 @@ func (store *duckDBTrajectoryStore) BeginExecution(
 	start sdk.TrajectoryExecutionStart,
 	input sdk.TrajectoryEntry,
 ) (sdk.TrajectoryMetadata, error) {
-	if err := sdk.ValidateResourceName("trajectory", id); err != nil {
+	if err := ctx.Err(); err != nil {
 		return sdk.TrajectoryMetadata{}, err
 	}
-	if err := ctx.Err(); err != nil {
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	defer tx.Rollback()
+	metadata, err := store.beginExecutionInTx(
+		ctx,
+		tx,
+		id,
+		expectedHead,
+		start,
+		input,
+		time.Now().UTC(),
+	)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return sdk.TrajectoryMetadata{}, mapDuckDBTrajectoryWriteError(err)
+	}
+	return metadata, nil
+}
+
+func (store *duckDBTrajectoryStore) beginExecutionInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	id string,
+	expectedHead string,
+	start sdk.TrajectoryExecutionStart,
+	input sdk.TrajectoryEntry,
+	now time.Time,
+) (sdk.TrajectoryMetadata, error) {
+	if err := sdk.ValidateResourceName("trajectory", id); err != nil {
 		return sdk.TrajectoryMetadata{}, err
 	}
 	if input.Kind != sdk.TrajectoryKindUserMessage {
@@ -282,7 +327,6 @@ func (store *duckDBTrajectoryStore) BeginExecution(
 			"trajectory execution input must be a user_message entry",
 		)
 	}
-	now := time.Now().UTC()
 	execution, err := prepareTrajectoryExecutionStart(
 		start,
 		expectedHead,
@@ -299,14 +343,6 @@ func (store *duckDBTrajectoryStore) BeginExecution(
 	if err != nil {
 		return sdk.TrajectoryMetadata{}, err
 	}
-
-	store.writeMu.Lock()
-	defer store.writeMu.Unlock()
-	tx, err := store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return sdk.TrajectoryMetadata{}, err
-	}
-	defer tx.Rollback()
 	trajectory, _, ownedCount, err := store.loadStoredTrajectory(ctx, tx, id)
 	if err != nil {
 		return sdk.TrajectoryMetadata{}, err
@@ -335,9 +371,6 @@ func (store *duckDBTrajectoryStore) BeginExecution(
 	metadata, err := store.metadataInTransaction(ctx, tx, id)
 	if err != nil {
 		return sdk.TrajectoryMetadata{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return sdk.TrajectoryMetadata{}, mapDuckDBTrajectoryWriteError(err)
 	}
 	return metadata, nil
 }
@@ -452,13 +485,41 @@ func (store *duckDBTrajectoryStore) CommitExecution(
 	ctx context.Context,
 	commit sdk.TrajectoryExecutionCommit,
 ) (sdk.TrajectoryMetadata, error) {
+	if err := ctx.Err(); err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	defer tx.Rollback()
+	metadata, err := store.commitExecutionInTx(
+		ctx,
+		tx,
+		commit,
+		time.Now().UTC(),
+	)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return sdk.TrajectoryMetadata{}, mapDuckDBTrajectoryWriteError(err)
+	}
+	return metadata, nil
+}
+
+func (store *duckDBTrajectoryStore) commitExecutionInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	commit sdk.TrajectoryExecutionCommit,
+	now time.Time,
+) (sdk.TrajectoryMetadata, error) {
 	if err := sdk.ValidateResourceName(
 		"trajectory",
 		commit.TrajectoryID,
 	); err != nil {
-		return sdk.TrajectoryMetadata{}, err
-	}
-	if err := ctx.Err(); err != nil {
 		return sdk.TrajectoryMetadata{}, err
 	}
 	if len(commit.Entries) == 0 && commit.State == "" {
@@ -474,15 +535,6 @@ func (store *duckDBTrajectoryStore) CommitExecution(
 		return sdk.TrajectoryMetadata{}, err
 	}
 	commit.Entries = entries
-	now := time.Now().UTC()
-
-	store.writeMu.Lock()
-	defer store.writeMu.Unlock()
-	tx, err := store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return sdk.TrajectoryMetadata{}, err
-	}
-	defer tx.Rollback()
 	trajectory, _, ownedCount, err := store.loadStoredTrajectory(
 		ctx,
 		tx,
@@ -554,68 +606,105 @@ func (store *duckDBTrajectoryStore) CommitExecution(
 	if err != nil {
 		return sdk.TrajectoryMetadata{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return sdk.TrajectoryMetadata{}, mapDuckDBTrajectoryWriteError(err)
-	}
 	return metadata, nil
 }
 
 func (store *duckDBTrajectoryStore) CancelExecution(
 	ctx context.Context,
-	trajectoryID string,
-	executionID string,
-	reason string,
-	now time.Time,
-) (sdk.TrajectoryMetadata, error) {
-	if err := sdk.ValidateResourceName(
-		"trajectory",
-		trajectoryID,
-	); err != nil {
-		return sdk.TrajectoryMetadata{}, err
-	}
+	commit sdk.TrajectoryExecutionCancelCommit,
+) (sdk.TrajectoryExecutionCancelResult, error) {
 	if err := ctx.Err(); err != nil {
-		return sdk.TrajectoryMetadata{}, err
+		return sdk.TrajectoryExecutionCancelResult{}, err
 	}
-	now = normalizedMutationTime(now)
 	store.writeMu.Lock()
 	defer store.writeMu.Unlock()
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
-		return sdk.TrajectoryMetadata{}, err
+		return sdk.TrajectoryExecutionCancelResult{}, err
 	}
 	defer tx.Rollback()
-	trajectory, _, _, err := store.loadStoredTrajectory(
+	metadata, changed, err := store.cancelExecutionInTx(
 		ctx,
 		tx,
-		trajectoryID,
+		commit,
+		normalizedMutationTime(commit.At),
 	)
 	if err != nil {
-		return sdk.TrajectoryMetadata{}, err
+		return sdk.TrajectoryExecutionCancelResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return sdk.TrajectoryExecutionCancelResult{},
+			mapDuckDBTrajectoryWriteError(err)
+	}
+	return sdk.TrajectoryExecutionCancelResult{
+		Trajectory: metadata,
+		Changed:    changed,
+	}, nil
+}
+
+func (store *duckDBTrajectoryStore) cancelExecutionInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	commit sdk.TrajectoryExecutionCancelCommit,
+	now time.Time,
+) (sdk.TrajectoryMetadata, bool, error) {
+	if err := sdk.ValidateResourceName(
+		"trajectory",
+		commit.TrajectoryID,
+	); err != nil {
+		return sdk.TrajectoryMetadata{}, false, err
+	}
+	entries, err := bindTrajectoryExecutionEntries(
+		commit.ExecutionID,
+		commit.Entries,
+	)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, false, err
+	}
+	trajectory, _, ownedCount, err := store.loadStoredTrajectory(
+		ctx,
+		tx,
+		commit.TrajectoryID,
+	)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, false, err
 	}
 	if trajectory.Execution == nil {
-		return sdk.TrajectoryMetadata{}, fmt.Errorf(
+		return sdk.TrajectoryMetadata{}, false, fmt.Errorf(
 			"%w: trajectory %s has no execution",
 			sdk.ErrTrajectoryExecution,
-			trajectoryID,
+			commit.TrajectoryID,
 		)
 	}
 	execution, changed, err := cancelTrajectoryExecution(
 		*trajectory.Execution,
-		executionID,
-		reason,
+		commit.ExecutionID,
+		commit.Reason,
 		now,
 	)
 	if err != nil {
-		return sdk.TrajectoryMetadata{}, err
+		return sdk.TrajectoryMetadata{}, false, err
 	}
 	if changed {
+		if len(entries) > 0 {
+			if _, err := store.appendEntries(
+				ctx,
+				tx,
+				trajectory,
+				ownedCount,
+				commit.ExpectedHead,
+				entries,
+			); err != nil {
+				return sdk.TrajectoryMetadata{}, false, err
+			}
+		}
 		if err := store.replaceExecution(
 			ctx,
 			tx,
-			trajectoryID,
+			commit.TrajectoryID,
 			execution,
 		); err != nil {
-			return sdk.TrajectoryMetadata{}, err
+			return sdk.TrajectoryMetadata{}, false, err
 		}
 		if _, err := tx.ExecContext(
 			ctx,
@@ -624,19 +713,16 @@ func (store *duckDBTrajectoryStore) CancelExecution(
 			 WHERE namespace = ? AND id = ?`,
 			now,
 			store.namespace,
-			trajectoryID,
+			commit.TrajectoryID,
 		); err != nil {
-			return sdk.TrajectoryMetadata{}, err
+			return sdk.TrajectoryMetadata{}, false, err
 		}
 	}
-	metadata, err := store.metadataInTransaction(ctx, tx, trajectoryID)
+	metadata, err := store.metadataInTransaction(ctx, tx, commit.TrajectoryID)
 	if err != nil {
-		return sdk.TrajectoryMetadata{}, err
+		return sdk.TrajectoryMetadata{}, false, err
 	}
-	if err := tx.Commit(); err != nil {
-		return sdk.TrajectoryMetadata{}, mapDuckDBTrajectoryWriteError(err)
-	}
-	return metadata, nil
+	return metadata, changed, nil
 }
 
 func (store *duckDBTrajectoryStore) ListRecoverable(

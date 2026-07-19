@@ -158,7 +158,7 @@ func (*duckDBStateBackend) Capabilities() sdk.StorageCapabilities {
 	return sdk.StorageCapabilities{
 		Durable:            true,
 		MultiProcessSafe:   false,
-		AtomicState:        false,
+		AtomicState:        true,
 		OperationFencing:   true,
 		NamedQueues:        true,
 		Pagination:         true,
@@ -166,6 +166,36 @@ func (*duckDBStateBackend) Capabilities() sdk.StorageCapabilities {
 		NamespaceIsolation: true,
 	}
 }
+
+func (backend *duckDBStateBackend) AppendTrajectory(
+	ctx context.Context,
+	commit sdk.TrajectoryAppendCommit,
+) (sdk.TrajectoryAppendResult, error) {
+	return backend.trajectories.AppendTrajectoryCommit(ctx, commit)
+}
+
+func (backend *duckDBStateBackend) StartExecution(
+	ctx context.Context,
+	commit sdk.ExecutionStartCommit,
+) (sdk.ExecutionMutationResult, error) {
+	return backend.trajectories.StartExecutionCommit(ctx, commit)
+}
+
+func (backend *duckDBStateBackend) CommitExecution(
+	ctx context.Context,
+	commit sdk.ExecutionMutationCommit,
+) (sdk.ExecutionMutationResult, error) {
+	return backend.trajectories.CommitExecutionMutation(ctx, commit)
+}
+
+func (backend *duckDBStateBackend) CancelExecution(
+	ctx context.Context,
+	commit sdk.ExecutionCancelCommit,
+) (sdk.ExecutionCancelResult, error) {
+	return backend.trajectories.CancelExecutionCommit(ctx, commit)
+}
+
+var _ sdk.AtomicStateBackend = (*duckDBStateBackend)(nil)
 
 func (backend *duckDBStateBackend) Namespace() string {
 	return backend.namespace

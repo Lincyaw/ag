@@ -126,8 +126,8 @@ cross-store atomicity, fencing, pagination, maintenance, namespace isolation,
 and encryption-at-rest. Callers must not infer these properties from a URI
 scheme. `NewRuntime` treats capabilities as a startup contract: it requires
 operation fencing and named delivery queues, and `AtomicState` must match the
-`AtomicStateBackend` interface in both directions. Built-in memory, file, and
-DuckDB backends do not claim cross-store atomicity or encryption at rest.
+`AtomicStateBackend` interface in both directions. Built-in memory and file
+backends do not claim cross-store atomicity or encryption at rest.
 
 The built-in file backend is a local/reference implementation. It uses
 cross-process file locks where the platform supports them, atomic file
@@ -145,10 +145,10 @@ mutations or indexed queries rather than whole-file rewrites. `BeginExecution`
 and `CommitExecution` are ACID SQL transactions, while execution, provider,
 tool, correlation, kind, time, operation invocation, and delivery scheduling
 fields are native indexed columns. `TrajectoryAnalyzer.AnalyzeEntries` exposes
-bounded fixed-field extraction without parsing payload JSON. The backend still
-reports `AtomicState=false` because it does not implement one public
-`AtomicStateBackend` transaction spanning trajectory, operation, and delivery
-aggregate commits.
+bounded fixed-field extraction without parsing payload JSON. DuckDB reports
+`AtomicState=true` for one process: trajectory append, execution start,
+execution commit, execution cancellation, and subscriber outbox enqueue share
+one DuckDB transaction.
 
 DuckDB is intended for one read-write agent host process with concurrent
 in-process readers. It reports `MultiProcessSafe=false`: multiple independent
