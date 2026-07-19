@@ -230,7 +230,7 @@ func (execution *promptExecution) executeTurn(
 	execution.result.Output = response.Content
 	execution.result.Turns = turn + 1
 
-	toolResults, err := execution.executeTools(
+	toolResults, interrupted, err := execution.executeTools(
 		ctx,
 		lease.snapshot,
 		turn,
@@ -245,6 +245,29 @@ func (execution *promptExecution) executeTurn(
 			err,
 		)
 		return result, true, finishErr
+	}
+	if interrupted {
+		if _, err := execution.checkpointQueuedContext(
+			ctx,
+			lease.snapshot,
+			contextInjectionBeforeProvider,
+		); err != nil {
+			return Result{}, false, err
+		}
+		if turn+1 >= execution.session.config.MaxTurns {
+			return execution.applyAction(
+				ctx,
+				lease.snapshot,
+				sdk.Action{
+					Kind: sdk.ActionStop,
+					Cause: &sdk.Cause{
+						Code:  sdk.CauseMaxTurns,
+						Final: true,
+					},
+				},
+			)
+		}
+		return Result{}, false, nil
 	}
 	action, err := execution.decide(
 		ctx,
@@ -389,7 +412,7 @@ func (execution *promptExecution) executeTools(
 	tools map[string]sdk.Tool,
 	providerInvocationID string,
 	providerName string,
-) ([]sdk.ToolResult, error) {
+) ([]sdk.ToolResult, bool, error) {
 	prepared := make([]preparedToolCall, len(calls))
 	for index, rawCall := range calls {
 		call, err := execution.session.prepareToolCall(
@@ -402,7 +425,7 @@ func (execution *promptExecution) executeTools(
 			providerInvocationID,
 		)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		prepared[index] = call
 	}
@@ -413,21 +436,31 @@ func (execution *promptExecution) executeTools(
 	if err := validateModelResponse(
 		sdk.ModelResponse{ToolCalls: transformed},
 	); err != nil {
-		return nil, fmt.Errorf(
+		return nil, false, fmt.Errorf(
 			"before_tool produced invalid calls: %w",
 			err,
 		)
 	}
+	toolCtx, stopToolInterrupt := execution.session.
+		contextInjectionInterruptContext(ctx)
+	defer stopToolInterrupt()
 	execution.session.submitToolCalls(
-		ctx,
+		toolCtx,
 		snapshot,
 		providerName,
 		prepared,
 	)
-	outcomes := execution.session.awaitToolCalls(ctx, prepared)
+	outcomes := execution.session.awaitToolCalls(toolCtx, prepared)
 	results := make([]sdk.ToolResult, len(prepared))
 	dependencies := make([]string, len(prepared))
+	interrupted := errors.Is(
+		context.Cause(toolCtx),
+		errContextInjectionInterrupt,
+	)
 	for index, call := range prepared {
+		if errors.Is(outcomes[index].err, errContextInjectionInterrupt) {
+			interrupted = true
+		}
 		finalCall, result, err := execution.session.finalizeToolCall(
 			ctx,
 			snapshot,
@@ -436,7 +469,7 @@ func (execution *promptExecution) executeTools(
 			outcomes[index],
 		)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		execution.messages = append(execution.messages, sdk.Message{
 			Role:       sdk.RoleTool,
@@ -454,7 +487,7 @@ func (execution *promptExecution) executeTools(
 	} else {
 		execution.dependencies = dependencies
 	}
-	return results, nil
+	return results, interrupted, nil
 }
 
 func (execution *promptExecution) decide(

@@ -128,9 +128,11 @@ func (provider *hostedContextInjectionProvider) Requests() []sdk.ModelRequest {
 }
 
 type hostedContextInjectionTool struct {
-	entered chan struct{}
-	release chan struct{}
-	once    sync.Once
+	entered    chan struct{}
+	release    chan struct{}
+	cancelled  chan struct{}
+	once       sync.Once
+	cancelOnce sync.Once
 }
 
 func (tool *hostedContextInjectionTool) Spec() sdk.ToolSpec {
@@ -148,6 +150,9 @@ func (tool *hostedContextInjectionTool) Call(
 	tool.once.Do(func() { close(tool.entered) })
 	select {
 	case <-ctx.Done():
+		if tool.cancelled != nil {
+			tool.cancelOnce.Do(func() { close(tool.cancelled) })
+		}
 		return sdk.ToolResult{}, ctx.Err()
 	case <-tool.release:
 		return sdk.ToolResult{Content: "tool done"}, nil
@@ -616,6 +621,124 @@ func TestRuntimeEnqueuesContextIntoHostedExecution(t *testing.T) {
 	}
 	second := requests[1].Messages
 	if len(second) < 4 || second[len(second)-1].Content != "live hosted context" {
+		t.Fatalf("second provider messages = %#v", second)
+	}
+}
+
+func TestNowContextInjectionInterruptsToolAndContinues(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	trajectories := sdkstorage.NewMemoryTrajectoryStore()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:       testStateBackendWithStores(trajectories, nil),
+		OperationPoll: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	provider := &hostedContextInjectionProvider{}
+	tool := &hostedContextInjectionTool{
+		entered:   make(chan struct{}),
+		cancelled: make(chan struct{}),
+	}
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "now-context-interrupt-plugin",
+			Version:     "1.0.0",
+			Description: "interrupts live tool wait with queued context",
+			APIVersion:  sdk.APIVersion,
+			Registers: []string{
+				sdk.ProviderResource("hosted-context"),
+				sdk.ToolResource("wait_for_context"),
+			},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return errors.Join(
+				registrar.RegisterProvider(provider),
+				registrar.RegisterTool(tool),
+			)
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "now-context-interrupt-session",
+		Provider: "hosted-context",
+		MaxTurns: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultC := make(chan Result, 1)
+	errC := make(chan error, 1)
+	go func() {
+		result, promptErr := session.Prompt(ctx, "base prompt")
+		if promptErr != nil {
+			errC <- promptErr
+			return
+		}
+		resultC <- result
+	}()
+	select {
+	case <-tool.entered:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	metadata, err := trajectories.LoadMetadata(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Execution == nil {
+		t.Fatalf("running execution metadata = %#v", metadata.Execution)
+	}
+	if err := runtime.EnqueueContextInjection(
+		ctx,
+		session.ID(),
+		metadata.Execution.ID,
+		sdk.ContextInjection{
+			Priority: sdk.ContextInjectionNow,
+			Mode:     sdk.ContextInjectionPrompt,
+			Origin:   "test",
+			Messages: []sdk.Message{{
+				Role:    sdk.RoleUser,
+				Content: "interrupting context",
+			}},
+		},
+	); err != nil {
+		t.Fatalf("enqueue now context: %v", err)
+	}
+	select {
+	case <-tool.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("tool was not interrupted")
+	}
+	var result Result
+	select {
+	case err := <-errC:
+		t.Fatal(err)
+	case result = <-resultC:
+	case <-time.After(time.Second):
+		t.Fatal("prompt did not complete")
+	}
+	if result.Output != "hosted context accepted" {
+		t.Fatalf("result output = %q", result.Output)
+	}
+	requests := provider.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %#v", requests)
+	}
+	second := requests[1].Messages
+	if len(second) < 4 ||
+		second[len(second)-2].Content != "interrupted by context injection" ||
+		second[len(second)-1].Content != "interrupting context" {
 		t.Fatalf("second provider messages = %#v", second)
 	}
 }

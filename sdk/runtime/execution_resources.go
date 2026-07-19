@@ -263,6 +263,11 @@ func (session *Session) submitToolCall(
 		sdk.CloneOperationRequest(request),
 	)
 	if err != nil {
+		if errors.Is(context.Cause(ctx), errContextInjectionInterrupt) {
+			call.failureKind = "interrupted"
+			call.failureReason = errContextInjectionInterrupt.Error()
+			return
+		}
 		call.failureKind = "execution_failed"
 		call.failureReason = fmt.Sprintf(
 			"submit tool %q call: %v",
@@ -336,6 +341,12 @@ func (session *Session) awaitToolCalls(
 				fmt.Sprintf("tool %q result", call.call.Name),
 			)
 			if err != nil {
+				if errors.Is(
+					context.Cause(ctx),
+					errContextInjectionInterrupt,
+				) {
+					err = errContextInjectionInterrupt
+				}
 				return err
 			}
 			outcomes[index].result = result
@@ -361,6 +372,17 @@ func (session *Session) finalizeToolCall(
 		outcome.result = sdk.ToolResult{
 			Content: outcome.err.Error(),
 			IsError: true,
+		}
+		if errors.Is(outcome.err, errContextInjectionInterrupt) {
+			return session.afterToolError(
+				ctx,
+				snapshot,
+				turn,
+				call.call,
+				"interrupted",
+				outcome.err.Error(),
+				outcome.result,
+			)
 		}
 		return session.afterToolError(
 			ctx,

@@ -30,17 +30,18 @@ const (
 )
 
 type Session struct {
-	runtime        *Runtime
-	config         SessionConfig
-	mu             sync.Mutex
-	executionMu    sync.Mutex
-	executionID    string
-	executionToken string
-	messages       []sdk.Message
-	head           string
-	contextQueue   contextInjectionQueue
-	pinnedSnapshot *registrySnapshot
-	causal         causalInvocationScope
+	runtime          *Runtime
+	config           SessionConfig
+	mu               sync.Mutex
+	executionMu      sync.Mutex
+	executionID      string
+	executionToken   string
+	contextInterrupt contextInjectionInterruptSlot
+	messages         []sdk.Message
+	head             string
+	contextQueue     contextInjectionQueue
+	pinnedSnapshot   *registrySnapshot
+	causal           causalInvocationScope
 }
 
 type Result struct {

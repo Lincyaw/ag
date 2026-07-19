@@ -10,6 +10,8 @@ import (
 	"github.com/lincyaw/ag/sdk"
 )
 
+var errContextInjectionInterrupt = errors.New("interrupted by context injection")
+
 type contextInjectionDrainBoundary uint8
 
 const (
@@ -27,6 +29,13 @@ type contextInjectionQueue struct {
 	mu       sync.Mutex
 	sequence uint64
 	items    []queuedContextInjection
+}
+
+type contextInjectionInterruptSlot struct {
+	mu          sync.Mutex
+	token       uint64
+	executionID string
+	cancel      context.CancelCauseFunc
 }
 
 // EnqueueContextInjection schedules model-visible context for the next execution
@@ -49,7 +58,15 @@ func (session *Session) EnqueueContextInjection(
 		return err
 	}
 	defer releaseWork()
-	return session.contextQueue.enqueue(injection)
+	queued, err := session.contextQueue.enqueue(injection)
+	if err != nil {
+		return err
+	}
+	if queued.Priority == sdk.ContextInjectionNow {
+		executionID, _ := session.activeExecution()
+		session.signalContextInjectionInterrupt(executionID)
+	}
+	return nil
 }
 
 // EnqueueContextInjection schedules model-visible context for a live hosted
@@ -114,22 +131,32 @@ func (session *Session) enqueueHostedContextInjection(
 			executionID,
 		)
 	}
-	return session.contextQueue.enqueueForExecution(executionID, injection)
+	queued, err := session.contextQueue.enqueueForExecution(
+		executionID,
+		injection,
+	)
+	if err != nil {
+		return err
+	}
+	if queued.Priority == sdk.ContextInjectionNow {
+		session.signalContextInjectionInterrupt(executionID)
+	}
+	return nil
 }
 
 func (queue *contextInjectionQueue) enqueue(
 	injection sdk.ContextInjection,
-) error {
+) (sdk.ContextInjection, error) {
 	return queue.enqueueForExecution("", injection)
 }
 
 func (queue *contextInjectionQueue) enqueueForExecution(
 	executionID string,
 	injection sdk.ContextInjection,
-) error {
+) (sdk.ContextInjection, error) {
 	normalized, err := normalizeContextInjection(injection, time.Now().UTC())
 	if err != nil {
-		return err
+		return sdk.ContextInjection{}, err
 	}
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
@@ -139,7 +166,7 @@ func (queue *contextInjectionQueue) enqueueForExecution(
 		executionID: executionID,
 		sequence:    queue.sequence,
 	})
-	return nil
+	return sdk.CloneContextInjection(normalized), nil
 }
 
 func normalizeContextInjection(
@@ -269,6 +296,86 @@ func (queue *contextInjectionQueue) discardExecution(executionID string) {
 		kept = append(kept, item)
 	}
 	queue.items = kept
+}
+
+func (session *Session) contextInjectionInterruptContext(
+	ctx context.Context,
+) (context.Context, func()) {
+	executionID, _ := session.activeExecution()
+	if executionID == "" {
+		return ctx, func() {}
+	}
+	interruptCtx, cancel := context.WithCancelCause(ctx)
+	token := session.contextInterrupt.install(executionID, cancel)
+	return interruptCtx, func() {
+		session.contextInterrupt.clear(executionID, token)
+		cancel(nil)
+	}
+}
+
+func (slot *contextInjectionInterruptSlot) install(
+	executionID string,
+	cancel context.CancelCauseFunc,
+) uint64 {
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	slot.token++
+	slot.executionID = executionID
+	slot.cancel = cancel
+	return slot.token
+}
+
+func (slot *contextInjectionInterruptSlot) clear(
+	executionID string,
+	token uint64,
+) {
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	if slot.executionID != executionID ||
+		slot.token != token {
+		return
+	}
+	slot.executionID = ""
+	slot.cancel = nil
+}
+
+func (session *Session) clearContextInjectionInterruptExecution(
+	executionID string,
+) {
+	session.contextInterrupt.clearExecution(executionID)
+}
+
+func (slot *contextInjectionInterruptSlot) clearExecution(executionID string) {
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	if slot.executionID != executionID {
+		return
+	}
+	slot.executionID = ""
+	slot.cancel = nil
+}
+
+func (session *Session) signalContextInjectionInterrupt(
+	executionID string,
+) bool {
+	return session.contextInterrupt.signal(executionID)
+}
+
+func (slot *contextInjectionInterruptSlot) signal(executionID string) bool {
+	if executionID == "" {
+		return false
+	}
+	slot.mu.Lock()
+	cancel := slot.cancel
+	if slot.executionID != executionID {
+		cancel = nil
+	}
+	slot.mu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel(errContextInjectionInterrupt)
+	return true
 }
 
 func cloneQueuedContextInjections(

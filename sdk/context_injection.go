@@ -9,8 +9,8 @@ type ContextInjectionPriority string
 
 const (
 	// ContextInjectionNow is ordered ahead of other pending context at the next
-	// runtime-owned drain boundary. Hosts that need submit-interrupt behavior
-	// should pair it with execution cancellation.
+	// runtime-owned drain boundary. Live runtimes may also use it to interrupt
+	// cancellable tool waits without terminating the whole execution.
 	ContextInjectionNow   ContextInjectionPriority = "now"
 	ContextInjectionNext  ContextInjectionPriority = "next"
 	ContextInjectionLater ContextInjectionPriority = "later"
