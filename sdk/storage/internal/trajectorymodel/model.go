@@ -351,11 +351,7 @@ func walkBranch(
 	seen := make(map[string]struct{})
 	for cursor := head; cursor != ""; {
 		if _, cycle := seen[cursor]; cycle {
-			return fmt.Errorf(
-				"trajectory %q contains a cycle at %q",
-				trajectoryID,
-				cursor,
-			)
+			return branchCycleError(trajectoryID, cursor)
 		}
 		seen[cursor] = struct{}{}
 		entry, found, err := lookup(cursor)
@@ -363,11 +359,7 @@ func walkBranch(
 			return err
 		}
 		if !found {
-			return fmt.Errorf(
-				"trajectory %q branch references unknown entry %q",
-				trajectoryID,
-				cursor,
-			)
+			return branchUnknownEntryError(trajectoryID, cursor)
 		}
 		keepGoing, err := visit(cursor, entry)
 		if err != nil {
@@ -381,36 +373,50 @@ func walkBranch(
 	return nil
 }
 
+func branchCycleError(trajectoryID string, cursor string) error {
+	if trajectoryID == "" {
+		return fmt.Errorf("trajectory contains a cycle at %q", cursor)
+	}
+	return fmt.Errorf(
+		"trajectory %q contains a cycle at %q",
+		trajectoryID,
+		cursor,
+	)
+}
+
+func branchUnknownEntryError(trajectoryID string, cursor string) error {
+	if trajectoryID == "" {
+		return fmt.Errorf(
+			"trajectory branch references unknown entry %q",
+			cursor,
+		)
+	}
+	return fmt.Errorf(
+		"trajectory %q branch references unknown entry %q",
+		trajectoryID,
+		cursor,
+	)
+}
+
 func LatestEntry(
 	head string,
 	kind sdk.TrajectoryKind,
 	lookup EntryLookup,
 ) (sdk.TrajectoryEntry, bool, error) {
-	seen := make(map[string]struct{})
-	for cursor := head; cursor != ""; {
-		if _, cycle := seen[cursor]; cycle {
-			return sdk.TrajectoryEntry{}, false, fmt.Errorf(
-				"trajectory contains a cycle at %q",
-				cursor,
-			)
-		}
-		seen[cursor] = struct{}{}
-		entry, exists, err := lookup(cursor)
-		if err != nil {
-			return sdk.TrajectoryEntry{}, false, err
-		}
-		if !exists {
-			return sdk.TrajectoryEntry{}, false, fmt.Errorf(
-				"trajectory branch references unknown entry %q",
-				cursor,
-			)
-		}
+	var result sdk.TrajectoryEntry
+	var found bool
+	err := walkBranch("", head, lookup, func(
+		_ string,
+		entry sdk.TrajectoryEntry,
+	) (bool, error) {
 		if entry.Kind == kind {
-			return entry, true, nil
+			result = entry
+			found = true
+			return false, nil
 		}
-		cursor = entry.ParentID
-	}
-	return sdk.TrajectoryEntry{}, false, nil
+		return true, nil
+	})
+	return result, found, err
 }
 
 func LatestCheckpointAfterAppend(
