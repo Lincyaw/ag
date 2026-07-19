@@ -122,7 +122,7 @@ func TestMountedSpecsAreFrozenAndCatalogIsDefensive(t *testing.T) {
 func TestRegistrySnapshotCloneOwnsMutableSpecs(t *testing.T) {
 	t.Parallel()
 	original := initialSnapshot()
-	original.tools["tool"] = ownedResource[sdk.Tool, sdk.ToolSpec]{
+	original.tools["tool"] = ownedResource[sdk.AsyncTool, sdk.ToolSpec]{
 		spec: sdk.ToolSpec{
 			Name: "tool",
 			Parameters: map[string]any{
@@ -136,7 +136,7 @@ func TestRegistrySnapshotCloneOwnsMutableSpecs(t *testing.T) {
 		spec: sdk.AgentSpec{Name: "agent", Tools: []string{"tool"}},
 	}
 	original.capabilities["capability"] = ownedResource[
-		sdk.Capability,
+		sdk.AsyncCapability,
 		sdk.CapabilitySpec,
 	]{
 		spec: sdk.CapabilitySpec{

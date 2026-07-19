@@ -281,12 +281,12 @@ func narrowAgentSnapshot(
 		)
 	}
 	result.providers = map[string]ownedResource[
-		sdk.Provider,
+		sdk.AsyncProvider,
 		sdk.ProviderSpec,
 	]{providerName: provider}
 	if spec.Tools != nil {
 		tools := make(
-			map[string]ownedResource[sdk.Tool, sdk.ToolSpec],
+			map[string]ownedResource[sdk.AsyncTool, sdk.ToolSpec],
 			len(spec.Tools),
 		)
 		for _, name := range spec.Tools {

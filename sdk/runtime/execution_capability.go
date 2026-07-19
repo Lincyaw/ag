@@ -99,14 +99,6 @@ func (runtime *Runtime) acquireCapabilityInvocation(
 			name,
 		)
 	}
-	capability, ok := owned.value.(sdk.AsyncCapability)
-	if !ok {
-		snapshotLease.release()
-		return capabilityInvocation{}, fmt.Errorf(
-			"capability %q has no asynchronous execution implementation",
-			name,
-		)
-	}
 	ownerLease, err := runtime.acquireMounts(owned.owner)
 	pluginName := owned.owner.manifest.Name
 	snapshotLease.release()
@@ -119,7 +111,7 @@ func (runtime *Runtime) acquireCapabilityInvocation(
 		)
 	}
 	return capabilityInvocation{
-		capability: capability,
+		capability: owned.value,
 		pluginName: pluginName,
 		lease:      ownerLease,
 	}, nil

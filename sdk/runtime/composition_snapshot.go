@@ -29,6 +29,60 @@ func ownResource[Resource, Spec any](
 	}
 }
 
+func ownAsyncProvider(
+	owner *mountState,
+	resource plugincontract.Contribution[sdk.Provider, sdk.ProviderSpec],
+) (ownedResource[sdk.AsyncProvider, sdk.ProviderSpec], error) {
+	asynchronous, ok := resource.Value.(sdk.AsyncProvider)
+	if !ok {
+		return ownedResource[sdk.AsyncProvider, sdk.ProviderSpec]{}, fmt.Errorf(
+			"provider %q has no asynchronous execution implementation",
+			resource.Spec.Name,
+		)
+	}
+	return ownedResource[sdk.AsyncProvider, sdk.ProviderSpec]{
+		value: asynchronous,
+		spec:  resource.Spec,
+		owner: owner,
+	}, nil
+}
+
+func ownAsyncTool(
+	owner *mountState,
+	resource plugincontract.Contribution[sdk.Tool, sdk.ToolSpec],
+) (ownedResource[sdk.AsyncTool, sdk.ToolSpec], error) {
+	asynchronous, ok := resource.Value.(sdk.AsyncTool)
+	if !ok {
+		return ownedResource[sdk.AsyncTool, sdk.ToolSpec]{}, fmt.Errorf(
+			"tool %q has no asynchronous execution implementation",
+			resource.Spec.Name,
+		)
+	}
+	return ownedResource[sdk.AsyncTool, sdk.ToolSpec]{
+		value: asynchronous,
+		spec:  sdk.CloneToolSpec(resource.Spec),
+		owner: owner,
+	}, nil
+}
+
+func ownAsyncCapability(
+	owner *mountState,
+	resource plugincontract.Contribution[sdk.Capability, sdk.CapabilitySpec],
+) (ownedResource[sdk.AsyncCapability, sdk.CapabilitySpec], error) {
+	asynchronous, ok := resource.Value.(sdk.AsyncCapability)
+	if !ok {
+		return ownedResource[sdk.AsyncCapability, sdk.CapabilitySpec]{}, fmt.Errorf(
+			"capability %q has no asynchronous execution implementation",
+			resource.Spec.Name,
+		)
+	}
+	return ownedResource[sdk.AsyncCapability, sdk.CapabilitySpec]{
+		value: asynchronous,
+		spec:  sdk.CloneCapabilitySpec(resource.Spec),
+		owner: owner,
+	}, nil
+}
+
 func (resource ownedResource[Resource, Spec]) resourceIdentity(
 	kind sdk.ResourceKind,
 	name string,
@@ -79,12 +133,12 @@ func (agent ownedAgent) resourceRevision(name string) string {
 type registrySnapshot struct {
 	generation   uint64
 	plugins      map[string]*mountState
-	providers    map[string]ownedResource[sdk.Provider, sdk.ProviderSpec]
-	tools        map[string]ownedResource[sdk.Tool, sdk.ToolSpec]
+	providers    map[string]ownedResource[sdk.AsyncProvider, sdk.ProviderSpec]
+	tools        map[string]ownedResource[sdk.AsyncTool, sdk.ToolSpec]
 	agents       map[string]ownedAgent
 	hooks        map[string][]ownedHook
 	subscribers  map[string]ownedResource[sdk.Subscriber, sdk.SubscriberSpec]
-	capabilities map[string]ownedResource[sdk.Capability, sdk.CapabilitySpec]
+	capabilities map[string]ownedResource[sdk.AsyncCapability, sdk.CapabilitySpec]
 	events       map[string]ownedEvent
 }
 
@@ -98,12 +152,12 @@ func initialSnapshot() *registrySnapshot {
 	snapshot := &registrySnapshot{
 		generation:   1,
 		plugins:      make(map[string]*mountState),
-		providers:    make(map[string]ownedResource[sdk.Provider, sdk.ProviderSpec]),
-		tools:        make(map[string]ownedResource[sdk.Tool, sdk.ToolSpec]),
+		providers:    make(map[string]ownedResource[sdk.AsyncProvider, sdk.ProviderSpec]),
+		tools:        make(map[string]ownedResource[sdk.AsyncTool, sdk.ToolSpec]),
 		agents:       make(map[string]ownedAgent),
 		hooks:        make(map[string][]ownedHook),
 		subscribers:  make(map[string]ownedResource[sdk.Subscriber, sdk.SubscriberSpec]),
-		capabilities: make(map[string]ownedResource[sdk.Capability, sdk.CapabilitySpec]),
+		capabilities: make(map[string]ownedResource[sdk.AsyncCapability, sdk.CapabilitySpec]),
 		events:       make(map[string]ownedEvent),
 	}
 	for _, builtin := range builtinEventContracts {
@@ -119,11 +173,11 @@ func (snapshot *registrySnapshot) clone() *registrySnapshot {
 		generation:   snapshot.generation,
 		plugins:      maps.Clone(snapshot.plugins),
 		providers:    maps.Clone(snapshot.providers),
-		tools:        make(map[string]ownedResource[sdk.Tool, sdk.ToolSpec], len(snapshot.tools)),
+		tools:        make(map[string]ownedResource[sdk.AsyncTool, sdk.ToolSpec], len(snapshot.tools)),
 		agents:       make(map[string]ownedAgent, len(snapshot.agents)),
 		hooks:        make(map[string][]ownedHook, len(snapshot.hooks)),
 		subscribers:  make(map[string]ownedResource[sdk.Subscriber, sdk.SubscriberSpec], len(snapshot.subscribers)),
-		capabilities: make(map[string]ownedResource[sdk.Capability, sdk.CapabilitySpec], len(snapshot.capabilities)),
+		capabilities: make(map[string]ownedResource[sdk.AsyncCapability, sdk.CapabilitySpec], len(snapshot.capabilities)),
 		events:       make(map[string]ownedEvent, len(snapshot.events)),
 	}
 	for name, tool := range snapshot.tools {
@@ -327,12 +381,46 @@ func (snapshot *registrySnapshot) add(
 		}
 	}
 
-	snapshot.plugins[name] = state
+	providers := make(
+		map[string]ownedResource[sdk.AsyncProvider, sdk.ProviderSpec],
+		len(staged.Providers),
+	)
 	for providerName, provider := range staged.Providers {
-		snapshot.providers[providerName] = ownResource(state, provider)
+		owned, err := ownAsyncProvider(state, provider)
+		if err != nil {
+			return err
+		}
+		providers[providerName] = owned
 	}
+	tools := make(
+		map[string]ownedResource[sdk.AsyncTool, sdk.ToolSpec],
+		len(staged.Tools),
+	)
 	for toolName, tool := range staged.Tools {
-		snapshot.tools[toolName] = ownResource(state, tool)
+		owned, err := ownAsyncTool(state, tool)
+		if err != nil {
+			return err
+		}
+		tools[toolName] = owned
+	}
+	capabilities := make(
+		map[string]ownedResource[sdk.AsyncCapability, sdk.CapabilitySpec],
+		len(staged.Capabilities),
+	)
+	for capabilityName, capability := range staged.Capabilities {
+		owned, err := ownAsyncCapability(state, capability)
+		if err != nil {
+			return err
+		}
+		capabilities[capabilityName] = owned
+	}
+
+	snapshot.plugins[name] = state
+	for providerName, provider := range providers {
+		snapshot.providers[providerName] = provider
+	}
+	for toolName, tool := range tools {
+		snapshot.tools[toolName] = tool
 	}
 	for agentName, agent := range staged.Agents {
 		snapshot.agents[agentName] = ownedAgent{
@@ -340,8 +428,8 @@ func (snapshot *registrySnapshot) add(
 			spec:  agent,
 		}
 	}
-	for capabilityName, capability := range staged.Capabilities {
-		snapshot.capabilities[capabilityName] = ownResource(state, capability)
+	for capabilityName, capability := range capabilities {
+		snapshot.capabilities[capabilityName] = capability
 	}
 	for subscriberName, subscriber := range staged.Subscribers {
 		snapshot.subscribers[subscriberName] = ownResource(state, subscriber)

@@ -107,12 +107,12 @@ func executionSnapshotForSession(current *registrySnapshot) *registrySnapshot {
 	result := &registrySnapshot{
 		generation:   current.generation,
 		plugins:      make(map[string]*mountState),
-		providers:    make(map[string]ownedResource[sdk.Provider, sdk.ProviderSpec]),
-		tools:        make(map[string]ownedResource[sdk.Tool, sdk.ToolSpec]),
+		providers:    make(map[string]ownedResource[sdk.AsyncProvider, sdk.ProviderSpec]),
+		tools:        make(map[string]ownedResource[sdk.AsyncTool, sdk.ToolSpec]),
 		agents:       make(map[string]ownedAgent),
 		hooks:        make(map[string][]ownedHook),
 		subscribers:  make(map[string]ownedResource[sdk.Subscriber, sdk.SubscriberSpec]),
-		capabilities: make(map[string]ownedResource[sdk.Capability, sdk.CapabilitySpec]),
+		capabilities: make(map[string]ownedResource[sdk.AsyncCapability, sdk.CapabilitySpec]),
 		events:       make(map[string]ownedEvent),
 	}
 	for name, event := range current.events {
@@ -209,11 +209,11 @@ func snapshotForTrajectoryEnvironment(
 			len(environment.Plugins),
 		),
 		providers: make(
-			map[string]ownedResource[sdk.Provider, sdk.ProviderSpec],
+			map[string]ownedResource[sdk.AsyncProvider, sdk.ProviderSpec],
 			len(environment.Providers),
 		),
 		tools: make(
-			map[string]ownedResource[sdk.Tool, sdk.ToolSpec],
+			map[string]ownedResource[sdk.AsyncTool, sdk.ToolSpec],
 			len(environment.Tools),
 		),
 		agents: make(map[string]ownedAgent, len(environment.Agents)),
@@ -223,7 +223,7 @@ func snapshotForTrajectoryEnvironment(
 			len(environment.Subscribers),
 		),
 		capabilities: make(
-			map[string]ownedResource[sdk.Capability, sdk.CapabilitySpec],
+			map[string]ownedResource[sdk.AsyncCapability, sdk.CapabilitySpec],
 			len(environment.Capabilities),
 		),
 		events: make(map[string]ownedEvent, len(environment.Events)),

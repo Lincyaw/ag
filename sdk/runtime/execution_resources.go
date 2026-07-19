@@ -17,43 +17,40 @@ import (
 func (session *Session) invokeProvider(
 	ctx context.Context,
 	name string,
-	provider sdk.Provider,
+	provider sdk.AsyncProvider,
 	invocation sdk.Invocation,
 	request sdk.ModelRequest,
 ) (sdk.ModelResponse, error) {
-	if asynchronous, ok := provider.(sdk.AsyncProvider); ok {
-		input, err := json.Marshal(request)
-		if err != nil {
-			return sdk.ModelResponse{}, fmt.Errorf("encode provider %q request: %w", name, err)
-		}
-		operationRequest := sdk.OperationRequest{
-			IdempotencyKey: invocation.ID,
-			Input:          input,
-			Invocation:     invocation,
-		}
-		initial, err := asynchronous.SubmitCompletion(
-			ctx,
-			sdk.CloneOperationRequest(operationRequest),
-		)
-		if err != nil {
-			return sdk.ModelResponse{}, fmt.Errorf("submit provider %q completion: %w", name, err)
-		}
-		response, err := awaitOperationRequestJSON[sdk.ModelResponse](
-			session.runtime,
-			ctx,
-			operationRequest,
-			initial,
-			asynchronous.PollCompletion,
-			asynchronous.CancelCompletion,
-			fmt.Sprintf("provider %q completion", name),
-			fmt.Sprintf("provider %q response", name),
-		)
-		if err != nil {
-			return sdk.ModelResponse{}, err
-		}
-		return response, nil
+	input, err := json.Marshal(request)
+	if err != nil {
+		return sdk.ModelResponse{}, fmt.Errorf("encode provider %q request: %w", name, err)
 	}
-	return sdk.ModelResponse{}, fmt.Errorf("provider %q has no asynchronous execution implementation", name)
+	operationRequest := sdk.OperationRequest{
+		IdempotencyKey: invocation.ID,
+		Input:          input,
+		Invocation:     invocation,
+	}
+	initial, err := provider.SubmitCompletion(
+		ctx,
+		sdk.CloneOperationRequest(operationRequest),
+	)
+	if err != nil {
+		return sdk.ModelResponse{}, fmt.Errorf("submit provider %q completion: %w", name, err)
+	}
+	response, err := awaitOperationRequestJSON[sdk.ModelResponse](
+		session.runtime,
+		ctx,
+		operationRequest,
+		initial,
+		provider.PollCompletion,
+		provider.CancelCompletion,
+		fmt.Sprintf("provider %q completion", name),
+		fmt.Sprintf("provider %q response", name),
+	)
+	if err != nil {
+		return sdk.ModelResponse{}, err
+	}
+	return response, nil
 }
 
 func validateModelResponse(response sdk.ModelResponse) error {
@@ -109,7 +106,7 @@ func snapshotToolSpecs(snapshot *registrySnapshot) []sdk.ToolSpec {
 }
 
 type advertisedTool struct {
-	value sdk.Tool
+	value sdk.AsyncTool
 	spec  sdk.ToolSpec
 }
 
@@ -238,16 +235,7 @@ func (session *Session) prepareToolCall(
 		return prepared, nil
 	}
 	prepared.interrupt = tool.spec.EffectiveInterruptBehavior()
-	asynchronous, ok := tool.value.(sdk.AsyncTool)
-	if !ok {
-		prepared.failureKind = "execution_failed"
-		prepared.failureReason = fmt.Sprintf(
-			"tool %q has no asynchronous execution implementation",
-			call.Name,
-		)
-		return prepared, nil
-	}
-	prepared.asynchronous = asynchronous
+	prepared.asynchronous = tool.value
 	return prepared, nil
 }
 

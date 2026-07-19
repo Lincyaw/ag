@@ -189,7 +189,7 @@ func (execution *promptExecution) runTurnsFrom(
 
 type providerCall struct {
 	name       string
-	provider   sdk.Provider
+	provider   sdk.AsyncProvider
 	invocation sdk.Invocation
 	request    sdk.ModelRequest
 	tools      map[string]advertisedTool
