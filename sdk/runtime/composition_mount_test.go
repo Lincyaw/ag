@@ -137,6 +137,30 @@ func (plugin *panicClosePlugin) Close(context.Context) error {
 	panic("broken plugin close")
 }
 
+type deadlineClosePlugin struct {
+	manifest sdk.Manifest
+	minimum  time.Duration
+}
+
+func (plugin *deadlineClosePlugin) Manifest() sdk.Manifest {
+	return plugin.manifest
+}
+
+func (plugin *deadlineClosePlugin) Install(context.Context, sdk.Registrar) error {
+	return errors.New("install failed")
+}
+
+func (plugin *deadlineClosePlugin) Close(ctx context.Context) error {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return errors.New("plugin close deadline missing")
+	}
+	if time.Until(deadline) < plugin.minimum {
+		return errors.New("plugin close deadline shorter than configured budget")
+	}
+	return nil
+}
+
 func TestUnmountCanRetryAfterDependencyFailureAndClosesOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -302,6 +326,41 @@ func TestMountFailureClosePanicReturnsJoinedError(t *testing.T) {
 		!strings.Contains(err.Error(), "close plugin \"<unknown>\" connection panic") ||
 		!strings.Contains(err.Error(), "broken plugin close") {
 		t.Fatalf("mount error = %v", err)
+	}
+}
+
+func TestMountFailureUsesConfiguredPluginCloseTimeout(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:            newTestStateBackend(),
+		PluginCloseTimeout: 2500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	plugin := &deadlineClosePlugin{
+		manifest: sdk.Manifest{
+			Name:        "configured-close-timeout",
+			Version:     "1.0.0",
+			Description: "fails install after observing close timeout",
+			APIVersion:  sdk.APIVersion,
+		},
+		minimum: 1500 * time.Millisecond,
+	}
+	_, err = runtime.Mount(ctx, sdk.Local(plugin))
+	if err == nil || !strings.Contains(err.Error(), "install failed") {
+		t.Fatalf("mount error = %v, want install failure", err)
+	}
+	if strings.Contains(err.Error(), "plugin close deadline") {
+		t.Fatalf("mount close used wrong deadline: %v", err)
 	}
 }
 
@@ -782,7 +841,7 @@ func TestRuntimeValidatesConfigBeforeTouchingStorage(t *testing.T) {
 		Storage:         backend,
 		DeliveryWorkers: -1,
 	})
-	if err == nil || err.Error() != "delivery and operation settings must be positive" {
+	if err == nil || err.Error() != "runtime lifecycle settings must be positive" {
 		t.Fatalf("constructor error = %v", err)
 	}
 	if got := backend.healthChecks.Load(); got != 0 {

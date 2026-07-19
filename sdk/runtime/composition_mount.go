@@ -22,6 +22,15 @@ type Mount struct {
 	state   *mountState
 }
 
+const defaultPluginCloseTimeout = 10 * time.Second
+
+func (runtime *Runtime) effectivePluginCloseTimeout() time.Duration {
+	if runtime != nil && runtime.pluginCloseTimeout > 0 {
+		return runtime.pluginCloseTimeout
+	}
+	return defaultPluginCloseTimeout
+}
+
 func (mount *Mount) Name() string {
 	if mount == nil || mount.state == nil {
 		return ""
@@ -74,7 +83,10 @@ func (runtime *Runtime) Mount(
 	}
 	pluginName := ""
 	closeOnError := func(cause error) (*Mount, error) {
-		closeCtx, cancel := lifecycle.WithDetachedTimeout(ctx, 5*time.Second)
+		closeCtx, cancel := lifecycle.WithDetachedTimeout(
+			ctx,
+			runtime.effectivePluginCloseTimeout(),
+		)
 		defer cancel()
 		return nil, errors.Join(
 			cause,
@@ -106,7 +118,12 @@ func (runtime *Runtime) Mount(
 		recordSpanError(span, err)
 		return closeOnError(err)
 	}
-	state := newMountState(manifest, description, connection)
+	state := newMountState(
+		manifest,
+		description,
+		connection,
+		runtime.effectivePluginCloseTimeout(),
+	)
 	runtime.adaptSynchronousResources(staged, state)
 	var eventLease *snapshotLease
 	var lifecycleEvents postCommitEventBundle
@@ -361,28 +378,31 @@ var errMountReferenceUnderflow = errors.New(
 )
 
 type mountState struct {
-	manifest   sdk.Manifest
-	source     string
-	connection sdk.Connection
-	mu         sync.Mutex
-	refs       int
-	retired    bool
-	closing    bool
-	closeCtx   context.Context
-	closeErr   error
-	done       chan struct{}
+	manifest     sdk.Manifest
+	source       string
+	connection   sdk.Connection
+	closeTimeout time.Duration
+	mu           sync.Mutex
+	refs         int
+	retired      bool
+	closing      bool
+	closeCtx     context.Context
+	closeErr     error
+	done         chan struct{}
 }
 
 func newMountState(
 	manifest sdk.Manifest,
 	source string,
 	connection sdk.Connection,
+	closeTimeout time.Duration,
 ) *mountState {
 	return &mountState{
-		manifest:   manifest,
-		source:     source,
-		connection: connection,
-		done:       make(chan struct{}),
+		manifest:     manifest,
+		source:       source,
+		connection:   connection,
+		closeTimeout: closeTimeout,
+		done:         make(chan struct{}),
 	}
 }
 
@@ -434,7 +454,10 @@ func (state *mountState) startCloseLocked() {
 		closeCtx = context.Background()
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(closeCtx, 10*time.Second)
+		ctx, cancel := context.WithTimeout(
+			closeCtx,
+			state.effectiveCloseTimeout(),
+		)
 		defer cancel()
 		err := closePluginConnection(ctx, state.manifest.Name, state.connection)
 		state.mu.Lock()
@@ -442,6 +465,13 @@ func (state *mountState) startCloseLocked() {
 		close(state.done)
 		state.mu.Unlock()
 	}()
+}
+
+func (state *mountState) effectiveCloseTimeout() time.Duration {
+	if state != nil && state.closeTimeout > 0 {
+		return state.closeTimeout
+	}
+	return defaultPluginCloseTimeout
 }
 
 func closePluginConnection(

@@ -49,6 +49,7 @@ type RuntimeConfig struct {
 	DeliveryEnqueueTimeout time.Duration
 	DeliveryTimeout        time.Duration
 	DeliveryMaxAttempts    int
+	PluginCloseTimeout     time.Duration
 	HookTimeout            time.Duration
 	OperationPoll          time.Duration
 	OperationCancelTimeout time.Duration
@@ -70,6 +71,7 @@ type Runtime struct {
 	unmounts            metric.Int64Counter
 	events              metric.Int64Counter
 	hooks               metric.Int64Counter
+	pluginCloseTimeout  time.Duration
 	hookTimeout         time.Duration
 	storage             sdk.StateBackend
 	atomicState         sdk.AtomicStateBackend
@@ -133,6 +135,9 @@ func normalizeRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 	if config.DeliveryMaxAttempts == 0 {
 		config.DeliveryMaxAttempts = 8
 	}
+	if config.PluginCloseTimeout == 0 {
+		config.PluginCloseTimeout = defaultPluginCloseTimeout
+	}
 	if config.HookTimeout == 0 {
 		config.HookTimeout = time.Second
 	}
@@ -151,11 +156,11 @@ func normalizeRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 	if config.DeliveryWorkers < 1 || config.DeliveryLease <= 0 ||
 		config.DeliveryPoll <= 0 || config.DeliveryEnqueueTimeout <= 0 ||
 		config.DeliveryTimeout <= 0 || config.DeliveryMaxAttempts < 1 ||
-		config.HookTimeout <= 0 ||
+		config.PluginCloseTimeout <= 0 || config.HookTimeout <= 0 ||
 		config.OperationPoll <= 0 || config.OperationCancelTimeout <= 0 ||
 		config.OperationLease <= 0 || config.TrajectoryLease <= 0 {
 		return RuntimeConfig{}, errors.New(
-			"delivery and operation settings must be positive",
+			"runtime lifecycle settings must be positive",
 		)
 	}
 	if config.DeliveryTimeout >= config.DeliveryLease {
@@ -224,19 +229,20 @@ func NewRuntimeContext(
 	trajectoryContext, cancelTrajectories := context.WithCancel(runtimeContext)
 	observerContext, cancelObservers := context.WithCancel(runtimeContext)
 	runtime := &Runtime{
-		version:      config.RuntimeVersion,
-		logger:       config.Logger,
-		tracer:       config.Tracer,
-		closeDone:    make(chan struct{}),
-		mounts:       mounts,
-		unmounts:     unmounts,
-		events:       events,
-		hooks:        hooks,
-		hookTimeout:  config.HookTimeout,
-		storage:      config.Storage,
-		atomicState:  storage.atomicState,
-		closeStorage: config.StorageOwnership == StorageOwned,
-		trajectories: storage.trajectories,
+		version:            config.RuntimeVersion,
+		logger:             config.Logger,
+		tracer:             config.Tracer,
+		closeDone:          make(chan struct{}),
+		mounts:             mounts,
+		unmounts:           unmounts,
+		events:             events,
+		hooks:              hooks,
+		pluginCloseTimeout: config.PluginCloseTimeout,
+		hookTimeout:        config.HookTimeout,
+		storage:            config.Storage,
+		atomicState:        storage.atomicState,
+		closeStorage:       config.StorageOwnership == StorageOwned,
+		trajectories:       storage.trajectories,
 		observer: eventObserverRuntime{
 			observe: config.EventObserver,
 			context: observerContext,
