@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -31,6 +32,40 @@ func WithDetachedTimeout(
 // cleanup/finalization after the caller may already be cancelled.
 func WithDetachedFinalization(ctx context.Context) (context.Context, context.CancelFunc) {
 	return WithDetachedTimeout(ctx, DefaultFinalizationTimeout)
+}
+
+// ExpectedCancellation reports whether err is entirely explained by a context
+// that has already been cancelled. It accepts joined and wrapped cancellation
+// errors, but rejects mixed joins that contain non-cancellation cleanup failures.
+func ExpectedCancellation(ctx context.Context, err error) bool {
+	if ctx == nil || ctx.Err() == nil || err == nil {
+		return false
+	}
+	return onlyCancellationError(ctx, err)
+}
+
+func onlyCancellationError(ctx context.Context, err error) bool {
+	if err == nil {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !onlyCancellationError(ctx, child) {
+				return false
+			}
+		}
+		return true
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return onlyCancellationError(ctx, wrapped.Unwrap())
+	}
+	return errors.Is(err, ctx.Err()) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
 }
 
 type valuesContext struct {

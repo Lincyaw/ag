@@ -492,27 +492,6 @@ func TestRuntimeExecutionBackendCancelDrainsRecoveryBeforeFallback(
 	}
 }
 
-func TestExpectedHostCancellationRequiresOnlyCancellationErrors(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	if !expectedHostCancellation(
-		ctx,
-		errors.Join(context.Canceled, context.DeadlineExceeded),
-	) {
-		t.Fatal("pure cancellation join was not recognized")
-	}
-	if expectedHostCancellation(
-		ctx,
-		errors.Join(context.Canceled, errors.New("close failed")),
-	) {
-		t.Fatal("joined close failure was hidden as cancellation")
-	}
-	if expectedHostCancellation(context.Background(), context.Canceled) {
-		t.Fatal("uncancelled host context was treated as expected cancellation")
-	}
-}
-
 func TestRuntimeExecutionBackendPollWaitsForHostClose(t *testing.T) {
 	provider := &gatewayTestProvider{}
 	backend := newTestRuntimeExecutionBackend(t, provider)

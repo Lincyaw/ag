@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -20,5 +21,26 @@ func TestWithValuesOverlaysAndFallsBack(t *testing.T) {
 	}
 	if value := ctx.Value(sharedKey); value != "value-shared" {
 		t.Fatalf("shared value = %#v", value)
+	}
+}
+
+func TestExpectedCancellationRequiresOnlyCancellationErrors(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if !ExpectedCancellation(
+		ctx,
+		errors.Join(context.Canceled, context.DeadlineExceeded),
+	) {
+		t.Fatal("pure cancellation join was not recognized")
+	}
+	if ExpectedCancellation(
+		ctx,
+		errors.Join(context.Canceled, errors.New("close failed")),
+	) {
+		t.Fatal("joined close failure was hidden as cancellation")
+	}
+	if ExpectedCancellation(context.Background(), context.Canceled) {
+		t.Fatal("uncancelled context was treated as expected cancellation")
 	}
 }

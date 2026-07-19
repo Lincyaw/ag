@@ -524,7 +524,7 @@ func (backend *runtimeExecutionBackend) observeHostCompletion(
 	executionID string,
 	err error,
 ) {
-	if err == nil || expectedHostCancellation(ctx, err) {
+	if err == nil || lifecycle.ExpectedCancellation(ctx, err) {
 		return
 	}
 	backend.logger.WarnContext(
@@ -539,37 +539,6 @@ func (backend *runtimeExecutionBackend) observeHostCompletion(
 		"error",
 		err,
 	)
-}
-
-func expectedHostCancellation(ctx context.Context, err error) bool {
-	if ctx == nil || ctx.Err() == nil || err == nil {
-		return false
-	}
-	return onlyExpectedCancellationError(ctx, err)
-}
-
-func onlyExpectedCancellationError(ctx context.Context, err error) bool {
-	if err == nil {
-		return true
-	}
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		children := joined.Unwrap()
-		if len(children) == 0 {
-			return false
-		}
-		for _, child := range children {
-			if !onlyExpectedCancellationError(ctx, child) {
-				return false
-			}
-		}
-		return true
-	}
-	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
-		return onlyExpectedCancellationError(ctx, wrapped.Unwrap())
-	}
-	return errors.Is(err, ctx.Err()) ||
-		errors.Is(err, context.Canceled) ||
-		errors.Is(err, context.DeadlineExceeded)
 }
 
 var _ ExecutionBackend = (*runtimeExecutionBackend)(nil)
