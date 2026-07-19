@@ -106,6 +106,17 @@ func (bundle retainedPostCommitEventBundle) dispatch(
 	bundle.events.dispatch(ctx, runtime)
 }
 
+func (bundle *retainedPostCommitEventBundle) dispatchAndRelease(
+	ctx context.Context,
+	runtime *Runtime,
+) {
+	if bundle == nil {
+		return
+	}
+	defer bundle.release()
+	bundle.dispatch(ctx, runtime)
+}
+
 func (bundle retainedPostCommitEventBundle) stateMutationDeliveries() []sdk.Delivery {
 	return bundle.events.stateMutationDeliveries()
 }

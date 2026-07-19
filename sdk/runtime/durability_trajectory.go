@@ -236,8 +236,7 @@ func (runtime *Runtime) RollbackTrajectory(
 	if err != nil {
 		return err
 	}
-	defer events.release()
-	events.dispatch(ctx, runtime)
+	events.dispatchAndRelease(ctx, runtime)
 	return nil
 }
 
@@ -333,10 +332,9 @@ func (session *Session) Rollback(
 	if err != nil {
 		return err
 	}
-	defer events.release()
 	session.applyCheckpointProjection(checkpoint)
 	session.head = head
-	events.dispatch(ctx, session.runtime)
+	events.dispatchAndRelease(ctx, session.runtime)
 	return nil
 }
 
