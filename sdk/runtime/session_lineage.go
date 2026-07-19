@@ -16,11 +16,11 @@ type trajectorySessionLineage struct {
 	mode                   sdk.AgentSessionMode
 }
 
-// trajectoryForkAnchor is the parent branch point a forked agent session must
-// inherit; the invocation ID records which parent tool call opened that branch.
+// trajectoryForkAnchor is the parent branch entry a forked agent session must
+// inherit; the origin fork invocation records which parent tool call opened it.
 type trajectoryForkAnchor struct {
-	head         string
-	invocationID string
+	parentEntryID          string
+	originForkInvocationID string
 }
 
 func newTrajectorySessionLineage(
@@ -46,13 +46,13 @@ func newTrajectorySessionLineage(
 	if mode != sdk.AgentSessionFork {
 		return lineage, nil
 	}
-	if forkAnchor.head == "" {
+	if forkAnchor.parentEntryID == "" {
 		return trajectorySessionLineage{}, errors.New(
-			"cannot fork agent session without a parent trajectory head",
+			"cannot fork agent session without a parent trajectory fork anchor",
 		)
 	}
-	lineage.parentEntryID = forkAnchor.head
-	lineage.originForkInvocationID = forkAnchor.invocationID
+	lineage.parentEntryID = forkAnchor.parentEntryID
+	lineage.originForkInvocationID = forkAnchor.originForkInvocationID
 	if lineage.originForkInvocationID == "" {
 		lineage.originForkInvocationID = invocation.ParentID
 	}

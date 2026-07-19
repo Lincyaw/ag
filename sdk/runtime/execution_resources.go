@@ -207,8 +207,8 @@ func (session *Session) prepareToolCall(
 		return preparedToolCall{}, err
 	}
 	prepared.forkAnchor = trajectoryForkAnchor{
-		head:         session.head,
-		invocationID: invocation.ID,
+		parentEntryID:          session.head,
+		originForkInvocationID: invocation.ID,
 	}
 	if before.Block != nil {
 		prepared.failureKind = before.Block.Kind

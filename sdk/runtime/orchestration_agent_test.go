@@ -255,8 +255,8 @@ func TestExistingForkedAgentSessionMustMatchTrajectoryAncestry(
 	invoker := &scopedAgentInvoker{
 		parentSession: parent,
 		forkAnchor: trajectoryForkAnchor{
-			head:         "expected-fork-head",
-			invocationID: "tool-invocation",
+			parentEntryID:          "expected-fork-head",
+			originForkInvocationID: "tool-invocation",
 		},
 	}
 	metadata := sdk.TrajectoryMetadata{
@@ -723,8 +723,8 @@ func TestExistingForkedAgentSessionResumesTrajectoryCheckpoint(
 		parentInvocation: invocation,
 		parentProvider:   parent.config.Provider,
 		forkAnchor: trajectoryForkAnchor{
-			head:         parent.head,
-			invocationID: "fork-tool",
+			parentEntryID:          parent.head,
+			originForkInvocationID: "fork-tool",
 		},
 	}
 	if _, err := initialInvoker.newAgentSession(
@@ -760,8 +760,8 @@ func TestExistingForkedAgentSessionResumesTrajectoryCheckpoint(
 		parentInvocation: invocation,
 		parentProvider:   parent.config.Provider,
 		forkAnchor: trajectoryForkAnchor{
-			head:         parent.head,
-			invocationID: "fork-tool",
+			parentEntryID:          parent.head,
+			originForkInvocationID: "fork-tool",
 		},
 	}
 	if _, err := resumeInvoker.executeAgentSession(
@@ -941,8 +941,8 @@ func TestNewForkedAgentSessionInitializesFromParentTrajectoryBranch(
 		parentInvocation: invocation,
 		parentProvider:   parent.config.Provider,
 		forkAnchor: trajectoryForkAnchor{
-			head:         head,
-			invocationID: "branch-call",
+			parentEntryID:          head,
+			originForkInvocationID: "branch-call",
 		},
 	}
 	child, err := invoker.newAgentSession(
@@ -1154,8 +1154,8 @@ func TestForkedAgentFailureRestoresToExecutionBaseHead(t *testing.T) {
 		parentInvocation: invocation,
 		parentProvider:   parent.config.Provider,
 		forkAnchor: trajectoryForkAnchor{
-			head:         head,
-			invocationID: "delegate-call",
+			parentEntryID:          head,
+			originForkInvocationID: "delegate-call",
 		},
 	}
 	child, err := invoker.newAgentSession(
