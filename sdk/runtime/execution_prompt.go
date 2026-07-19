@@ -473,7 +473,7 @@ func (execution *promptExecution) decide(
 			}
 		}
 	}
-	decision, err := execution.session.runtime.dispatch(
+	decision, err := execution.session.runtime.dispatchExecutionEvent(
 		ctx,
 		snapshot,
 		sdk.EventDecide,

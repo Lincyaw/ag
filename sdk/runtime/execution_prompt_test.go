@@ -368,6 +368,73 @@ func TestDecideInjectCannotOverrideFinalTurnLimit(t *testing.T) {
 	}
 }
 
+func TestDecisionSubscriberEnqueueFailureDoesNotAbortPrompt(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: enqueueFailingStateBackend{
+			StateBackend: newTestStateBackend(),
+			err:          context.DeadlineExceeded,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	subscriber := sdk.SubscriberFunc{
+		SubscriberSpec: sdk.SubscriberSpec{
+			Name:   "decision-watch",
+			Events: []string{sdk.EventDecide},
+		},
+		ReceiveFunc: func(context.Context, sdk.Delivery) error {
+			return nil
+		},
+	}
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "decision-subscriber",
+			Version:     "1.0.0",
+			Description: "observes decision events without owning execution outcome",
+			APIVersion:  sdk.APIVersion,
+			Registers: []string{
+				sdk.ProviderResource("observer-provider"),
+				sdk.SubscriberResource("decision-watch"),
+			},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return errors.Join(
+				registrar.RegisterProvider(observerProvider{}),
+				registrar.RegisterSubscriber(subscriber),
+			)
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "decision-enqueue-failure",
+		Provider: "observer-provider",
+		MaxTurns: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := session.Prompt(ctx, "finish despite decision subscriber failure")
+	if err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	if result.Output != "observer result" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestPromptRejectsInvalidProviderResponseAndRestoresSession(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

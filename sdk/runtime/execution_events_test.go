@@ -27,7 +27,7 @@ func TestEventDispatchRejectsNilSnapshot(t *testing.T) {
 		context.Background(),
 		nil,
 		sdk.Event{Name: sdk.EventAgentEnd},
-		inlineEventDispatchOptions(),
+		emitEventDispatchOptions(),
 	); err == nil {
 		t.Fatal("dispatch prepared event with nil snapshot succeeded")
 	}
@@ -323,7 +323,7 @@ func TestExecutionEventSubscriberEnqueueFailureDoesNotAbortDispatch(t *testing.T
 	}
 	snapshot := lease.snapshot
 	lease.release()
-	_, result, err := dispatchMutableEvent(
+	_, mutableResult, err := dispatchMutableEvent(
 		runtime,
 		ctx,
 		snapshot,
@@ -334,8 +334,24 @@ func TestExecutionEventSubscriberEnqueueFailureDoesNotAbortDispatch(t *testing.T
 	if err != nil {
 		t.Fatalf("dispatch mutable event returned enqueue failure: %v", err)
 	}
-	if result.Event.ID == "" || result.Event.Name != sdk.EventBeforeAgentStart {
-		t.Fatalf("dispatch result = %#v", result)
+	if mutableResult.Event.ID == "" ||
+		mutableResult.Event.Name != sdk.EventBeforeAgentStart {
+		t.Fatalf("dispatch mutable result = %#v", mutableResult)
+	}
+
+	decisionResult, err := runtime.dispatchExecutionEvent(
+		ctx,
+		snapshot,
+		sdk.EventDecide,
+		"enqueue-failure-session",
+		sdk.DecidePayload{Default: sdk.Action{Kind: sdk.ActionStop}},
+	)
+	if err != nil {
+		t.Fatalf("dispatch execution event returned enqueue failure: %v", err)
+	}
+	if decisionResult.Event.ID == "" ||
+		decisionResult.Event.Name != sdk.EventDecide {
+		t.Fatalf("dispatch execution result = %#v", decisionResult)
 	}
 }
 

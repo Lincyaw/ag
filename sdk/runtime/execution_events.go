@@ -34,7 +34,7 @@ type eventDispatchOptions struct {
 	warnSubscriberDeliveryFailures bool
 }
 
-func inlineEventDispatchOptions() eventDispatchOptions {
+func emitEventDispatchOptions() eventDispatchOptions {
 	return eventDispatchOptions{enqueueSubscriberDeliveries: true}
 }
 
@@ -81,7 +81,7 @@ func (runtime *Runtime) Emit(
 		return DispatchResult{}, err
 	}
 	defer lease.release()
-	return runtime.dispatch(
+	return runtime.dispatchEmitEvent(
 		ctx,
 		lease.snapshot,
 		eventName,
@@ -90,7 +90,7 @@ func (runtime *Runtime) Emit(
 	)
 }
 
-func (runtime *Runtime) dispatch(
+func (runtime *Runtime) dispatchEmitEvent(
 	ctx context.Context,
 	snapshot *registrySnapshot,
 	eventName string,
@@ -103,7 +103,24 @@ func (runtime *Runtime) dispatch(
 		eventName,
 		sessionID,
 		payload,
-		inlineEventDispatchOptions(),
+		emitEventDispatchOptions(),
+	)
+}
+
+func (runtime *Runtime) dispatchExecutionEvent(
+	ctx context.Context,
+	snapshot *registrySnapshot,
+	eventName string,
+	sessionID string,
+	payload any,
+) (DispatchResult, error) {
+	return runtime.dispatchEvent(
+		ctx,
+		snapshot,
+		eventName,
+		sessionID,
+		payload,
+		executionEventDispatchOptions(),
 	)
 }
 
