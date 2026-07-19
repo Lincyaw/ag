@@ -28,6 +28,36 @@ func (function StateBackendFactoryFunc) Open(
 	return function(ctx, session)
 }
 
+func NewDuckDBSessionStateFactory(
+	root string,
+) (StateBackendFactory, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return nil, errors.New("gateway session state root is empty")
+	}
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolve gateway session state root: %w", err)
+	}
+	registry := sdkstorage.NewDefaultStorageRegistry()
+	return StateBackendFactoryFunc(func(
+		ctx context.Context,
+		session Session,
+	) (sdk.StateBackend, error) {
+		if err := sdk.ValidateResourceName("gateway session", session.ID); err != nil {
+			return nil, err
+		}
+		uri := (&url.URL{
+			Scheme: "duckdb",
+			Path:   filepath.Join(absolute, session.ID+".duckdb"),
+			RawQuery: url.Values{
+				"namespace": {session.ID},
+			}.Encode(),
+		}).String()
+		return registry.Open(ctx, uri)
+	}), nil
+}
+
 func NewFileSessionStateFactory(
 	root string,
 ) (StateBackendFactory, error) {

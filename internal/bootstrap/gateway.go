@@ -82,7 +82,7 @@ func StartGateway(
 			nil,
 		)
 	}
-	stateFactory, err := gateway.NewFileSessionStateFactory(
+	stateFactory, err := gateway.NewDuckDBSessionStateFactory(
 		filepath.Join(root, "state"),
 	)
 	if err != nil {
