@@ -106,6 +106,9 @@ If worker cancellation interrupts a claimed operation before completion,
 including during target validation, the runner releases the claim through the
 detached finalization boundary. Non-cancelled stale-resource validation still
 fails terminally under the lease fence.
+The operation host keeps the process-local execution slot separate from the
+durable store lease: callers may reserve surrounding lifecycle work, but the
+host consumes that reservation when it starts or rejects the worker.
 
 Capabilities are currently a host-level runtime API. They still use operation
 state for asynchronous execution, but they are not part of the structured
