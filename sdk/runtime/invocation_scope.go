@@ -13,7 +13,7 @@ type invocationScope struct {
 	executionID string
 }
 
-type sessionInvocationScope struct {
+type causalInvocationScope struct {
 	rootID   string
 	parentID string
 }
@@ -89,11 +89,11 @@ func newExecutionInvocationScope(session *Session) invocationScope {
 		sessionID:   session.config.ID,
 		executionID: executionID,
 	}
-	if session.invocation.rootID != "" {
-		scope.rootID = session.invocation.rootID
+	if session.causal.rootID != "" {
+		scope.rootID = session.causal.rootID
 	}
-	if session.invocation.parentID != "" {
-		scope.parentID = session.invocation.parentID
+	if session.causal.parentID != "" {
+		scope.parentID = session.causal.parentID
 	}
 	return scope
 }
@@ -114,40 +114,40 @@ func newChildInvocationScope(parent sdk.Invocation) invocationScope {
 func (session *Session) applyTrajectoryOrigin(
 	environment sdk.TrajectoryEnvironment,
 ) {
-	scope, ok := sessionInvocationScopeFromTrajectoryOrigin(environment)
+	scope, ok := causalInvocationScopeFromTrajectoryOrigin(environment)
 	if ok {
-		session.invocation = scope
+		session.causal = scope
 	}
 }
 
 func (session *Session) applyInvocationScope(invocation sdk.Invocation) {
-	session.invocation = sessionInvocationScopeFromInvocation(invocation)
+	session.causal = causalInvocationScopeFromInvocation(invocation)
 }
 
-func sessionInvocationScopeFromTrajectoryOrigin(
+func causalInvocationScopeFromTrajectoryOrigin(
 	environment sdk.TrajectoryEnvironment,
-) (sessionInvocationScope, bool) {
+) (causalInvocationScope, bool) {
 	if environment.OriginInvocationID == "" {
-		return sessionInvocationScope{}, false
+		return causalInvocationScope{}, false
 	}
 	rootID := environment.OriginInvocationRootID
 	if rootID == "" {
 		rootID = environment.OriginInvocationID
 	}
-	return sessionInvocationScope{
+	return causalInvocationScope{
 		rootID:   rootID,
 		parentID: environment.OriginInvocationID,
 	}, true
 }
 
-func sessionInvocationScopeFromInvocation(
+func causalInvocationScopeFromInvocation(
 	invocation sdk.Invocation,
-) sessionInvocationScope {
+) causalInvocationScope {
 	rootID := invocation.RootID
 	if rootID == "" {
 		rootID = invocation.ID
 	}
-	return sessionInvocationScope{
+	return causalInvocationScope{
 		rootID:   rootID,
 		parentID: invocation.ID,
 	}

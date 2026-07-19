@@ -39,7 +39,7 @@ type Session struct {
 	messages       []sdk.Message
 	head           string
 	pinnedSnapshot *registrySnapshot
-	invocation     sessionInvocationScope
+	causal         causalInvocationScope
 }
 
 type Result struct {
