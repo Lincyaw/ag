@@ -316,6 +316,7 @@ func TestExecutionEventSubscriberEnqueueFailureDoesNotAbortDispatch(t *testing.T
 		}
 	})
 	mountExecutionSubscriber(t, runtime, sdk.EventBeforeAgentStart)
+	mountExecutionSubscriber(t, runtime, sdk.EventDecide)
 
 	lease, err := runtime.acquireSnapshot()
 	if err != nil {
