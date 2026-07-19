@@ -366,6 +366,9 @@ in-process queue and drains it on shutdown, so terminal rendering does not pace
 runtime execution. If local rendering falls behind, the sink reports dropped
 progress updates rather than hiding overload. Durable, retryable event delivery
 belongs to runtime subscribers, not to the local host UI callback.
+Runtime close cancels event observer contexts and waits only within the shared
+finalization boundary, so a non-cooperative diagnostics sink can surface a close
+error but cannot prevent plugin and storage cleanup from progressing.
 
 ## Dependency rules
 
