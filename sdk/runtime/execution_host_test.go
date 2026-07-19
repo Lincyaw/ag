@@ -34,6 +34,70 @@ func TestExecutionHostCommandPanicStillClosesHost(t *testing.T) {
 	}
 }
 
+func TestExecutionHostEnqueueContextInjectionClosesStateHost(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	backend := newTestStateBackend()
+	runtime, err := NewRuntime(RuntimeConfig{Storage: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := runtime.Close(context.Background()); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID: "host-context-injection",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	submission, err := session.SubmitPrompt(ctx, "base prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &closeCountingBackend{StateBackend: backend}
+	view, err := (ExecutionHost{State: state}).EnqueueContextInjection(
+		ctx,
+		session.ID(),
+		submission.Execution().ID,
+		sdk.ContextInjection{
+			Priority: sdk.ContextInjectionNext,
+			Mode:     sdk.ContextInjectionTaskNotification,
+			Origin:   "test",
+			Messages: []sdk.Message{{
+				Role:    sdk.RoleUser,
+				Content: "queued context",
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("enqueue context injection: %v", err)
+	}
+	if view.Execution.ID != submission.Execution().ID {
+		t.Fatalf("execution view = %#v", view)
+	}
+	if got := state.closes.Load(); got != 1 {
+		t.Fatalf("state closes = %d, want 1", got)
+	}
+	queued, err := backend.ContextInjections().List(
+		ctx,
+		sdk.ContextInjectionQuery{
+			TargetSessionID:   session.ID(),
+			TargetExecutionID: submission.Execution().ID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 1 ||
+		len(queued[0].Messages) != 1 ||
+		queued[0].Messages[0].Content != "queued context" {
+		t.Fatalf("queued context injections = %#v", queued)
+	}
+}
+
 func TestExecutionHostClosePanicBecomesError(t *testing.T) {
 	t.Parallel()
 	host := ExecutionHost{

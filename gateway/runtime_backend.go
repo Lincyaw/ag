@@ -211,29 +211,12 @@ func (backend *runtimeExecutionBackend) EnqueueContextInjection(
 	if err != nil {
 		return Execution{}, err
 	}
-	defer func() {
-		if closeErr := stateHost.CloseDetached(ctx); closeErr != nil {
-			backend.logger.WarnContext(
-				lifecycle.Detached(ctx),
-				"gateway state host close after context injection failed",
-				"session_id",
-				session.ID,
-				"execution_id",
-				executionID,
-				"error",
-				closeErr,
-			)
-		}
-	}()
-	if err := stateHost.Control().EnqueueContextInjection(
+	view, err := stateHost.EnqueueContextInjection(
 		ctx,
 		session.ID,
 		executionID,
 		injection,
-	); err != nil {
-		return Execution{}, gatewayExecutionViewError(err)
-	}
-	view, err := stateHost.Control().LoadView(ctx, session.ID)
+	)
 	if err := gatewayExecutionViewError(err); err != nil {
 		return Execution{}, err
 	}

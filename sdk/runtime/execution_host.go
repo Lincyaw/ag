@@ -140,6 +140,32 @@ func (host ExecutionHost) CancelWithAvailableBoundary(
 	)
 }
 
+// EnqueueContextInjection schedules model-visible context through the strongest
+// boundary this host exposes and then closes the borrowed runtime/state host.
+func (host ExecutionHost) EnqueueContextInjection(
+	ctx context.Context,
+	trajectoryID string,
+	executionID string,
+	injection sdk.ContextInjection,
+) (ExecutionView, error) {
+	return runExecutionHostCommand(
+		ctx,
+		host,
+		func(ctx context.Context) (ExecutionView, error) {
+			control := host.Control()
+			if err := control.EnqueueContextInjection(
+				ctx,
+				trajectoryID,
+				executionID,
+				injection,
+			); err != nil {
+				return ExecutionView{}, err
+			}
+			return control.LoadView(ctx, trajectoryID)
+		},
+	)
+}
+
 // FenceCancellation durably marks an execution cancelled through a state-only
 // lifecycle. It does not write terminal/restore trajectory entries or publish
 // post-commit events; a later runtime resume projects from the execution base.

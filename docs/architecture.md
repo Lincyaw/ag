@@ -329,8 +329,8 @@ the gateway service derive recoverability or lease-delay policy from raw
 trajectory metadata.
 When gateway only has a borrowed state handle, it still goes through
 state-only `ExecutionHost` commands for execution reads, recovery candidates,
-and cancellation fences; it does not reach through `StateBackend` to reinterpret
-trajectory stores as a presenter concern.
+context injection, and cancellation fences; it does not reach through
+`StateBackend` to reinterpret trajectory stores as a presenter concern.
 
 ## Application entry points
 
