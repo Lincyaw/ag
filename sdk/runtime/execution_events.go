@@ -28,67 +28,42 @@ type DispatchResult struct {
 	actionSteps []int
 }
 
-type eventDispatchPhase uint8
-
-const (
-	eventDispatchInline eventDispatchPhase = iota
-	eventDispatchPostCommit
-)
-
-type eventSubscriberMode uint8
-
-const (
-	eventSubscribersNone eventSubscriberMode = iota
-	eventSubscribersEnqueue
-)
-
-type eventSubscriberFailureMode uint8
-
-const (
-	eventSubscriberFailureReturn eventSubscriberFailureMode = iota
-	eventSubscriberFailureWarn
-)
-
 type eventDispatchOptions struct {
-	phase              eventDispatchPhase
-	subscribers        eventSubscriberMode
-	subscriberFailures eventSubscriberFailureMode
+	postCommit                  bool
+	enqueueSubscriberDeliveries bool
+	warnSubscriberDeliveryFailures bool
 }
 
 func inlineEventDispatchOptions() eventDispatchOptions {
-	return eventDispatchOptions{subscribers: eventSubscribersEnqueue}
+	return eventDispatchOptions{enqueueSubscriberDeliveries: true}
 }
 
 func executionEventDispatchOptions() eventDispatchOptions {
 	return eventDispatchOptions{
-		subscribers:        eventSubscribersEnqueue,
-		subscriberFailures: eventSubscriberFailureWarn,
+		enqueueSubscriberDeliveries:    true,
+		warnSubscriberDeliveryFailures: true,
 	}
 }
 
 func postCommitEventDispatchOptions(
 	delivery postCommitDelivery,
 ) eventDispatchOptions {
-	subscribers := eventSubscribersNone
-	if delivery.enqueueAfterDispatch() {
-		subscribers = eventSubscribersEnqueue
-	}
 	return eventDispatchOptions{
-		phase:       eventDispatchPostCommit,
-		subscribers: subscribers,
+		postCommit:                  true,
+		enqueueSubscriberDeliveries: delivery.enqueueAfterDispatch(),
 	}
 }
 
 func (options eventDispatchOptions) isPostCommit() bool {
-	return options.phase == eventDispatchPostCommit
+	return options.postCommit
 }
 
 func (options eventDispatchOptions) enqueueSubscribers() bool {
-	return options.subscribers == eventSubscribersEnqueue
+	return options.enqueueSubscriberDeliveries
 }
 
 func (options eventDispatchOptions) returnSubscriberFailures() bool {
-	return options.subscriberFailures == eventSubscriberFailureReturn
+	return !options.warnSubscriberDeliveryFailures
 }
 
 func afterDispatchEventContext(ctx context.Context) context.Context {
@@ -632,10 +607,12 @@ func (runtime *Runtime) observeEvent(ctx context.Context, event sdk.Event) {
 }
 
 type eventObserverRuntime struct {
-	observe func(context.Context, sdk.Event)
-	context context.Context
-	cancel  context.CancelFunc
-	wait    sync.WaitGroup
+	observe     func(context.Context, sdk.Event)
+	context     context.Context
+	cancel      context.CancelFunc
+	wait        sync.WaitGroup
+	stoppedOnce sync.Once
+	stopped     chan struct{}
 }
 
 func (observer *eventObserverRuntime) dispatch(
@@ -691,11 +668,7 @@ func (observer *eventObserverRuntime) waitBestEffortStopped(
 	if timeout <= 0 {
 		timeout = lifecycle.DefaultFinalizationTimeout
 	}
-	done := make(chan struct{})
-	go func() {
-		observer.wait.Wait()
-		close(done)
-	}()
+	done := observer.stoppedSignal()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -710,6 +683,19 @@ func (observer *eventObserverRuntime) waitBestEffortStopped(
 			waitCtx.Err(),
 		)
 	}
+}
+
+func (observer *eventObserverRuntime) stoppedSignal() <-chan struct{} {
+	observer.stoppedOnce.Do(func() {
+		if observer.stopped == nil {
+			observer.stopped = make(chan struct{})
+		}
+		go func() {
+			observer.wait.Wait()
+			close(observer.stopped)
+		}()
+	})
+	return observer.stopped
 }
 
 func (runtime *Runtime) invokeHook(

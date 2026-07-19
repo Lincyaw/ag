@@ -183,7 +183,11 @@ func TestEventObserverWaitStoppedIsBounded(t *testing.T) {
 		defer observer.wait.Done()
 		<-release
 	}()
-	defer close(release)
+	firstSignal := observer.stoppedSignal()
+	secondSignal := observer.stoppedSignal()
+	if firstSignal != secondSignal {
+		t.Fatal("event observer stopped signal was recreated")
+	}
 
 	err := observer.waitBestEffortStopped(
 		context.Background(),
@@ -194,6 +198,13 @@ func TestEventObserverWaitStoppedIsBounded(t *testing.T) {
 		"runtime event observers did not stop",
 	) {
 		t.Fatalf("waitBestEffortStopped() error = %v", err)
+	}
+	close(release)
+	if err := observer.waitBestEffortStopped(
+		context.Background(),
+		time.Second,
+	); err != nil {
+		t.Fatalf("retry waitBestEffortStopped() error = %v", err)
 	}
 }
 
