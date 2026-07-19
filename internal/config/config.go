@@ -96,7 +96,6 @@ type Plugins struct {
 	Remote            []string `mapstructure:"remote" json:"remote" yaml:"remote"`
 	RegistryURI       string   `mapstructure:"registry_uri" json:"registry_uri" yaml:"registry_uri"`
 	RegistryNamespace string   `mapstructure:"registry_namespace" json:"registry_namespace" yaml:"registry_namespace"`
-	GitEnabled        bool     `mapstructure:"git_enabled" json:"git_enabled" yaml:"git_enabled"`
 }
 
 type Registry struct {
@@ -314,7 +313,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("plugins.remote", []string{})
 	v.SetDefault("plugins.registry_uri", "")
 	v.SetDefault("plugins.registry_namespace", "default")
-	v.SetDefault("plugins.git_enabled", true)
 	v.SetDefault("registry.listen", "127.0.0.1:9090")
 	v.SetDefault("registry.advertise_uri", "")
 	v.SetDefault("registry.backend_uri", defaultRegistryBackendURI())
@@ -379,7 +377,6 @@ func bindFlags(v *viper.Viper, flags *pflag.FlagSet) error {
 		"plugins.remote":              "plugin",
 		"plugins.registry_uri":        "registry-uri",
 		"plugins.registry_namespace":  "registry-namespace",
-		"plugins.git_enabled":         "git",
 		"registry.listen":             "listen",
 		"registry.advertise_uri":      "advertise-uri",
 		"registry.backend_uri":        "registry-backend",
