@@ -28,9 +28,8 @@ type ExecutionBackend interface {
 	// Submit owns the active execution gate for the session. Service-level
 	// check-then-submit would leave a composition mutation race before reservation.
 	Submit(context.Context, Session, string) (Execution, error)
-	RecoveryCandidate(context.Context, Session) (Execution, error)
-	// Recover owns the active execution gate and validates the session binding
-	// before it builds or hosts the runtime recovery.
+	// Recover owns the recoverability check, active execution gate, and session
+	// binding validation before it builds or hosts runtime recovery.
 	Recover(context.Context, Session) (Execution, error)
 	Current(context.Context, Session) (Execution, error)
 	Get(context.Context, Session, string) (Execution, error)
@@ -305,21 +304,9 @@ func (service *Service) RecoverSessions(
 			return scheduled, errors.Join(failures...)
 		}
 		for _, session := range page.Items {
-			_, err := service.executions.RecoveryCandidate(ctx, session)
+			execution, err := service.executions.Recover(ctx, session)
 			if errors.Is(err, ErrExecutionNotFound) ||
 				errors.Is(err, ErrExecutionActive) {
-				continue
-			}
-			if err != nil {
-				failures = append(failures, fmt.Errorf(
-					"inspect gateway session %s recovery: %w",
-					session.ID,
-					err,
-				))
-				continue
-			}
-			execution, err := service.executions.Recover(ctx, session)
-			if errors.Is(err, ErrExecutionNotFound) {
 				continue
 			}
 			if err != nil {

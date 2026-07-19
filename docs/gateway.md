@@ -174,9 +174,9 @@ the service layer does not scan every user's sessions and filter them in
 memory.
 
 On startup, the gateway scans its session control records to recover the
-composition context for each session, then asks the execution backend for a
-runtime recovery candidate. The candidate is the execution lifecycle read
-model: pending and expired-lease executions can run immediately, while a
-still-valid worker lease carries a delay before recovery may claim it. Completed
-results are reconstructed from durable trajectory checkpoints, so polling does
-not depend on process-local result memory.
+composition context for each session, then asks the execution backend to
+recover that session. Inside the backend, the runtime recovery candidate is the
+execution lifecycle read model: pending and expired-lease executions can run
+immediately, while a still-valid worker lease carries a delay before recovery
+may claim it. Completed results are reconstructed from durable trajectory
+checkpoints, so polling does not depend on process-local result memory.

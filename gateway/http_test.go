@@ -49,20 +49,6 @@ func (backend *fakeExecutionBackend) Recover(
 	return backend.Current(ctx, session)
 }
 
-func (backend *fakeExecutionBackend) RecoveryCandidate(
-	ctx context.Context,
-	session Session,
-) (Execution, error) {
-	execution, err := backend.Current(ctx, session)
-	if err != nil {
-		return Execution{}, err
-	}
-	if execution.Execution.Terminal() {
-		return Execution{}, ErrExecutionNotFound
-	}
-	return execution, nil
-}
-
 func (backend *fakeExecutionBackend) Current(
 	_ context.Context,
 	session Session,

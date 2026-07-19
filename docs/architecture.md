@@ -320,9 +320,10 @@ session. Gateway serializes same-session composition mutations with prompt
 submission until the execution backend has established that active slot; gateway
 idle checks then read the same execution activity model, including pre-durable
 host reservations, before allowing composition changes.
-Recovery scheduling asks the runtime for an execution recovery candidate
-instead of deriving recoverability or lease-delay policy from raw trajectory
-metadata.
+Recovery scheduling asks the execution backend to recover each session; the
+backend asks the runtime for an execution recovery candidate instead of letting
+the gateway service derive recoverability or lease-delay policy from raw
+trajectory metadata.
 When gateway only has a borrowed state handle, it still goes through
 state-only `ExecutionHost` commands for execution reads, recovery candidates,
 and cancellation fences; it does not reach through `StateBackend` to reinterpret

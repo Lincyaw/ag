@@ -182,17 +182,6 @@ func (backend *runtimeExecutionBackend) Recover(
 	return gatewayExecutionFromView(candidate.ExecutionView()), nil
 }
 
-func (backend *runtimeExecutionBackend) RecoveryCandidate(
-	ctx context.Context,
-	session Session,
-) (Execution, error) {
-	candidate, err := backend.loadRecoveryCandidate(ctx, session)
-	if err != nil {
-		return Execution{}, err
-	}
-	return gatewayExecutionFromView(candidate.ExecutionView()), nil
-}
-
 func (backend *runtimeExecutionBackend) loadRecoveryCandidate(
 	ctx context.Context,
 	session Session,
