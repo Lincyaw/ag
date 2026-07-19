@@ -24,7 +24,7 @@ type postCommitSubject struct {
 	logID             string
 }
 
-func (plan postCommitEventPlan) dispatchOne(
+func (plan postCommitEventPlan) dispatchAfterCommit(
 	ctx context.Context,
 	runtime *Runtime,
 ) {
@@ -64,13 +64,13 @@ type stateMutationDeliverySource interface {
 	stateMutationDeliveries() []sdk.Delivery
 }
 
-func (bundle postCommitEventBundle) dispatch(
+func (bundle postCommitEventBundle) dispatchAfterCommit(
 	ctx context.Context,
 	runtime *Runtime,
 ) {
 	ctx = afterDispatchEventContext(ctx)
 	for _, plan := range bundle {
-		plan.dispatchOne(ctx, runtime)
+		plan.dispatchAfterCommit(ctx, runtime)
 	}
 }
 
@@ -99,14 +99,14 @@ func (bundle *retainedPostCommitEventBundle) append(
 	bundle.events = append(bundle.events, plans...)
 }
 
-func (bundle retainedPostCommitEventBundle) dispatch(
+func (bundle retainedPostCommitEventBundle) dispatchAfterCommit(
 	ctx context.Context,
 	runtime *Runtime,
 ) {
-	bundle.events.dispatch(ctx, runtime)
+	bundle.events.dispatchAfterCommit(ctx, runtime)
 }
 
-func (bundle *retainedPostCommitEventBundle) dispatchAndRelease(
+func (bundle *retainedPostCommitEventBundle) dispatchAfterCommitAndRelease(
 	ctx context.Context,
 	runtime *Runtime,
 ) {
@@ -114,7 +114,7 @@ func (bundle *retainedPostCommitEventBundle) dispatchAndRelease(
 		return
 	}
 	defer bundle.release()
-	bundle.dispatch(ctx, runtime)
+	bundle.dispatchAfterCommit(ctx, runtime)
 }
 
 func (bundle retainedPostCommitEventBundle) stateMutationDeliveries() []sdk.Delivery {

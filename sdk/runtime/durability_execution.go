@@ -96,7 +96,7 @@ func (session *Session) beginExecution(
 		)
 	}
 	session.head = metadata.Head
-	events.dispatch(ctx, session.runtime)
+	events.dispatchAfterCommit(ctx, session.runtime)
 	return executionAcceptance{
 		Input:     input,
 		Execution: *metadata.Execution,
@@ -325,7 +325,7 @@ func (session *Session) commitExecution(
 	if state != "" && state != sdk.TrajectoryExecutionRunning {
 		session.clearExecution(executionID, token)
 	}
-	events.dispatch(ctx, session.runtime)
+	events.dispatchAfterCommit(ctx, session.runtime)
 	return nil
 }
 
@@ -476,7 +476,7 @@ func (runtime *Runtime) cancelTrajectoryExecutionOnce(
 		return ExecutionView{}, err
 	}
 	if result.Changed {
-		events.dispatch(ctx, runtime)
+		events.dispatchAfterCommit(ctx, runtime)
 	}
 	return LoadExecutionViewFromMetadata(ctx, runtime.trajectories, result.Trajectory)
 }
@@ -588,7 +588,7 @@ func (session *Session) failExecution(
 	session.head = updated.Head
 	session.applyExecutionBaseProjection(base, checkpoint)
 	session.clearExecution(executionID, token)
-	plan.events.dispatch(ctx, session.runtime)
+	plan.events.dispatchAfterCommit(ctx, session.runtime)
 	return nil
 }
 

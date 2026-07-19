@@ -564,7 +564,7 @@ func dispatchSubscriberTestPostCommit(
 	if err != nil {
 		t.Fatalf("prepare post-commit event: %v", err)
 	}
-	postCommitEventBundle{plan}.dispatch(ctx, runtime)
+	postCommitEventBundle{plan}.dispatchAfterCommit(ctx, runtime)
 }
 
 func TestPostCommitStateMutationDeliveriesReturnsOwnedDeliveries(t *testing.T) {

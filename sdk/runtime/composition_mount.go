@@ -175,7 +175,7 @@ func (runtime *Runtime) Mount(
 		"source",
 		state.source,
 	)
-	lifecycleEvents.dispatch(ctx, runtime)
+	lifecycleEvents.dispatchAfterCommit(ctx, runtime)
 	return &Mount{runtime: runtime, state: state}, nil
 }
 
@@ -258,7 +258,7 @@ func (runtime *Runtime) unmount(
 		"generation",
 		next.generation,
 	)
-	lifecycleEvents.dispatch(ctx, runtime)
+	lifecycleEvents.dispatchAfterCommit(ctx, runtime)
 	return nil
 }
 

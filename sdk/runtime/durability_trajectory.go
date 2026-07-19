@@ -31,7 +31,7 @@ func (runtime *Runtime) moveTrajectoryHead(
 	if err != nil {
 		return "", err
 	}
-	events.dispatch(ctx, runtime)
+	events.dispatchAfterCommit(ctx, runtime)
 	return updated, nil
 }
 
@@ -236,7 +236,7 @@ func (runtime *Runtime) RollbackTrajectory(
 	if err != nil {
 		return err
 	}
-	events.dispatchAndRelease(ctx, runtime)
+	events.dispatchAfterCommitAndRelease(ctx, runtime)
 	return nil
 }
 
@@ -334,7 +334,7 @@ func (session *Session) Rollback(
 	}
 	session.applyCheckpointProjection(checkpoint)
 	session.head = head
-	events.dispatchAndRelease(ctx, session.runtime)
+	events.dispatchAfterCommitAndRelease(ctx, session.runtime)
 	return nil
 }
 
@@ -490,7 +490,7 @@ func (session *Session) appendTrajectoryState(
 			return fmt.Errorf("append %s trajectory entry: %w", kind, appendErr)
 		}
 		session.head = head
-		events.dispatch(ctx, session.runtime)
+		events.dispatchAfterCommit(ctx, session.runtime)
 	}
 	return nil
 }
