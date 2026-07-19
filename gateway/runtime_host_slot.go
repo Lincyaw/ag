@@ -50,6 +50,11 @@ type activeHostCancelPlan struct {
 	done    <-chan struct{}
 }
 
+type activeHostReadPlan struct {
+	control agentruntime.ExecutionControl
+	done    <-chan struct{}
+}
+
 func newActiveHostRegistry() *activeHostRegistry {
 	return &activeHostRegistry{
 		hosts:     make(map[string]*activeHostSlot),
@@ -110,16 +115,25 @@ func (registry *activeHostRegistry) bind(
 	return nil
 }
 
-func (registry *activeHostRegistry) pendingReservationError(
+func (registry *activeHostRegistry) readPlan(
 	sessionID string,
-) error {
+) (activeHostReadPlan, error) {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
-	if slot := registry.hosts[sessionID]; slot != nil &&
-		!slot.hasAcceptedExecution() {
-		return slot.activeError()
+	slot := registry.hosts[sessionID]
+	if slot == nil {
+		return activeHostReadPlan{}, nil
 	}
-	return nil
+	if !slot.hasAcceptedExecution() {
+		return activeHostReadPlan{}, slot.activeError()
+	}
+	if slot.state != activeHostSlotBound {
+		return activeHostReadPlan{}, nil
+	}
+	return activeHostReadPlan{
+		control: slot.control,
+		done:    slot.done,
+	}, nil
 }
 
 func (registry *activeHostRegistry) cancelPlan(
@@ -130,29 +144,6 @@ func (registry *activeHostRegistry) cancelPlan(
 	defer registry.mu.Unlock()
 	slot := registry.hosts[sessionID]
 	return slot.cancelPlan(executionID)
-}
-
-func (registry *activeHostRegistry) waitForExecution(
-	ctx context.Context,
-	sessionID string,
-	executionID string,
-) error {
-	registry.mu.Lock()
-	slot := registry.hosts[sessionID]
-	var done <-chan struct{}
-	if slot.matchesExecution(executionID) {
-		done = slot.done
-	}
-	registry.mu.Unlock()
-	if done == nil {
-		return nil
-	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-done:
-		return nil
-	}
 }
 
 func (registry *activeHostRegistry) beginClose() (
@@ -301,6 +292,29 @@ func (plan activeHostCancelPlan) usesHostedControl() bool {
 }
 
 func (plan activeHostCancelPlan) wait(ctx context.Context) error {
+	if plan.done == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-plan.done:
+		return nil
+	}
+}
+
+func (plan activeHostReadPlan) active() bool {
+	return plan.done != nil
+}
+
+func (plan activeHostReadPlan) loadView(
+	ctx context.Context,
+	trajectoryID string,
+) (agentruntime.ExecutionView, error) {
+	return plan.control.LoadView(ctx, trajectoryID)
+}
+
+func (plan activeHostReadPlan) wait(ctx context.Context) error {
 	if plan.done == nil {
 		return nil
 	}

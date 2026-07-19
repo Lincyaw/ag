@@ -215,25 +215,43 @@ func (backend *runtimeExecutionBackend) Current(
 	ctx context.Context,
 	session Session,
 ) (Execution, error) {
-	if err := backend.hosts.pendingReservationError(session.ID); err != nil {
+	readPlan, err := backend.hosts.readPlan(session.ID)
+	if err != nil {
 		return Execution{}, err
 	}
-
-	view, err := backend.loadStateExecutionView(ctx, session)
+	view, err := backend.loadExecutionView(ctx, session, readPlan)
 	if err := gatewayExecutionViewError(err); err != nil {
 		return Execution{}, err
 	}
 	value := gatewayExecutionFromView(view)
-	if view.Execution.Terminal() {
-		if err := backend.hosts.waitForExecution(
-			ctx,
-			session.ID,
-			view.Execution.ID,
-		); err != nil {
+	if view.Execution.Terminal() && readPlan.active() {
+		if err := readPlan.wait(ctx); err != nil {
 			return Execution{}, err
 		}
 	}
 	return value, nil
+}
+
+func (backend *runtimeExecutionBackend) loadExecutionView(
+	ctx context.Context,
+	session Session,
+	readPlan activeHostReadPlan,
+) (agentruntime.ExecutionView, error) {
+	if readPlan.active() {
+		// A live host read uses the runtime close gate when it is still open.
+		// If the host is already closing, fall back to the durable trajectory
+		// projection; the active plan is still used to wait for host cleanup.
+		view, err := readPlan.loadView(ctx, session.ID)
+		if err == nil || ctx.Err() != nil {
+			return view, err
+		}
+		stateView, stateErr := backend.loadStateExecutionView(ctx, session)
+		if stateErr != nil {
+			return agentruntime.ExecutionView{}, errors.Join(err, stateErr)
+		}
+		return stateView, nil
+	}
+	return backend.loadStateExecutionView(ctx, session)
 }
 
 func (backend *runtimeExecutionBackend) Get(

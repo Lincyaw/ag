@@ -235,6 +235,68 @@ func TestRuntimeExecutionBackendClosePreservesExecutionForRecovery(
 	}
 }
 
+func TestRuntimeExecutionBackendCurrentUsesActiveHostControl(
+	t *testing.T,
+) {
+	t.Parallel()
+	root := t.TempDir()
+	states, err := NewFileSessionStateFactory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	countingStates := &countingStateFactory{StateBackendFactory: states}
+	entered := make(chan struct{}, 1)
+	session := Session{
+		ID: "runtime-current-active-host", UserID: "user-a",
+		Provider: "gateway-test", MaxTurns: 3,
+	}
+	backend, err := NewRuntimeExecutionBackend(RuntimeExecutionConfig{
+		States: countingStates,
+		Build:  testGatewayRuntimeBuilder(&gatewayTestProvider{block: entered}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			3*time.Second,
+		)
+		defer cancel()
+		if err := backend.Close(ctx); err != nil {
+			t.Errorf("close execution backend: %v", err)
+		}
+	})
+	if err := backend.CreateSession(t.Context(), session); err != nil {
+		t.Fatal(err)
+	}
+	submitted, err := backend.Submit(t.Context(), session, "wait")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("provider did not start")
+	}
+
+	opensBeforeCurrent := countingStates.opens.Load()
+	current, err := backend.Current(t.Context(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Execution.ID != submitted.Execution.ID {
+		t.Fatalf("current execution = %#v", current)
+	}
+	if opensAfterCurrent := countingStates.opens.Load(); opensAfterCurrent != opensBeforeCurrent {
+		t.Fatalf(
+			"state opens after active Current() = %d, want %d",
+			opensAfterCurrent,
+			opensBeforeCurrent,
+		)
+	}
+}
+
 func TestRuntimeExecutionBackendCancelsUnhostedThroughRuntime(
 	t *testing.T,
 ) {
@@ -1046,6 +1108,23 @@ func createUnhostedGatewayExecution(
 		t.Fatal(err)
 	}
 	return executionID
+}
+
+type countingStateFactory struct {
+	StateBackendFactory
+	opens atomic.Int64
+}
+
+func (factory *countingStateFactory) Open(
+	ctx context.Context,
+	session Session,
+) (sdk.StateBackend, error) {
+	state, err := factory.StateBackendFactory.Open(ctx, session)
+	if err != nil {
+		return nil, err
+	}
+	factory.opens.Add(1)
+	return state, nil
 }
 
 func newTestRuntimeExecutionBackend(
