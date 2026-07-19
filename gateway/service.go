@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/lincyaw/ag/internal/lifecycle"
 	"github.com/lincyaw/ag/registry"
@@ -261,7 +262,7 @@ func (service *Service) EnqueueContextInjection(
 			ErrInvalidRequest,
 		)
 	}
-	injection, err = validateGatewayContextInjection(injection)
+	injection, err = normalizeGatewayContextInjection(injection)
 	if err != nil {
 		return Execution{}, err
 	}
@@ -327,44 +328,17 @@ func (service *Service) CancelExecution(
 	)
 }
 
-func validateGatewayContextInjection(
+func normalizeGatewayContextInjection(
 	injection sdk.ContextInjection,
 ) (sdk.ContextInjection, error) {
-	if len(injection.Messages) == 0 {
-		return sdk.ContextInjection{}, fmt.Errorf(
-			"%w: gateway context injection has no messages",
-			ErrInvalidRequest,
-		)
+	normalized, err := sdk.NormalizeContextInjection(
+		injection,
+		time.Now().UTC(),
+	)
+	if err != nil {
+		return sdk.ContextInjection{}, fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 	}
-	switch injection.Priority {
-	case "",
-		sdk.ContextInjectionNow,
-		sdk.ContextInjectionNext,
-		sdk.ContextInjectionLater:
-	default:
-		return sdk.ContextInjection{}, fmt.Errorf(
-			"%w: unknown context injection priority %q",
-			ErrInvalidRequest,
-			injection.Priority,
-		)
-	}
-	switch injection.Mode {
-	case "",
-		sdk.ContextInjectionPrompt,
-		sdk.ContextInjectionHook,
-		sdk.ContextInjectionPermission,
-		sdk.ContextInjectionTaskNotification,
-		sdk.ContextInjectionInterAgent,
-		sdk.ContextInjectionLocalCommand,
-		sdk.ContextInjectionSystem:
-	default:
-		return sdk.ContextInjection{}, fmt.Errorf(
-			"%w: unknown context injection mode %q",
-			ErrInvalidRequest,
-			injection.Mode,
-		)
-	}
-	return sdk.CloneContextInjection(injection), nil
+	return normalized, nil
 }
 
 func (service *Service) RecoverSessions(

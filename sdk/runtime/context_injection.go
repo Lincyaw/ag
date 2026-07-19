@@ -154,7 +154,7 @@ func (queue *contextInjectionQueue) enqueueForExecution(
 	executionID string,
 	injection sdk.ContextInjection,
 ) (sdk.ContextInjection, error) {
-	normalized, err := normalizeContextInjection(injection, time.Now().UTC())
+	normalized, err := sdk.NormalizeContextInjection(injection, time.Now().UTC())
 	if err != nil {
 		return sdk.ContextInjection{}, err
 	}
@@ -167,58 +167,6 @@ func (queue *contextInjectionQueue) enqueueForExecution(
 		sequence:    queue.sequence,
 	})
 	return sdk.CloneContextInjection(normalized), nil
-}
-
-func normalizeContextInjection(
-	injection sdk.ContextInjection,
-	now time.Time,
-) (sdk.ContextInjection, error) {
-	if injection.ID == "" {
-		injection.ID = sdk.NewID()
-	} else if err := sdk.ValidateResourceName("context injection", injection.ID); err != nil {
-		return sdk.ContextInjection{}, err
-	}
-	if injection.Priority == "" {
-		injection.Priority = sdk.ContextInjectionNext
-	}
-	switch injection.Priority {
-	case sdk.ContextInjectionNow,
-		sdk.ContextInjectionNext,
-		sdk.ContextInjectionLater:
-	default:
-		return sdk.ContextInjection{}, fmt.Errorf(
-			"unknown context injection priority %q",
-			injection.Priority,
-		)
-	}
-	if injection.Mode == "" {
-		injection.Mode = sdk.ContextInjectionPrompt
-	}
-	switch injection.Mode {
-	case sdk.ContextInjectionPrompt,
-		sdk.ContextInjectionHook,
-		sdk.ContextInjectionPermission,
-		sdk.ContextInjectionTaskNotification,
-		sdk.ContextInjectionInterAgent,
-		sdk.ContextInjectionLocalCommand,
-		sdk.ContextInjectionSystem:
-	default:
-		return sdk.ContextInjection{}, fmt.Errorf(
-			"unknown context injection mode %q",
-			injection.Mode,
-		)
-	}
-	if len(injection.Messages) == 0 {
-		return sdk.ContextInjection{}, errors.New(
-			"context injection contains no messages",
-		)
-	}
-	if injection.CreatedAt.IsZero() {
-		injection.CreatedAt = now
-	} else {
-		injection.CreatedAt = injection.CreatedAt.UTC()
-	}
-	return sdk.CloneContextInjection(injection), nil
 }
 
 func (queue *contextInjectionQueue) drain(
