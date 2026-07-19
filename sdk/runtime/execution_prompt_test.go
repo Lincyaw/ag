@@ -53,6 +53,28 @@ type contextInjectionCaptureProvider struct {
 	requests []sdk.ModelRequest
 }
 
+type contextCountingStateBackend struct {
+	sdk.StateBackend
+	contexts *countingContextInjectionStore
+}
+
+type countingContextInjectionStore struct {
+	sdk.ContextInjectionStore
+	enqueues atomic.Int64
+}
+
+func (backend *contextCountingStateBackend) ContextInjections() sdk.ContextInjectionStore {
+	return backend.contexts
+}
+
+func (store *countingContextInjectionStore) Enqueue(
+	ctx context.Context,
+	injections ...sdk.ContextInjection,
+) error {
+	store.enqueues.Add(1)
+	return store.ContextInjectionStore.Enqueue(ctx, injections...)
+}
+
 func (provider *contextInjectionCaptureProvider) Spec() sdk.ProviderSpec {
 	return sdk.ProviderSpec{Name: "context-capture", Model: "test"}
 }
@@ -769,8 +791,14 @@ func TestRuntimeEnqueuesContextIntoHostedExecution(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	trajectories := sdkstorage.NewMemoryTrajectoryStore()
+	contexts := &countingContextInjectionStore{
+		ContextInjectionStore: sdkstorage.NewMemoryContextInjectionStore(),
+	}
 	runtime, err := NewRuntime(RuntimeConfig{
-		Storage:       testStateBackendWithStores(trajectories, nil),
+		Storage: &contextCountingStateBackend{
+			StateBackend: testStateBackendWithStores(trajectories, nil),
+			contexts:     contexts,
+		},
 		OperationPoll: time.Millisecond,
 	})
 	if err != nil {
@@ -843,6 +871,9 @@ func TestRuntimeEnqueuesContextIntoHostedExecution(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("enqueue hosted context: %v", err)
+	}
+	if got := contexts.enqueues.Load(); got != 1 {
+		t.Fatalf("context injection enqueues = %d, want 1", got)
 	}
 	close(tool.release)
 	var result Result

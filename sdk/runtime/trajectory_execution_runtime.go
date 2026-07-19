@@ -91,7 +91,7 @@ func (trajectory *trajectoryExecutionRuntime) registerHosted(
 	)
 }
 
-func (trajectory *trajectoryExecutionRuntime) enqueueHostedContext(
+func (trajectory *trajectoryExecutionRuntime) notifyHostedContext(
 	ctx context.Context,
 	trajectoryID string,
 	executionID string,
@@ -100,7 +100,7 @@ func (trajectory *trajectoryExecutionRuntime) enqueueHostedContext(
 	if trajectory.hosts == nil {
 		return hostedExecutionNotFoundError(trajectoryID, executionID)
 	}
-	return trajectory.hosts.enqueueContext(
+	return trajectory.hosts.notifyContext(
 		ctx,
 		trajectoryID,
 		executionID,

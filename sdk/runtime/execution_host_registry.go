@@ -14,9 +14,9 @@ type hostedExecutionRegistry struct {
 }
 
 type hostedExecution struct {
-	cancel         context.CancelCauseFunc
-	enqueueContext func(context.Context, sdk.ContextInjection) error
-	done           chan struct{}
+	cancel        context.CancelCauseFunc
+	notifyContext func(context.Context, sdk.ContextInjection) error
+	done          chan struct{}
 }
 
 func newHostedExecutionRegistry() *hostedExecutionRegistry {
@@ -33,13 +33,13 @@ func (registry *hostedExecutionRegistry) register(
 	trajectoryID string,
 	executionID string,
 	cancel context.CancelCauseFunc,
-	enqueueContext func(context.Context, sdk.ContextInjection) error,
+	notifyContext func(context.Context, sdk.ContextInjection) error,
 ) func() {
 	key := hostedExecutionKey(trajectoryID, executionID)
 	hosted := &hostedExecution{
-		cancel:         cancel,
-		enqueueContext: enqueueContext,
-		done:           make(chan struct{}),
+		cancel:        cancel,
+		notifyContext: notifyContext,
+		done:          make(chan struct{}),
 	}
 	registry.mu.Lock()
 	registry.hosts[key] = hosted
@@ -54,7 +54,7 @@ func (registry *hostedExecutionRegistry) register(
 	}
 }
 
-func (registry *hostedExecutionRegistry) enqueueContext(
+func (registry *hostedExecutionRegistry) notifyContext(
 	ctx context.Context,
 	trajectoryID string,
 	executionID string,
@@ -64,7 +64,7 @@ func (registry *hostedExecutionRegistry) enqueueContext(
 	if !ok {
 		return hostedExecutionNotFoundError(trajectoryID, executionID)
 	}
-	if hosted.enqueueContext == nil {
+	if hosted.notifyContext == nil {
 		return fmt.Errorf(
 			"%w: trajectory %s execution %s has no context injection boundary",
 			ErrExecutionNotFound,
@@ -77,7 +77,7 @@ func (registry *hostedExecutionRegistry) enqueueContext(
 		return hostedExecutionNotFoundError(trajectoryID, executionID)
 	default:
 	}
-	if err := hosted.enqueueContext(ctx, injection); err != nil {
+	if err := hosted.notifyContext(ctx, injection); err != nil {
 		return err
 	}
 	select {

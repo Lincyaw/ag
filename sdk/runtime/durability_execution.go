@@ -167,7 +167,7 @@ func (session *Session) executionHeartbeat(
 		executionID,
 		cancel,
 		func(ctx context.Context, injection sdk.ContextInjection) error {
-			return session.enqueueHostedContextInjection(
+			return session.notifyHostedContextInjection(
 				ctx,
 				executionID,
 				injection,

@@ -92,7 +92,7 @@ func (runtime *Runtime) EnqueueContextInjection(
 	if err := runtime.contextInjections.Enqueue(ctx, normalized); err != nil {
 		return err
 	}
-	err = runtime.trajectoryExecution.enqueueHostedContext(
+	err = runtime.trajectoryExecution.notifyHostedContext(
 		ctx,
 		trajectoryID,
 		executionID,
@@ -176,7 +176,7 @@ func (lifecycle ExecutionLifecycle) EnqueueContextInjection(
 	return lifecycle.contexts.Enqueue(ctx, normalized)
 }
 
-func (session *Session) enqueueHostedContextInjection(
+func (session *Session) notifyHostedContextInjection(
 	ctx context.Context,
 	executionID string,
 	injection sdk.ContextInjection,
@@ -196,11 +196,7 @@ func (session *Session) enqueueHostedContextInjection(
 			executionID,
 		)
 	}
-	queued, err := session.enqueueContextInjectionForExecution(ctx, executionID, injection)
-	if err != nil {
-		return err
-	}
-	if queued.Priority == sdk.ContextInjectionNow {
+	if injection.Priority.Effective() == sdk.ContextInjectionNow {
 		session.signalContextInjectionInterrupt(executionID)
 	}
 	return nil

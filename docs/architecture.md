@@ -221,6 +221,9 @@ runtime results, agent results, and terminal payloads. This keeps synthetic
 messages, task notifications, permission responses, hook context, local command
 output, and inter-agent messages on one runtime model without adding
 Claude-Code-specific message fields to the provider `Message` contract.
+Live execution hosts are notified only after the injection is durably enqueued;
+the hosted notification boundary may interrupt a `now` wait, but it does not
+write the pending-context store again.
 
 Event dispatch has two roles. Synchronous hooks are policy gates and run inside
 the caller's execution context. Subscriber delivery is a durable asynchronous
