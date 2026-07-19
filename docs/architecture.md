@@ -95,6 +95,10 @@ deltas and tool-ready signals can share the same live ordering model, while
 the runtime separately projects `provider_response` entries for durable
 fork/resume. Gateway code must not invent alternate provider-response state
 because the trajectory projection is the resume source of truth.
+Provider retry attempts use trajectory analysis only to initialize the
+execution-local attempt counters. Once a prompt execution is live, the runtime
+increments those counters in memory instead of using bounded trajectory
+analysis as a hot-path counter.
 
 Operation control uses the target identity, not the executable revision.
 Polling and execution validate the recorded resource revision because they read

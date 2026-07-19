@@ -28,13 +28,14 @@ func (session *Session) Prompt(
 }
 
 type promptExecution struct {
-	session          *Session
-	userMessage      sdk.Message
-	messages         []sdk.Message
-	system           string
-	dependencies     []string
-	providerAttempts map[int]int
-	result           Result
+	session                     *Session
+	userMessage                 sdk.Message
+	messages                    []sdk.Message
+	system                      string
+	dependencies                []string
+	providerAttempts            map[int]int
+	providerAttemptsInitialized bool
+	result                      Result
 }
 
 type promptTurnTransition uint8
@@ -568,6 +569,24 @@ func (execution *promptExecution) nextProviderAttempt(
 	ctx context.Context,
 	turn int,
 ) (int, error) {
+	if err := execution.initializeProviderAttempts(ctx); err != nil {
+		return 0, err
+	}
+	attempt := execution.providerAttempts[turn]
+	execution.providerAttempts[turn] = attempt + 1
+	return attempt, nil
+}
+
+func (execution *promptExecution) initializeProviderAttempts(
+	ctx context.Context,
+) error {
+	if execution.providerAttemptsInitialized {
+		return nil
+	}
+	execution.providerAttemptsInitialized = true
+	if execution.providerAttempts == nil {
+		execution.providerAttempts = make(map[int]int)
+	}
 	session := execution.session
 	if session != nil && session.runtime != nil {
 		executionID, _ := session.activeExecution()
@@ -583,23 +602,16 @@ func (execution *promptExecution) nextProviderAttempt(
 				},
 			)
 			if err != nil {
-				return 0, err
+				return err
 			}
-			attempt := 0
 			for _, entry := range entries {
-				if entry.Fields.Turn != nil && *entry.Fields.Turn == turn {
-					attempt++
+				if entry.Fields.Turn != nil {
+					execution.providerAttempts[*entry.Fields.Turn]++
 				}
 			}
-			return attempt, nil
 		}
 	}
-	if execution.providerAttempts == nil {
-		execution.providerAttempts = make(map[int]int)
-	}
-	attempt := execution.providerAttempts[turn]
-	execution.providerAttempts[turn] = attempt + 1
-	return attempt, nil
+	return nil
 }
 
 func providerInvocationCoordinate(turn int, attempt int) string {

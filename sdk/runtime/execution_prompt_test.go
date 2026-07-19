@@ -63,6 +63,20 @@ type countingContextInjectionStore struct {
 	enqueues atomic.Int64
 }
 
+type providerAttemptAnalyzer struct {
+	sdk.TrajectoryStore
+	entries []sdk.TrajectoryEntry
+	calls   atomic.Int64
+}
+
+func (analyzer *providerAttemptAnalyzer) AnalyzeEntries(
+	context.Context,
+	sdk.TrajectoryEntryQuery,
+) ([]sdk.TrajectoryEntry, error) {
+	analyzer.calls.Add(1)
+	return append([]sdk.TrajectoryEntry(nil), analyzer.entries...), nil
+}
+
 func (backend *contextCountingStateBackend) ContextInjections() sdk.ContextInjectionStore {
 	return backend.contexts
 }
@@ -1488,6 +1502,53 @@ func TestNowContextInjectionInterruptsProviderAndRetriesTurn(t *testing.T) {
 		operationKeys[1] == "" ||
 		operationKeys[0] == operationKeys[1] {
 		t.Fatalf("provider retry operation keys = %v", operationKeys)
+	}
+}
+
+func TestProviderAttemptsUseTrajectoryOnlyAsInitialization(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	turn := 0
+	entries := make([]sdk.TrajectoryEntry, sdk.MaxPageSize)
+	for index := range entries {
+		entries[index] = sdk.TrajectoryEntry{
+			Kind: sdk.TrajectoryKindProviderRequest,
+			Fields: sdk.TrajectoryEntryFields{
+				ExecutionID: "execution-provider-attempts",
+				Turn:        &turn,
+			},
+		}
+	}
+	analyzer := &providerAttemptAnalyzer{entries: entries}
+	session := &Session{
+		runtime: &Runtime{trajectories: analyzer},
+		config:  SessionConfig{ID: "provider-attempts"},
+	}
+	session.executionID = "execution-provider-attempts"
+	execution := &promptExecution{session: session}
+
+	first, err := execution.nextProviderAttempt(ctx, turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := execution.nextProviderAttempt(ctx, turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherTurn, err := execution.nextProviderAttempt(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != sdk.MaxPageSize || second != sdk.MaxPageSize+1 || otherTurn != 0 {
+		t.Fatalf(
+			"provider attempts = %d, %d, other turn = %d",
+			first,
+			second,
+			otherTurn,
+		)
+	}
+	if analyzer.calls.Load() != 1 {
+		t.Fatalf("analyzer calls = %d, want 1", analyzer.calls.Load())
 	}
 }
 
