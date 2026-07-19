@@ -28,7 +28,7 @@ func NewInflight(ctx context.Context) Inflight {
 func (inflight *Inflight) Start(
 	parent context.Context,
 	id string,
-) (context.Context, func(), bool) {
+) ExecutionSlot {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -41,19 +41,22 @@ func (inflight *Inflight) Start(
 		inflight.mu.Unlock()
 		stopRootCancel()
 		cancel()
-		return nil, nil, false
+		return ExecutionSlot{}
 	}
 	inflight.cancel[id] = cancel
 	inflight.mu.Unlock()
 
+	var finishOnce sync.Once
 	finish := func() {
-		stopRootCancel()
-		cancel()
-		inflight.mu.Lock()
-		delete(inflight.cancel, id)
-		inflight.mu.Unlock()
+		finishOnce.Do(func() {
+			stopRootCancel()
+			cancel()
+			inflight.mu.Lock()
+			delete(inflight.cancel, id)
+			inflight.mu.Unlock()
+		})
 	}
-	return ctx, finish, true
+	return ExecutionSlot{Context: ctx, finish: finish}
 }
 
 func (inflight *Inflight) Cancel(id string) bool {

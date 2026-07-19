@@ -115,3 +115,38 @@ func TestHostSubmitReservedRejectsMissingInflightBeforePersisting(
 		t.Fatalf("persisted operations = %#v, error = %v", records, listErr)
 	}
 }
+
+func TestHostStartReservedAsyncReleasesReservationWhenSlotUnavailable(
+	t *testing.T,
+) {
+	t.Parallel()
+	ctx := context.Background()
+	inflight := NewInflight(ctx)
+	host := Host{Inflight: &inflight}
+
+	slot := host.Start(ctx, "operation-1")
+	if !slot.Acquired() {
+		t.Fatal("initial execution slot was not acquired")
+	}
+	defer slot.Finish()
+
+	var releases atomic.Int64
+	var ran atomic.Bool
+	host.StartReservedAsync(
+		ctx,
+		"operation-1",
+		nil,
+		func(context.Context, sdk.OperationRecord) (json.RawMessage, error) {
+			ran.Store(true)
+			return nil, nil
+		},
+		func() { releases.Add(1) },
+	)
+
+	if ran.Load() {
+		t.Fatal("duplicate execution slot ran operation")
+	}
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("reservation releases = %d, want 1", got)
+	}
+}

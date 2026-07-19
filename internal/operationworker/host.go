@@ -15,12 +15,29 @@ type Host struct {
 	Runner   Runner
 }
 
+// ExecutionSlot is the host-local right to execute one operation ID in this
+// process. It is separate from the durable store lease claimed by Runner.
+type ExecutionSlot struct {
+	Context context.Context
+	finish  func()
+}
+
+func (slot ExecutionSlot) Acquired() bool {
+	return slot.finish != nil
+}
+
+func (slot ExecutionSlot) Finish() {
+	if slot.finish != nil {
+		slot.finish()
+	}
+}
+
 func (host Host) Start(
 	parent context.Context,
 	id string,
-) (context.Context, func(), bool) {
+) ExecutionSlot {
 	if host.Inflight == nil {
-		return nil, nil, false
+		return ExecutionSlot{}
 	}
 	return host.Inflight.Start(parent, id)
 }
@@ -31,37 +48,38 @@ func (host Host) Run(
 	validate Validator,
 	execute Executor,
 ) bool {
-	ctx, finish, running := host.Start(parent, id)
-	if !running {
+	slot := host.Start(parent, id)
+	if !slot.Acquired() {
 		return false
 	}
-	defer finish()
-	host.Runner.Run(ctx, id, validate, execute)
+	defer slot.Finish()
+	host.Runner.Run(slot.Context, id, validate, execute)
 	return true
 }
 
-// StartAsync starts one already-reserved operation host goroutine. The caller
-// still owns the lifecycle reservation and must release it through onDone.
-func (host Host) StartAsync(
+// StartReservedAsync consumes one already-reserved lifecycle slot. It starts a
+// host goroutine when it can acquire the execution slot; otherwise it releases
+// onDone before returning.
+func (host Host) StartReservedAsync(
 	parent context.Context,
 	id string,
 	validate Validator,
 	execute Executor,
 	onDone func(),
-) bool {
-	ctx, finish, running := host.Start(parent, id)
-	if !running {
-		return false
-	}
+) {
 	if onDone == nil {
 		onDone = func() {}
 	}
+	slot := host.Start(parent, id)
+	if !slot.Acquired() {
+		onDone()
+		return
+	}
 	go func() {
 		defer onDone()
-		defer finish()
-		host.Runner.Run(ctx, id, validate, execute)
+		defer slot.Finish()
+		host.Runner.Run(slot.Context, id, validate, execute)
 	}()
-	return true
 }
 
 // SubmitReserved persists one target-bound request and starts a local worker
@@ -95,7 +113,8 @@ func (host Host) SubmitReserved(
 		return sdk.Operation{}, err
 	}
 	if !record.Operation.Terminal() {
-		transferred = host.StartAsync(
+		transferred = true
+		host.StartReservedAsync(
 			ctx,
 			record.Operation.ID,
 			target.Validate,

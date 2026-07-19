@@ -206,16 +206,13 @@ func (server *server) reserveOperation() bool {
 }
 
 func (server *server) startReservedOperation(parent context.Context, id string) {
-	if server.operationHost().StartAsync(
+	server.operationHost().StartReservedAsync(
 		parent,
 		id,
 		server.validateOperationRevision,
 		server.executeLocal,
 		server.wait.Done,
-	) {
-		return
-	}
-	server.wait.Done()
+	)
 }
 
 func (server *server) operationHost() operationworker.Host {

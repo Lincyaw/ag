@@ -289,27 +289,27 @@ func TestHostRejectsDuplicateInflightOperation(t *testing.T) {
 	inflight := NewInflight(context.Background())
 	host := Host{Inflight: &inflight}
 
-	_, finish, running := host.Start(context.Background(), "operation-1")
-	if !running {
+	slot := host.Start(context.Background(), "operation-1")
+	if !slot.Acquired() {
 		t.Fatal("first host start was rejected")
 	}
-	defer finish()
-	_, duplicateFinish, duplicate := host.Start(
+	defer slot.Finish()
+	duplicate := host.Start(
 		context.Background(),
 		"operation-1",
 	)
-	if duplicate {
-		duplicateFinish()
+	if duplicate.Acquired() {
+		duplicate.Finish()
 		t.Fatal("duplicate host start succeeded")
 	}
 }
 
 func TestHostRequiresInflight(t *testing.T) {
 	t.Parallel()
-	if _, _, running := (Host{}).Start(
+	if (Host{}).Start(
 		context.Background(),
 		"operation-without-inflight",
-	); running {
+	).Acquired() {
 		t.Fatal("host without inflight started")
 	}
 }
