@@ -88,6 +88,9 @@ func (lineage trajectorySessionLineage) validateExisting(
 	metadata sdk.TrajectoryMetadata,
 	sessionID string,
 ) error {
+	if lineage.mode == sdk.AgentSessionResume {
+		return lineage.validateExistingResume(metadata, sessionID)
+	}
 	if metadata.Environment.OriginInvocationID != lineage.originInvocationID ||
 		metadata.Environment.ParentSessionID != lineage.parentSessionID {
 		return fmt.Errorf(
@@ -145,6 +148,69 @@ func (lineage trajectorySessionLineage) validateExisting(
 				metadata.ParentEntryID,
 			)
 		}
+	}
+	return nil
+}
+
+func (lineage trajectorySessionLineage) validateExistingResume(
+	metadata sdk.TrajectoryMetadata,
+	sessionID string,
+) error {
+	if metadata.Environment.ParentSessionID != lineage.parentSessionID {
+		return fmt.Errorf(
+			"agent session %q belongs to parent %q, not %q",
+			sessionID,
+			metadata.Environment.ParentSessionID,
+			lineage.parentSessionID,
+		)
+	}
+	switch metadata.Environment.OriginMode {
+	case sdk.AgentSessionNew:
+		return lineage.validateExistingResumeNew(metadata, sessionID)
+	case sdk.AgentSessionFork:
+		return lineage.validateExistingResumeFork(metadata, sessionID)
+	case "":
+		if metadata.ParentID == "" && metadata.ParentEntryID == "" {
+			return nil
+		}
+		return lineage.validateExistingResumeFork(metadata, sessionID)
+	default:
+		return fmt.Errorf(
+			"agent session %q already belongs to %q mode",
+			sessionID,
+			metadata.Environment.OriginMode,
+		)
+	}
+}
+
+func (lineage trajectorySessionLineage) validateExistingResumeNew(
+	metadata sdk.TrajectoryMetadata,
+	sessionID string,
+) error {
+	if metadata.ParentID != "" || metadata.ParentEntryID != "" {
+		return fmt.Errorf(
+			"agent session %q already forks trajectory %q at %q",
+			sessionID,
+			metadata.ParentID,
+			metadata.ParentEntryID,
+		)
+	}
+	return nil
+}
+
+func (lineage trajectorySessionLineage) validateExistingResumeFork(
+	metadata sdk.TrajectoryMetadata,
+	sessionID string,
+) error {
+	if metadata.ParentID != lineage.parentSessionID ||
+		metadata.ParentEntryID == "" {
+		return fmt.Errorf(
+			"agent session %q already forks trajectory %q at %q, not %q",
+			sessionID,
+			metadata.ParentID,
+			metadata.ParentEntryID,
+			lineage.parentSessionID,
+		)
 	}
 	return nil
 }

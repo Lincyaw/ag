@@ -219,8 +219,11 @@ func validateAgentRequest(request *sdk.AgentRequest) error {
 	if request.Mode == "" {
 		request.Mode = sdk.AgentSessionNew
 	}
+	if request.Mode == sdk.AgentSessionResume && request.SessionID == "" {
+		return errors.New("agent resume requires a session ID")
+	}
 	switch request.Mode {
-	case sdk.AgentSessionNew, sdk.AgentSessionFork:
+	case sdk.AgentSessionNew, sdk.AgentSessionFork, sdk.AgentSessionResume:
 	default:
 		return fmt.Errorf(
 			"unknown agent session mode %q",
@@ -240,12 +243,23 @@ func validateAgentRequest(request *sdk.AgentRequest) error {
 
 func ensureAgentIdempotencyKey(request *sdk.AgentRequest) error {
 	if request.IdempotencyKey == "" {
-		if request.SessionID == "" {
-			return errors.New(
-				"agent idempotency key is required unless session ID is provided",
+		switch request.Mode {
+		case sdk.AgentSessionResume:
+			if request.SessionID == "" {
+				return errors.New("agent resume requires a session ID")
+			}
+			request.IdempotencyKey = sdk.DefaultAgentResumeIdempotencyKey(
+				request.SessionID,
+				request.Prompt,
 			)
+		default:
+			if request.SessionID == "" {
+				return errors.New(
+					"agent idempotency key is required unless session ID is provided",
+				)
+			}
+			request.IdempotencyKey = request.SessionID
 		}
-		request.IdempotencyKey = request.SessionID
 	}
 	return sdk.ValidateResourceName(
 		"agent idempotency key",
@@ -430,6 +444,9 @@ func (invoker *scopedAgentInvoker) openAgentSession(
 	snapshot *registrySnapshot,
 	binding agentSessionBinding,
 ) (agentSessionOpen, error) {
+	if binding.request.Mode == sdk.AgentSessionResume {
+		return binding.openExisting(ctx, invoker.runtime, nil)
+	}
 	child, err := invoker.createAgentSession(ctx, snapshot, binding)
 	if err == nil {
 		return agentSessionOpen{session: child}, nil

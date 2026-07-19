@@ -324,6 +324,73 @@ func TestExistingAgentSessionMustMatchInvocationRoot(t *testing.T) {
 	}
 }
 
+func TestResumeAgentSessionAllowsFreshInvocationOnExistingTrajectory(
+	t *testing.T,
+) {
+	parent := &Session{config: SessionConfig{ID: "parent-session"}}
+	invoker := &scopedAgentInvoker{parentSession: parent}
+	metadata := sdk.TrajectoryMetadata{
+		ID: "child-session",
+		Environment: sdk.TrajectoryEnvironment{
+			ParentSessionID:        "parent-session",
+			OriginInvocationID:     "original-agent-invocation",
+			OriginInvocationRootID: "original-root",
+			OriginMode:             sdk.AgentSessionNew,
+		},
+	}
+	err := validateExistingAgentSessionForTest(
+		t,
+		invoker,
+		metadata,
+		sdk.AgentRequest{
+			SessionID: "child-session",
+			Mode:      sdk.AgentSessionResume,
+		},
+		sdk.Invocation{
+			ID:     "resume-agent-invocation",
+			RootID: "resume-root",
+		},
+	)
+	if err != nil {
+		t.Fatalf("resume validation error = %v", err)
+	}
+}
+
+func TestResumeAgentRequestDefaultsToPromptScopedIdempotency(
+	t *testing.T,
+) {
+	first := sdk.AgentRequest{
+		Agent:     "researcher",
+		Prompt:    "first follow-up",
+		SessionID: "child-session",
+		Mode:      sdk.AgentSessionResume,
+	}
+	second := sdk.AgentRequest{
+		Agent:     "researcher",
+		Prompt:    "second follow-up",
+		SessionID: "child-session",
+		Mode:      sdk.AgentSessionResume,
+	}
+	for _, request := range []*sdk.AgentRequest{&first, &second} {
+		if err := validateAgentRequest(request); err != nil {
+			t.Fatal(err)
+		}
+		if err := ensureAgentIdempotencyKey(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if first.IdempotencyKey == "" ||
+		first.IdempotencyKey == first.SessionID {
+		t.Fatalf("first idempotency key = %q", first.IdempotencyKey)
+	}
+	if first.IdempotencyKey == second.IdempotencyKey {
+		t.Fatalf(
+			"resume prompts share idempotency key %q",
+			first.IdempotencyKey,
+		)
+	}
+}
+
 func validateExistingAgentSessionForTest(
 	t *testing.T,
 	invoker *scopedAgentInvoker,

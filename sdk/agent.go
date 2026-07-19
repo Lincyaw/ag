@@ -2,6 +2,8 @@ package sdk
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 )
 
@@ -29,8 +31,9 @@ func CloneAgentSpec(spec AgentSpec) AgentSpec {
 type AgentSessionMode string
 
 const (
-	AgentSessionNew  AgentSessionMode = "new"
-	AgentSessionFork AgentSessionMode = "fork"
+	AgentSessionNew    AgentSessionMode = "new"
+	AgentSessionFork   AgentSessionMode = "fork"
+	AgentSessionResume AgentSessionMode = "resume"
 )
 
 type AgentRequest struct {
@@ -42,6 +45,11 @@ type AgentRequest struct {
 	Group          string           `json:"group,omitempty"`
 	Dependencies   []string         `json:"dependencies,omitempty"`
 	Ordinal        uint32           `json:"ordinal,omitempty"`
+}
+
+func DefaultAgentResumeIdempotencyKey(sessionID string, prompt string) string {
+	sum := sha256.Sum256([]byte(sessionID + "\x00" + prompt))
+	return "resume-" + hex.EncodeToString(sum[:])[:24]
 }
 
 type AgentResult struct {
