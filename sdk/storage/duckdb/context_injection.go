@@ -146,6 +146,51 @@ func (store *ContextInjectionStore) List(
 	return result, nil
 }
 
+func (store *ContextInjectionStore) ConsumeContextInjections(
+	ctx context.Context,
+	ids ...string,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if store == nil || store.trajectories == nil {
+		return errors.New("DuckDB context injection store is nil")
+	}
+	if err := validateContextInjectionIDs(ids); err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	trajectoryStore := store.trajectories
+	trajectoryStore.writeMu.Lock()
+	defer trajectoryStore.writeMu.Unlock()
+	tx, err := trajectoryStore.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin DuckDB context injection consume: %w", err)
+	}
+	defer tx.Rollback()
+	for _, id := range ids {
+		if _, err := tx.ExecContext(
+			ctx,
+			`DELETE FROM ag_context_injections
+			 WHERE namespace = ? AND id = ?`,
+			trajectoryStore.namespace,
+			id,
+		); err != nil {
+			return fmt.Errorf(
+				"consume DuckDB context injection %q: %w",
+				id,
+				err,
+			)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit DuckDB context injection consume: %w", err)
+	}
+	return nil
+}
+
 func (store *ContextInjectionStore) load(
 	ctx context.Context,
 	queryer duckDBQueryer,

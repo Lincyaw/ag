@@ -440,10 +440,38 @@ func (execution *promptExecution) checkpointQueuedContext(
 		execution.messages = execution.messages[:baseLength]
 		return false, err
 	}
+	execution.session.consumeContextInjections(ctx, injections)
 	execution.session.markContextInjectionsConsumed(injections)
 	execution.result.ContextInjections = execution.session.contextInjectionProjection(nil)
 	execution.session.applyMessageProjection(execution.messages)
 	return true, nil
+}
+
+func (session *Session) consumeContextInjections(
+	ctx context.Context,
+	injections []sdk.ContextInjection,
+) {
+	consumer, ok := session.runtime.contextInjections.(sdk.ContextInjectionConsumer)
+	if !ok {
+		return
+	}
+	ids := make([]string, 0, len(injections))
+	for _, injection := range injections {
+		if injection.ID != "" {
+			ids = append(ids, injection.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	if err := consumer.ConsumeContextInjections(ctx, ids...); err != nil {
+		session.runtime.logger.WarnContext(
+			ctx,
+			"consume context injections",
+			"error",
+			err,
+		)
+	}
 }
 
 func messagesFromContextInjections(

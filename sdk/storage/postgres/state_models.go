@@ -26,6 +26,7 @@ var (
 	sameContextInjectionIdentity = contextinjectionmodel.SameIdentity
 	validateLoadedContextRecord  = contextinjectionmodel.ValidateLoadedRecord
 	validateContextQuery         = contextinjectionmodel.ValidateQuery
+	validateContextInjectionIDs  = contextinjectionmodel.ValidateConsumeIDs
 
 	prepareNewDeliveries          = deliverymodel.PrepareNewBatch
 	sameDeliveryIdentity          = deliverymodel.SameIdentity

@@ -99,3 +99,21 @@ func (store *memoryContextInjectionStore) List(
 	}
 	return result, nil
 }
+
+func (store *memoryContextInjectionStore) ConsumeContextInjections(
+	ctx context.Context,
+	ids ...string,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateContextInjectionIDs(ids); err != nil {
+		return err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for _, id := range ids {
+		delete(store.injections, id)
+	}
+	return nil
+}

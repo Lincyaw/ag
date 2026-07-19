@@ -80,6 +80,15 @@ func (store *fileContextInjectionStore) List(
 	return result, err
 }
 
+func (store *fileContextInjectionStore) ConsumeContextInjections(
+	ctx context.Context,
+	ids ...string,
+) error {
+	return store.mutate(ctx, func(memory *memoryContextInjectionStore) error {
+		return memory.ConsumeContextInjections(ctx, ids...)
+	})
+}
+
 func (store *fileContextInjectionStore) mutate(
 	ctx context.Context,
 	mutation func(*memoryContextInjectionStore) error,

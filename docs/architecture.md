@@ -236,7 +236,10 @@ still be recovered, but they cannot provide the same resource-level exactness.
 
 Queued context injection is execution state, not presenter glue. The runtime
 owns the `ContextInjection` queue, priority drain rules, execution/session
-addressing, and durable consumption projection. Providers receive only the
+addressing, and checkpointed consumption projection. Stores that implement
+`ContextInjectionConsumer` may acknowledge consumed IDs after checkpoint
+persistence; recovery still reads the visible payload and consumed-ID
+projection from trajectory checkpoints. Providers receive only the
 model-visible messages derived from an injection; gateways, CLIs, nested
 agents, and recovery code read the injection metadata from checkpoints,
 runtime results, agent results, and terminal payloads. This keeps synthetic

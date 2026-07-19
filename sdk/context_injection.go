@@ -109,6 +109,13 @@ type ContextInjectionStore interface {
 	List(context.Context, ContextInjectionQuery) ([]ContextInjection, error)
 }
 
+// ContextInjectionConsumer is an optional store capability. Runtimes may call
+// it after context injections have been durably checkpointed into the
+// trajectory. Consumption is idempotent by ID.
+type ContextInjectionConsumer interface {
+	ConsumeContextInjections(context.Context, ...string) error
+}
+
 // NormalizeContextInjection validates a queued model-visible payload and applies
 // SDK defaults for ID, priority, mode, and creation time.
 func NormalizeContextInjection(

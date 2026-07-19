@@ -69,7 +69,9 @@ equivalent is durable context injection:
 - `ContextInjection.Priority` defines `now`, `next`, and `later`.
 - `ContextInjection.Mode` covers prompt, hook, permission, task notification,
   inter-agent, local command, and system payloads.
-- `ContextInjectionStore` is durable and target-addressed by session/execution.
+- `ContextInjectionStore` is durable pending input, target-addressed by
+  session/execution, and may expose `ContextInjectionConsumer` so checkpointed
+  injections can be acknowledged without making the store the recovery source.
 - `ExecutionControl.EnqueueContextInjectionView` is the presenter/gateway
   boundary for enqueue-plus-read-after-control.
 

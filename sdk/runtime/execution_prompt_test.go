@@ -61,6 +61,7 @@ type contextCountingStateBackend struct {
 type countingContextInjectionStore struct {
 	sdk.ContextInjectionStore
 	enqueues atomic.Int64
+	consumes atomic.Int64
 }
 
 type providerAttemptAnalyzer struct {
@@ -87,6 +88,18 @@ func (store *countingContextInjectionStore) Enqueue(
 ) error {
 	store.enqueues.Add(1)
 	return store.ContextInjectionStore.Enqueue(ctx, injections...)
+}
+
+func (store *countingContextInjectionStore) ConsumeContextInjections(
+	ctx context.Context,
+	ids ...string,
+) error {
+	store.consumes.Add(1)
+	consumer, ok := store.ContextInjectionStore.(sdk.ContextInjectionConsumer)
+	if !ok {
+		return errors.New("wrapped context injection store does not consume")
+	}
+	return consumer.ConsumeContextInjections(ctx, ids...)
 }
 
 func (provider *contextInjectionCaptureProvider) Spec() sdk.ProviderSpec {
@@ -786,8 +799,14 @@ func TestQueuedContextInjectionCheckpointsBeforeProvider(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	trajectories := sdkstorage.NewMemoryTrajectoryStore()
+	contexts := &countingContextInjectionStore{
+		ContextInjectionStore: sdkstorage.NewMemoryContextInjectionStore(),
+	}
 	runtime, err := NewRuntime(RuntimeConfig{
-		Storage: testStateBackendWithStores(trajectories, nil),
+		Storage: &contextCountingStateBackend{
+			StateBackend: testStateBackendWithStores(trajectories, nil),
+			contexts:     contexts,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -928,6 +947,18 @@ func TestQueuedContextInjectionCheckpointsBeforeProvider(t *testing.T) {
 		len(got[0].Messages) != 1 ||
 		got[0].Messages[0].Content != "queued context" {
 		t.Fatalf("durable result context injections = %#v", got)
+	}
+	if got := contexts.consumes.Load(); got != 1 {
+		t.Fatalf("context injection consumes = %d, want 1", got)
+	}
+	pending, err := contexts.List(ctx, sdk.ContextInjectionQuery{
+		TargetSessionID: session.ID(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending context injections after checkpoint = %#v", pending)
 	}
 }
 

@@ -114,6 +114,15 @@ func ValidateQuery(query sdk.ContextInjectionQuery) error {
 	return nil
 }
 
+func ValidateConsumeIDs(ids []string) error {
+	for _, id := range ids {
+		if err := sdk.ValidateResourceName("context injection", id); err != nil {
+			return fmt.Errorf("consume context injection %q: %w", id, err)
+		}
+	}
+	return nil
+}
+
 func MatchesQuery(
 	injection sdk.ContextInjection,
 	query sdk.ContextInjectionQuery,

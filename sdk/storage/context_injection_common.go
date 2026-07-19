@@ -10,4 +10,5 @@ var (
 	validateContextQuery         = contextinjectionmodel.ValidateQuery
 	contextMatchesQuery          = contextinjectionmodel.MatchesQuery
 	sortContextRecords           = contextinjectionmodel.SortRecords
+	validateContextInjectionIDs  = contextinjectionmodel.ValidateConsumeIDs
 )

@@ -137,6 +137,48 @@ func (store *ContextInjectionStore) List(
 	return result, nil
 }
 
+func (store *ContextInjectionStore) ConsumeContextInjections(
+	ctx context.Context,
+	ids ...string,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if store == nil || store.pool == nil {
+		return errors.New("PostgreSQL context injection store is nil")
+	}
+	if err := validateContextInjectionIDs(ids); err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	for _, id := range ids {
+		if _, err := tx.Exec(
+			ctx,
+			`DELETE FROM ag_context_injections
+			 WHERE namespace = $1 AND id = $2`,
+			store.namespace,
+			id,
+		); err != nil {
+			return fmt.Errorf(
+				"consume PostgreSQL context injection %q: %w",
+				id,
+				err,
+			)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit PostgreSQL context injection consume: %w", err)
+	}
+	return nil
+}
+
 func (store *ContextInjectionStore) load(
 	ctx context.Context,
 	queryer queryer,
