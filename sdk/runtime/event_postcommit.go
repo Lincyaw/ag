@@ -155,13 +155,6 @@ func (runtime *Runtime) stateMutationHostOutbox(
 	return runtime.atomicMutationHostOutbox(source.stateMutationDeliveries())
 }
 
-type postCommitDeliveryMode uint8
-
-const (
-	postCommitDeliveryModeAfterDispatch postCommitDeliveryMode = iota
-	postCommitDeliveryModeStateMutation
-)
-
 // postCommitDeliveryBoundary is the commit-boundary decision for subscriber
 // deliveries attached to an event prepared around a durable state mutation.
 // The boundary is not an event classification: events whose hooks can affect
@@ -174,7 +167,7 @@ const (
 )
 
 type postCommitDelivery struct {
-	mode          postCommitDeliveryMode
+	afterDispatch bool
 	stateMutation []sdk.Delivery
 }
 
@@ -186,7 +179,6 @@ func newPostCommitDelivery(
 	if boundary == postCommitDeliveryBoundaryStateMutation &&
 		subscriberDeliveryStableBeforeDispatch(snapshot, event.Name) {
 		return postCommitDelivery{
-			mode: postCommitDeliveryModeStateMutation,
 			stateMutation: planSubscriberDeliveries(
 				snapshot,
 				event,
@@ -194,11 +186,11 @@ func newPostCommitDelivery(
 			),
 		}
 	}
-	return postCommitDelivery{mode: postCommitDeliveryModeAfterDispatch}
+	return postCommitDelivery{afterDispatch: true}
 }
 
 func (delivery postCommitDelivery) enqueueAfterDispatch() bool {
-	return delivery.mode == postCommitDeliveryModeAfterDispatch
+	return delivery.afterDispatch
 }
 
 func (delivery postCommitDelivery) stateMutationDeliveries() []sdk.Delivery {

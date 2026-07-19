@@ -569,7 +569,6 @@ func dispatchSubscriberTestPostCommit(
 
 func TestPostCommitStateMutationDeliveriesReturnsOwnedDeliveries(t *testing.T) {
 	delivery := postCommitDelivery{
-		mode: postCommitDeliveryModeStateMutation,
 		stateMutation: []sdk.Delivery{{
 			ID: "delivery-1",
 			Event: sdk.Event{
