@@ -162,6 +162,7 @@ type ExecutionCancelResult struct {
 type StateBackend interface {
 	Trajectories() TrajectoryStore
 	Operations() OperationStore
+	ContextInjections() ContextInjectionStore
 	Deliveries(string) (DeliveryStore, error)
 	Capabilities() StorageCapabilities
 	Namespace() string

@@ -189,10 +189,43 @@ func (backend *runtimeExecutionBackend) EnqueueContextInjection(
 	injection sdk.ContextInjection,
 ) (Execution, error) {
 	plan, err := backend.hosts.contextPlan(session.ID, executionID)
+	if err == nil {
+		if err := plan.control.EnqueueContextInjection(
+			ctx,
+			session.ID,
+			executionID,
+			injection,
+		); err != nil {
+			return Execution{}, gatewayExecutionViewError(err)
+		}
+		view, err := plan.control.LoadView(ctx, session.ID)
+		if err := gatewayExecutionViewError(err); err != nil {
+			return Execution{}, err
+		}
+		return gatewayExecutionFromView(view), nil
+	}
+	if !errors.Is(err, ErrExecutionNotFound) {
+		return Execution{}, err
+	}
+	stateHost, err := backend.openStateExecutionHost(ctx, session)
 	if err != nil {
 		return Execution{}, err
 	}
-	if err := plan.control.EnqueueContextInjection(
+	defer func() {
+		if closeErr := stateHost.CloseDetached(ctx); closeErr != nil {
+			backend.logger.WarnContext(
+				lifecycle.Detached(ctx),
+				"gateway state host close after context injection failed",
+				"session_id",
+				session.ID,
+				"execution_id",
+				executionID,
+				"error",
+				closeErr,
+			)
+		}
+	}()
+	if err := stateHost.Control().EnqueueContextInjection(
 		ctx,
 		session.ID,
 		executionID,
@@ -200,7 +233,7 @@ func (backend *runtimeExecutionBackend) EnqueueContextInjection(
 	); err != nil {
 		return Execution{}, gatewayExecutionViewError(err)
 	}
-	view, err := plan.control.LoadView(ctx, session.ID)
+	view, err := stateHost.Control().LoadView(ctx, session.ID)
 	if err := gatewayExecutionViewError(err); err != nil {
 		return Execution{}, err
 	}

@@ -12,7 +12,8 @@ import (
 
 type memoryStateBackend struct {
 	backendStores
-	namespace string
+	contextInjections sdk.ContextInjectionStore
+	namespace         string
 }
 
 func NewMemoryStateBackend() sdk.StateBackend {
@@ -28,8 +29,13 @@ func newMemoryStateBackend(namespace string) sdk.StateBackend {
 			NewMemoryTrajectoryStore(),
 			NewMemoryOperationStore(),
 		),
-		namespace: namespace,
+		contextInjections: NewMemoryContextInjectionStore(),
+		namespace:         namespace,
 	}
+}
+
+func (backend *memoryStateBackend) ContextInjections() sdk.ContextInjectionStore {
+	return backend.contextInjections
 }
 
 func (backend *memoryStateBackend) Deliveries(name string) (sdk.DeliveryStore, error) {

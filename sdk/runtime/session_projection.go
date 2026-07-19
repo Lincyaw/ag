@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"slices"
+
 	"github.com/lincyaw/ag/sdk"
 	"github.com/lincyaw/ag/sdk/runtime/internal/durability"
 )
@@ -29,6 +31,7 @@ func (session *Session) applyCheckpointProjection(
 	}
 	session.applyMessageProjection(checkpoint.Messages)
 	session.applyCheckpointConfig(checkpoint)
+	session.applyConsumedContextProjection(checkpoint)
 }
 
 func (session *Session) applyExecutionBaseProjection(
@@ -37,6 +40,80 @@ func (session *Session) applyExecutionBaseProjection(
 ) {
 	session.applyMessageProjection(base.Messages)
 	session.applyCheckpointConfig(checkpoint)
+	session.applyConsumedContextProjection(checkpoint)
+}
+
+func (session *Session) applyConsumedContextProjection(
+	checkpoint *durability.Checkpoint,
+) {
+	if checkpoint == nil || len(checkpoint.ConsumedContextInjectionIDs) == 0 {
+		session.consumedContext = nil
+		return
+	}
+	session.consumedContext = make(
+		map[string]struct{},
+		len(checkpoint.ConsumedContextInjectionIDs),
+	)
+	for _, id := range checkpoint.ConsumedContextInjectionIDs {
+		if id == "" {
+			continue
+		}
+		session.consumedContext[id] = struct{}{}
+	}
+}
+
+func (session *Session) consumedContextInjectionSet() map[string]struct{} {
+	if len(session.consumedContext) == 0 {
+		return nil
+	}
+	result := make(map[string]struct{}, len(session.consumedContext))
+	for id := range session.consumedContext {
+		result[id] = struct{}{}
+	}
+	return result
+}
+
+func (session *Session) markContextInjectionsConsumed(
+	injections []sdk.ContextInjection,
+) {
+	if len(injections) == 0 {
+		return
+	}
+	if session.consumedContext == nil {
+		session.consumedContext = make(map[string]struct{}, len(injections))
+	}
+	for _, injection := range injections {
+		if injection.ID == "" {
+			continue
+		}
+		session.consumedContext[injection.ID] = struct{}{}
+	}
+}
+
+func (session *Session) consumedContextInjectionIDs(
+	injections []sdk.ContextInjection,
+) []string {
+	ids := make([]string, 0, len(session.consumedContext)+len(injections))
+	seen := make(map[string]struct{}, len(session.consumedContext)+len(injections))
+	for id := range session.consumedContext {
+		if id == "" {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	for _, injection := range injections {
+		if injection.ID == "" {
+			continue
+		}
+		if _, ok := seen[injection.ID]; ok {
+			continue
+		}
+		seen[injection.ID] = struct{}{}
+		ids = append(ids, injection.ID)
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 func exactResumeConfigProjection(

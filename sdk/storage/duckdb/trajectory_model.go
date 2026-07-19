@@ -1,6 +1,7 @@
 package duckdb
 
 import (
+	contextinjectionmodel "github.com/lincyaw/ag/sdk/storage/internal/contextinjectionmodel"
 	deliverymodel "github.com/lincyaw/ag/sdk/storage/internal/deliverymodel"
 	operationmodel "github.com/lincyaw/ag/sdk/storage/internal/operationmodel"
 	trajectorymodel "github.com/lincyaw/ag/sdk/storage/internal/trajectorymodel"
@@ -28,6 +29,11 @@ var (
 	cancelTrajectoryExecution       = trajectorymodel.CancelTrajectoryExecution
 	normalizedMutationTime          = trajectorymodel.NormalizeMutationTime
 	validateTrajectoryKind          = trajectorymodel.ValidateTrajectoryKind
+
+	prepareContextInjections     = contextinjectionmodel.PrepareBatch
+	sameContextInjectionIdentity = contextinjectionmodel.SameIdentity
+	validateLoadedContextRecord  = contextinjectionmodel.ValidateLoadedRecord
+	validateContextQuery         = contextinjectionmodel.ValidateQuery
 
 	prepareNewDeliveries          = deliverymodel.PrepareNewBatch
 	sameDeliveryIdentity          = deliverymodel.SameIdentity

@@ -62,8 +62,9 @@ func (candidate ExecutionRecoveryCandidate) ExecutionView() ExecutionView {
 // ExecutionLifecycle exposes the trajectory-backed execution read and control
 // model used by hosts and presenters outside a Runtime instance.
 type ExecutionLifecycle struct {
-	store sdk.TrajectoryStore
-	now   func() time.Time
+	store    sdk.TrajectoryStore
+	contexts sdk.ContextInjectionStore
+	now      func() time.Time
 }
 
 // ExecutionControl is a read/control facade over the strongest available
@@ -86,7 +87,10 @@ func NewStateExecutionLifecycle(
 	if state == nil {
 		return ExecutionLifecycle{}
 	}
-	return NewExecutionLifecycle(state.Trajectories())
+	return ExecutionLifecycle{
+		store:    state.Trajectories(),
+		contexts: state.ContextInjections(),
+	}
 }
 
 func NewRuntimeExecutionControl(runtime *Runtime) ExecutionControl {

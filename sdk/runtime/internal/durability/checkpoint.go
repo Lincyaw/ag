@@ -13,16 +13,17 @@ import (
 
 // Checkpoint is the durable continuation state committed after an agent turn.
 type Checkpoint struct {
-	Messages          []sdk.Message          `json:"messages"`
-	System            string                 `json:"system,omitempty"`
-	Provider          string                 `json:"provider,omitempty"`
-	Output            string                 `json:"output,omitempty"`
-	Turns             int                    `json:"turns"`
-	ToolCalls         int                    `json:"tool_calls"`
-	Generation        uint64                 `json:"generation,omitempty"`
-	Action            sdk.Action             `json:"action"`
-	ContextInjections []sdk.ContextInjection `json:"context_injections,omitempty"`
-	Dependencies      []string               `json:"dependencies,omitempty"`
+	Messages                    []sdk.Message          `json:"messages"`
+	System                      string                 `json:"system,omitempty"`
+	Provider                    string                 `json:"provider,omitempty"`
+	Output                      string                 `json:"output,omitempty"`
+	Turns                       int                    `json:"turns"`
+	ToolCalls                   int                    `json:"tool_calls"`
+	Generation                  uint64                 `json:"generation,omitempty"`
+	Action                      sdk.Action             `json:"action"`
+	ContextInjections           []sdk.ContextInjection `json:"context_injections,omitempty"`
+	ConsumedContextInjectionIDs []string               `json:"consumed_context_injection_ids,omitempty"`
+	Dependencies                []string               `json:"dependencies,omitempty"`
 }
 
 // ProviderRequest is the durable projection of one model invocation request.
@@ -212,6 +213,9 @@ func DecodeCheckpoint(
 	checkpoint.Messages = sdk.CloneMessages(checkpoint.Messages)
 	checkpoint.ContextInjections = sdk.CloneContextInjections(
 		checkpoint.ContextInjections,
+	)
+	checkpoint.ConsumedContextInjectionIDs = slices.Clone(
+		checkpoint.ConsumedContextInjectionIDs,
 	)
 	checkpoint.Dependencies = slices.Clone(checkpoint.Dependencies)
 	return &checkpoint, nil

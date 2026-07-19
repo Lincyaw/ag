@@ -151,7 +151,6 @@ func (session *Session) clearExecution(executionID string, token string) {
 	session.executionMu.Unlock()
 	if cleared {
 		session.clearContextInjectionInterruptExecution(executionID)
-		session.contextQueue.discardExecution(executionID)
 	}
 }
 

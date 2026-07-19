@@ -10,6 +10,7 @@ const (
 	duckDBTrajectorySchemaVersion = 1
 	duckDBDeliverySchemaVersion   = 1
 	duckDBOperationSchemaVersion  = 1
+	duckDBContextSchemaVersion    = 1
 )
 
 var duckDBTrajectorySchemaStatements = []string{
@@ -25,6 +26,9 @@ var duckDBTrajectorySchemaStatements = []string{
 			ON CONFLICT DO NOTHING`,
 	`INSERT INTO ag_storage_schema (component, version)
 			VALUES ('operation', 1)
+			ON CONFLICT DO NOTHING`,
+	`INSERT INTO ag_storage_schema (component, version)
+			VALUES ('context_injection', 1)
 			ON CONFLICT DO NOTHING`,
 	`CREATE TABLE IF NOT EXISTS ag_trajectories (
 			namespace VARCHAR NOT NULL,
@@ -140,8 +144,32 @@ var duckDBTrajectorySchemaStatements = []string{
 			updated_at TIMESTAMPTZ NOT NULL,
 			PRIMARY KEY (namespace, queue, id)
 		)`,
+	`CREATE TABLE IF NOT EXISTS ag_context_injections (
+			namespace VARCHAR NOT NULL,
+			id VARCHAR NOT NULL,
+			sequence UBIGINT NOT NULL,
+			priority VARCHAR NOT NULL,
+			mode VARCHAR NOT NULL,
+			origin VARCHAR NOT NULL,
+			target_session_id VARCHAR NOT NULL,
+			target_execution_id VARCHAR NOT NULL,
+			is_meta BOOLEAN NOT NULL,
+			messages BLOB NOT NULL,
+			attributes_json VARCHAR,
+			created_at TIMESTAMPTZ NOT NULL,
+			PRIMARY KEY (namespace, id)
+		)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS ag_deliveries_sequence_idx
 			ON ag_deliveries (namespace, queue, sequence)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS ag_context_injections_sequence_idx
+			ON ag_context_injections (namespace, sequence)`,
+	`CREATE INDEX IF NOT EXISTS ag_context_injections_target_idx
+			ON ag_context_injections (
+				namespace,
+				target_session_id,
+				target_execution_id,
+				sequence
+			)`,
 	`CREATE INDEX IF NOT EXISTS ag_deliveries_ready_idx
 			ON ag_deliveries (
 				namespace,
@@ -233,6 +261,14 @@ func initDuckDBTrajectorySchema(ctx context.Context, db *sql.DB) error {
 		db,
 		"operation",
 		duckDBOperationSchemaVersion,
+	); err != nil {
+		return err
+	}
+	if err := validateDuckDBSchemaComponent(
+		ctx,
+		db,
+		"context_injection",
+		duckDBContextSchemaVersion,
 	); err != nil {
 		return err
 	}

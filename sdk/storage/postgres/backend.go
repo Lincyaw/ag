@@ -25,6 +25,7 @@ type Backend struct {
 	pool         *pgxpool.Pool
 	trajectories *TrajectoryStore
 	operations   *OperationStore
+	contexts     *ContextInjectionStore
 	namespace    string
 	displayURI   string
 
@@ -92,6 +93,7 @@ func Open(ctx context.Context, config Config) (*Backend, error) {
 	}
 	backend.trajectories = newTrajectoryStore(pool, namespace)
 	backend.operations = newOperationStore(pool, namespace)
+	backend.contexts = newContextInjectionStore(pool, namespace)
 	cleanup = false
 	return backend, nil
 }
@@ -115,6 +117,10 @@ func (backend *Backend) Trajectories() sdk.TrajectoryStore {
 
 func (backend *Backend) Operations() sdk.OperationStore {
 	return backend.operations
+}
+
+func (backend *Backend) ContextInjections() sdk.ContextInjectionStore {
+	return backend.contexts
 }
 
 func (backend *Backend) Deliveries(

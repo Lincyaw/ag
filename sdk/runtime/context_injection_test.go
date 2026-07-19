@@ -48,8 +48,7 @@ func TestContextInjectionRejectsWrongTargetSession(t *testing.T) {
 
 func TestContextInjectionRejectsWrongTargetExecution(t *testing.T) {
 	t.Parallel()
-	queue := contextInjectionQueue{}
-	_, err := queue.enqueueForExecution(
+	_, err := normalizeContextInjectionForExecution(
 		"target-session",
 		"execution-a",
 		sdk.ContextInjection{
@@ -61,7 +60,7 @@ func TestContextInjectionRejectsWrongTargetExecution(t *testing.T) {
 		},
 	)
 	if err == nil {
-		t.Fatal("enqueueForExecution accepted wrong target execution")
+		t.Fatal("normalizeContextInjectionForExecution accepted wrong target execution")
 	}
 	if !strings.Contains(
 		err.Error(),
@@ -73,8 +72,7 @@ func TestContextInjectionRejectsWrongTargetExecution(t *testing.T) {
 
 func TestContextInjectionStampsQueueTargets(t *testing.T) {
 	t.Parallel()
-	queue := contextInjectionQueue{}
-	queued, err := queue.enqueueForExecution(
+	queued, err := normalizeContextInjectionForExecution(
 		"target-session",
 		"execution-a",
 		sdk.ContextInjection{

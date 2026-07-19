@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -88,6 +89,24 @@ type ContextInjection struct {
 	Messages          []Message                `json:"messages"`
 	Attributes        map[string]string        `json:"attributes,omitempty"`
 	CreatedAt         time.Time                `json:"created_at,omitempty"`
+}
+
+// ContextInjectionQuery selects pending model-visible payloads for one
+// execution drain boundary. Empty target fields are wildcards for administrative
+// reads; runtime drains pass concrete session and execution IDs.
+type ContextInjectionQuery struct {
+	TargetSessionID   string `json:"target_session_id,omitempty"`
+	TargetExecutionID string `json:"target_execution_id,omitempty"`
+	Limit             int    `json:"limit,omitempty"`
+}
+
+// ContextInjectionStore is the durable pending-input source for agent loops.
+// Enqueue is idempotent by ContextInjection.ID. List returns matching
+// injections in enqueue order; the runtime applies priority and boundary
+// eligibility before checkpointing them into the trajectory.
+type ContextInjectionStore interface {
+	Enqueue(context.Context, ...ContextInjection) error
+	List(context.Context, ContextInjectionQuery) ([]ContextInjection, error)
 }
 
 // NormalizeContextInjection validates a queued model-visible payload and applies

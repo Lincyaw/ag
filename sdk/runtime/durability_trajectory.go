@@ -582,6 +582,9 @@ func (session *Session) checkpointTrajectory(
 			ContextInjections: sdk.CloneContextInjections(
 				commit.ContextInjections,
 			),
+			ConsumedContextInjectionIDs: session.consumedContextInjectionIDs(
+				commit.ContextInjections,
+			),
 			Dependencies: append([]string(nil), commit.Dependencies...),
 		},
 		commit.Audit,

@@ -13,8 +13,9 @@ import (
 
 type fileStateBackend struct {
 	backendStores
-	root      string
-	namespace string
+	contextInjections sdk.ContextInjectionStore
+	root              string
+	namespace         string
 }
 
 func NewFileStateBackend(root string) (sdk.StateBackend, error) {
@@ -47,11 +48,22 @@ func newFileStateBackend(
 	if err != nil {
 		return nil, err
 	}
+	contextInjections, err := NewFileContextInjectionStore(
+		filepath.Join(absolute, "context-injections"),
+	)
+	if err != nil {
+		return nil, err
+	}
 	return &fileStateBackend{
-		backendStores: newBackendStores(trajectories, operations),
-		root:          absolute,
-		namespace:     namespace,
+		backendStores:     newBackendStores(trajectories, operations),
+		contextInjections: contextInjections,
+		root:              absolute,
+		namespace:         namespace,
 	}, nil
+}
+
+func (backend *fileStateBackend) ContextInjections() sdk.ContextInjectionStore {
+	return backend.contextInjections
 }
 
 func (backend *fileStateBackend) Deliveries(name string) (sdk.DeliveryStore, error) {

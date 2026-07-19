@@ -154,6 +154,10 @@ func (backend *duckDBStateBackend) Deliveries(
 	})
 }
 
+func (backend *duckDBStateBackend) ContextInjections() sdk.ContextInjectionStore {
+	return backend.trajectories.ContextInjectionStore()
+}
+
 func (*duckDBStateBackend) Capabilities() sdk.StorageCapabilities {
 	return sdk.StorageCapabilities{
 		Durable:            true,

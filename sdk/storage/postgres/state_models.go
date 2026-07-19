@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	contextinjectionmodel "github.com/lincyaw/ag/sdk/storage/internal/contextinjectionmodel"
 	deliverymodel "github.com/lincyaw/ag/sdk/storage/internal/deliverymodel"
 	operationmodel "github.com/lincyaw/ag/sdk/storage/internal/operationmodel"
 )
@@ -20,6 +21,11 @@ var (
 	cloneOperationRecord           = operationmodel.CloneRecord
 	sameOperationSubmission        = operationmodel.SameSubmission
 	validateLoadedOperationRecord  = operationmodel.ValidateLoadedRecord
+
+	prepareContextInjections     = contextinjectionmodel.PrepareBatch
+	sameContextInjectionIdentity = contextinjectionmodel.SameIdentity
+	validateLoadedContextRecord  = contextinjectionmodel.ValidateLoadedRecord
+	validateContextQuery         = contextinjectionmodel.ValidateQuery
 
 	prepareNewDeliveries          = deliverymodel.PrepareNewBatch
 	sameDeliveryIdentity          = deliverymodel.SameIdentity

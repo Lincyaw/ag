@@ -39,7 +39,7 @@ type Session struct {
 	contextInterrupt contextInjectionInterruptSlot
 	messages         []sdk.Message
 	head             string
-	contextQueue     contextInjectionQueue
+	consumedContext  map[string]struct{}
 	pinnedSnapshot   *registrySnapshot
 	causal           causalInvocationScope
 }
@@ -114,13 +114,16 @@ func (runtime *Runtime) projectSessionFromResumeBase(
 	head string,
 	pinnedSnapshot *registrySnapshot,
 ) *Session {
-	return runtime.projectTrajectorySession(trajectorySessionProjection{
+	session := runtime.projectTrajectorySession(trajectorySessionProjection{
 		Metadata:       metadata,
 		Config:         config,
 		Head:           head,
 		Messages:       base.Messages,
 		PinnedSnapshot: pinnedSnapshot,
 	})
+	session.applyCheckpointConfig(base.Checkpoint)
+	session.applyConsumedContextProjection(base.Checkpoint)
+	return session
 }
 
 func (runtime *Runtime) createTrajectorySessionFromSnapshot(

@@ -78,6 +78,7 @@ type Runtime struct {
 	atomicState         sdk.AtomicStateBackend
 	closeStorage        bool
 	trajectories        sdk.TrajectoryStore
+	contextInjections   sdk.ContextInjectionStore
 	observer            eventObserverRuntime
 	trajectoryExecution trajectoryExecutionRuntime
 	operation           operationRuntime
@@ -85,10 +86,11 @@ type Runtime struct {
 }
 
 type runtimeStoragePorts struct {
-	trajectories sdk.TrajectoryStore
-	operations   sdk.OperationStore
-	delivery     sdk.DeliveryStore
-	atomicState  sdk.AtomicStateBackend
+	trajectories      sdk.TrajectoryStore
+	operations        sdk.OperationStore
+	contextInjections sdk.ContextInjectionStore
+	delivery          sdk.DeliveryStore
+	atomicState       sdk.AtomicStateBackend
 }
 
 func normalizeRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
@@ -244,6 +246,7 @@ func NewRuntimeContext(
 		atomicState:        storage.atomicState,
 		closeStorage:       config.StorageOwnership == StorageOwned,
 		trajectories:       storage.trajectories,
+		contextInjections:  storage.contextInjections,
 		observer: eventObserverRuntime{
 			observe: config.EventObserver,
 			context: observerContext,
@@ -302,20 +305,23 @@ func resolveRuntimeStoragePorts(
 	}
 	trajectories := backend.Trajectories()
 	operations := backend.Operations()
+	contextInjections := backend.ContextInjections()
 	deliveryStore, err := backend.Deliveries(sdk.HostOutboxQueue)
 	if err != nil {
 		return runtimeStoragePorts{}, fmt.Errorf("open host outbox: %w", err)
 	}
-	if trajectories == nil || operations == nil || deliveryStore == nil {
+	if trajectories == nil || operations == nil ||
+		contextInjections == nil || deliveryStore == nil {
 		return runtimeStoragePorts{}, errors.New(
 			"state backend returned a nil store",
 		)
 	}
 	return runtimeStoragePorts{
-		trajectories: trajectories,
-		operations:   operations,
-		delivery:     deliveryStore,
-		atomicState:  atomicState,
+		trajectories:      trajectories,
+		operations:        operations,
+		contextInjections: contextInjections,
+		delivery:          deliveryStore,
+		atomicState:       atomicState,
 	}, nil
 }
 
