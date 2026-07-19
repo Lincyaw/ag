@@ -171,7 +171,7 @@ func (backend *runtimeExecutionBackend) Recover(
 	); err != nil {
 		slot.cancel()
 		if existing.matchesExecution(candidate.Execution.ID) {
-			return gatewayExecutionFromView(candidate.ExecutionView()), nil
+			return backend.Current(ctx, session)
 		}
 		return Execution{}, err
 	}

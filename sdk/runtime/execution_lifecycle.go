@@ -52,6 +52,9 @@ func (candidate ExecutionRecoveryCandidate) Wait(ctx context.Context) error {
 	return nil
 }
 
+// ExecutionView returns the non-terminal execution snapshot carried by the
+// recovery candidate. Call ExecutionControl.LoadView when a current
+// trajectory-backed read model is available.
 func (candidate ExecutionRecoveryCandidate) ExecutionView() ExecutionView {
 	return ExecutionView{
 		TrajectoryID: candidate.TrajectoryID,

@@ -231,6 +231,54 @@ func TestRuntimeExecutionBackendRecoversPendingExecution(t *testing.T) {
 	}
 }
 
+func TestRuntimeExecutionBackendRecoverReadsActiveRecoveryView(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	states, err := NewFileSessionStateFactory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := Session{
+		ID: "runtime-recover-active-view", UserID: "user-a",
+		Provider: "gateway-test", MaxTurns: 3,
+	}
+	executionID := createUnhostedGatewayExecution(
+		t,
+		states,
+		session,
+		&gatewayTestProvider{},
+	)
+	entered := make(chan struct{}, 1)
+	backend := newTestRuntimeExecutionBackendAt(
+		t,
+		root,
+		&gatewayTestProvider{block: entered},
+	)
+	first, err := backend.Recover(t.Context(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Execution.ID != executionID {
+		t.Fatalf("first recovery = %#v", first)
+	}
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("recovery provider did not start")
+	}
+	second, err := backend.Recover(t.Context(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Execution.ID != executionID ||
+		second.Execution.State != sdk.TrajectoryExecutionRunning {
+		t.Fatalf("active recovery view = %#v", second)
+	}
+	if _, err := backend.Cancel(t.Context(), session, executionID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRuntimeExecutionBackendEnqueuesContextIntoLiveHostedExecution(
 	t *testing.T,
 ) {
