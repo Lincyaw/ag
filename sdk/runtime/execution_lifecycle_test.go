@@ -164,8 +164,11 @@ func TestExecutionViewProjectsTerminalResultOffActiveBranch(t *testing.T) {
 	terminalPayload, err := json.Marshal(sdk.AgentEndPayload{
 		Messages: []sdk.Message{
 			{Role: sdk.RoleUser, Content: "stop after this"},
-			{Role: sdk.RoleAssistant, Content: "stopped cleanly"},
+			{Role: sdk.RoleAssistant, Content: "message fallback"},
 		},
+		Output:    "stopped cleanly",
+		Turns:     2,
+		ToolCalls: 3,
 		Cause: sdk.Cause{
 			Code:   sdk.CauseCancelled,
 			Detail: "user cancelled",
@@ -230,6 +233,8 @@ func TestExecutionViewProjectsTerminalResultOffActiveBranch(t *testing.T) {
 		t.Fatal("cancelled execution result is nil")
 	}
 	if view.Result.Output != "stopped cleanly" ||
+		view.Result.Turns != 2 ||
+		view.Result.ToolCalls != 3 ||
 		view.Result.Cause.Code != sdk.CauseCancelled ||
 		view.Result.Cause.Detail != "user cancelled" ||
 		!view.Result.Cause.Final ||

@@ -105,9 +105,15 @@ func resultFromTerminal(entry sdk.TrajectoryEntry) (*Result, error) {
 			err,
 		)
 	}
+	output := end.Output
+	if output == "" {
+		output = latestAssistantOutput(end.Messages)
+	}
 	return &Result{
-		Output:     latestAssistantOutput(end.Messages),
+		Output:     output,
 		Messages:   sdk.CloneMessages(end.Messages),
+		Turns:      end.Turns,
+		ToolCalls:  end.ToolCalls,
 		Generation: entry.Generation,
 		Cause:      end.Cause,
 	}, nil

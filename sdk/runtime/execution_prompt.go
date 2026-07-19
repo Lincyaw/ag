@@ -803,10 +803,7 @@ func (session *Session) finish(
 ) (Result, error) {
 	result.Messages = sdk.CloneMessages(messages)
 	result.Cause = cause
-	end := sdk.AgentEndPayload{
-		Messages: sdk.CloneMessages(messages),
-		Cause:    cause,
-	}
+	end := agentEndPayloadFromResult(result, messages, cause)
 	state := executionStateForCause(cause)
 	if state == sdk.TrajectoryExecutionFailed {
 		return result, errors.New(

@@ -813,23 +813,40 @@ func agentEndPayloadForFailure(
 	if endCause.Detail == "" && cause != nil {
 		endCause.Detail = cause.Error()
 	}
-	return sdk.AgentEndPayload{
-		Messages: messages,
-		Cause:    endCause,
-	}
+	return agentEndPayloadFromResult(result, messages, endCause)
 }
 
 func agentEndPayloadForCancellation(
 	reason string,
 	messages []sdk.Message,
 ) sdk.AgentEndPayload {
-	return sdk.AgentEndPayload{
-		Messages: sdk.CloneMessages(messages),
-		Cause: sdk.Cause{
+	return agentEndPayloadFromResult(
+		Result{},
+		messages,
+		sdk.Cause{
 			Code:   sdk.CauseCancelled,
 			Detail: reason,
 			Final:  true,
 		},
+	)
+}
+
+func agentEndPayloadFromResult(
+	result Result,
+	messages []sdk.Message,
+	cause sdk.Cause,
+) sdk.AgentEndPayload {
+	messages = sdk.CloneMessages(messages)
+	output := result.Output
+	if output == "" {
+		output = latestAssistantOutput(messages)
+	}
+	return sdk.AgentEndPayload{
+		Messages:  messages,
+		Output:    output,
+		Turns:     result.Turns,
+		ToolCalls: result.ToolCalls,
+		Cause:     cause,
 	}
 }
 
