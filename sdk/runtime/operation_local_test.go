@@ -815,7 +815,7 @@ func TestLocalOperationRejectsSubmissionAfterRuntimeClose(t *testing.T) {
 		IdempotencyKey: "closed-runtime",
 		Input:          []byte(`{}`),
 	})
-	if err == nil || err.Error() != "runtime is closed" {
+	if !errors.Is(err, ErrRuntimeClosed) {
 		t.Fatalf("submit error = %v, want runtime is closed", err)
 	}
 	records, err := runtime.operation.store.List(context.Background())
