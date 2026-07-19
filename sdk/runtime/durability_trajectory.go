@@ -580,7 +580,9 @@ func (session *Session) checkpointTrajectory(
 			Generation: commit.Result.Generation,
 			Action:     sdk.CloneAction(commit.Action),
 			ContextInjections: sdk.CloneContextInjections(
-				commit.ContextInjections,
+				session.contextInjectionProjection(
+					commit.ContextInjections,
+				),
 			),
 			ConsumedContextInjectionIDs: session.consumedContextInjectionIDs(
 				commit.ContextInjections,

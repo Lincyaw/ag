@@ -533,9 +533,12 @@ func agentRuntimeResult(
 		SessionID:    sessionID,
 		Output:       result.Output,
 		Messages:     sdk.CloneMessages(result.Messages),
-		Turns:        result.Turns,
-		ToolCalls:    result.ToolCalls,
-		Generation:   result.Generation,
-		Cause:        result.Cause,
+		ContextInjections: sdk.CloneContextInjections(
+			result.ContextInjections,
+		),
+		Turns:      result.Turns,
+		ToolCalls:  result.ToolCalls,
+		Generation: result.Generation,
+		Cause:      result.Cause,
 	}
 }

@@ -65,14 +65,15 @@ func DefaultAgentResumeIdempotencyKey(
 }
 
 type AgentResult struct {
-	InvocationID string    `json:"invocation_id"`
-	SessionID    string    `json:"session_id"`
-	Output       string    `json:"output"`
-	Messages     []Message `json:"messages"`
-	Turns        int       `json:"turns"`
-	ToolCalls    int       `json:"tool_calls"`
-	Generation   uint64    `json:"generation"`
-	Cause        Cause     `json:"cause"`
+	InvocationID      string             `json:"invocation_id"`
+	SessionID         string             `json:"session_id"`
+	Output            string             `json:"output"`
+	Messages          []Message          `json:"messages"`
+	ContextInjections []ContextInjection `json:"context_injections,omitempty"`
+	Turns             int                `json:"turns"`
+	ToolCalls         int                `json:"tool_calls"`
+	Generation        uint64             `json:"generation"`
+	Cause             Cause              `json:"cause"`
 }
 
 type AgentInvoker interface {

@@ -426,6 +426,7 @@ func (execution *promptExecution) checkpointQueuedContext(
 		return false, err
 	}
 	execution.session.markContextInjectionsConsumed(injections)
+	execution.result.ContextInjections = execution.session.contextInjectionProjection(nil)
 	execution.session.applyMessageProjection(execution.messages)
 	return true, nil
 }

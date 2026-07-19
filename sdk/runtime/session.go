@@ -30,27 +30,29 @@ const (
 )
 
 type Session struct {
-	runtime          *Runtime
-	config           SessionConfig
-	mu               sync.Mutex
-	executionMu      sync.Mutex
-	executionID      string
-	executionToken   string
-	contextInterrupt contextInjectionInterruptSlot
-	messages         []sdk.Message
-	head             string
-	consumedContext  map[string]struct{}
-	pinnedSnapshot   *registrySnapshot
-	causal           causalInvocationScope
+	runtime           *Runtime
+	config            SessionConfig
+	mu                sync.Mutex
+	executionMu       sync.Mutex
+	executionID       string
+	executionToken    string
+	contextInterrupt  contextInjectionInterruptSlot
+	messages          []sdk.Message
+	head              string
+	consumedContext   map[string]struct{}
+	contextInjections []sdk.ContextInjection
+	pinnedSnapshot    *registrySnapshot
+	causal            causalInvocationScope
 }
 
 type Result struct {
-	Output     string        `json:"output"`
-	Messages   []sdk.Message `json:"messages"`
-	Turns      int           `json:"turns"`
-	ToolCalls  int           `json:"tool_calls"`
-	Generation uint64        `json:"generation"`
-	Cause      sdk.Cause     `json:"cause"`
+	Output            string                 `json:"output"`
+	Messages          []sdk.Message          `json:"messages"`
+	ContextInjections []sdk.ContextInjection `json:"context_injections,omitempty"`
+	Turns             int                    `json:"turns"`
+	ToolCalls         int                    `json:"tool_calls"`
+	Generation        uint64                 `json:"generation"`
+	Cause             sdk.Cause              `json:"cause"`
 }
 
 type trajectorySessionProjection struct {
@@ -122,7 +124,7 @@ func (runtime *Runtime) projectSessionFromResumeBase(
 		PinnedSnapshot: pinnedSnapshot,
 	})
 	session.applyCheckpointConfig(base.Checkpoint)
-	session.applyConsumedContextProjection(base.Checkpoint)
+	session.applyContextInjectionProjection(base.Checkpoint)
 	return session
 }
 

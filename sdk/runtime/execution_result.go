@@ -77,8 +77,13 @@ func resultFromCheckpoint(
 		return nil
 	}
 	result := &Result{
-		Output:     checkpoint.Output,
-		Messages:   durability.Messages(checkpoint),
+		Output: checkpoint.Output,
+		Messages: durability.Messages(
+			checkpoint,
+		),
+		ContextInjections: sdk.CloneContextInjections(
+			checkpoint.ContextInjections,
+		),
 		Turns:      checkpoint.Turns,
 		ToolCalls:  checkpoint.ToolCalls,
 		Generation: checkpoint.Generation,
@@ -110,11 +115,12 @@ func resultFromTerminal(entry sdk.TrajectoryEntry) (*Result, error) {
 		output = latestAssistantOutput(end.Messages)
 	}
 	return &Result{
-		Output:     output,
-		Messages:   sdk.CloneMessages(end.Messages),
-		Turns:      end.Turns,
-		ToolCalls:  end.ToolCalls,
-		Generation: entry.Generation,
-		Cause:      end.Cause,
+		Output:            output,
+		Messages:          sdk.CloneMessages(end.Messages),
+		ContextInjections: sdk.CloneContextInjections(end.ContextInjections),
+		Turns:             end.Turns,
+		ToolCalls:         end.ToolCalls,
+		Generation:        entry.Generation,
+		Cause:             end.Cause,
 	}, nil
 }

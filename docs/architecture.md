@@ -204,6 +204,16 @@ currently mounted plugins do not make an old trajectory incompatible; missing
 or changed recorded resources do. Legacy entries that only contain a digest can
 still be recovered, but they cannot provide the same resource-level exactness.
 
+Queued context injection is execution state, not presenter glue. The runtime
+owns the `ContextInjection` queue, priority drain rules, execution/session
+addressing, and durable consumption projection. Providers receive only the
+model-visible messages derived from an injection; gateways, CLIs, nested
+agents, and recovery code read the injection metadata from checkpoints,
+runtime results, agent results, and terminal payloads. This keeps synthetic
+messages, task notifications, permission responses, hook context, local command
+output, and inter-agent messages on one runtime model without adding
+Claude-Code-specific message fields to the provider `Message` contract.
+
 Event dispatch has two roles. Synchronous hooks are policy gates and run inside
 the caller's execution context. Subscriber delivery is a durable asynchronous
 side effect with leasing, partition ordering, retry, and dead-letter handling.

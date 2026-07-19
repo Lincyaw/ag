@@ -31,7 +31,7 @@ func (session *Session) applyCheckpointProjection(
 	}
 	session.applyMessageProjection(checkpoint.Messages)
 	session.applyCheckpointConfig(checkpoint)
-	session.applyConsumedContextProjection(checkpoint)
+	session.applyContextInjectionProjection(checkpoint)
 }
 
 func (session *Session) applyExecutionBaseProjection(
@@ -40,25 +40,35 @@ func (session *Session) applyExecutionBaseProjection(
 ) {
 	session.applyMessageProjection(base.Messages)
 	session.applyCheckpointConfig(checkpoint)
-	session.applyConsumedContextProjection(checkpoint)
+	session.applyContextInjectionProjection(checkpoint)
 }
 
-func (session *Session) applyConsumedContextProjection(
+func (session *Session) applyContextInjectionProjection(
 	checkpoint *durability.Checkpoint,
 ) {
-	if checkpoint == nil || len(checkpoint.ConsumedContextInjectionIDs) == 0 {
+	if checkpoint == nil {
 		session.consumedContext = nil
+		session.contextInjections = nil
 		return
 	}
-	session.consumedContext = make(
-		map[string]struct{},
-		len(checkpoint.ConsumedContextInjectionIDs),
+	session.contextInjections = sdk.CloneContextInjections(
+		checkpoint.ContextInjections,
 	)
+	session.consumedContext = make(map[string]struct{})
 	for _, id := range checkpoint.ConsumedContextInjectionIDs {
 		if id == "" {
 			continue
 		}
 		session.consumedContext[id] = struct{}{}
+	}
+	for _, injection := range session.contextInjections {
+		if injection.ID == "" {
+			continue
+		}
+		session.consumedContext[injection.ID] = struct{}{}
+	}
+	if len(session.consumedContext) == 0 {
+		session.consumedContext = nil
 	}
 }
 
@@ -87,7 +97,49 @@ func (session *Session) markContextInjectionsConsumed(
 			continue
 		}
 		session.consumedContext[injection.ID] = struct{}{}
+		if session.hasContextInjectionProjection(injection.ID) {
+			continue
+		}
+		session.contextInjections = append(
+			session.contextInjections,
+			sdk.CloneContextInjection(injection),
+		)
 	}
+}
+
+func (session *Session) hasContextInjectionProjection(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, injection := range session.contextInjections {
+		if injection.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (session *Session) contextInjectionProjection(
+	injections []sdk.ContextInjection,
+) []sdk.ContextInjection {
+	result := sdk.CloneContextInjections(session.contextInjections)
+	seen := make(map[string]struct{}, len(result)+len(injections))
+	for _, injection := range result {
+		if injection.ID != "" {
+			seen[injection.ID] = struct{}{}
+		}
+	}
+	for _, injection := range injections {
+		if injection.ID == "" {
+			continue
+		}
+		if _, ok := seen[injection.ID]; ok {
+			continue
+		}
+		seen[injection.ID] = struct{}{}
+		result = append(result, sdk.CloneContextInjection(injection))
+	}
+	return result
 }
 
 func (session *Session) consumedContextInjectionIDs(

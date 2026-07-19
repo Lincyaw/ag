@@ -81,11 +81,12 @@ type TurnEndPayload struct {
 }
 
 type AgentEndPayload struct {
-	Messages  []Message `json:"messages"`
-	Output    string    `json:"output,omitempty"`
-	Turns     int       `json:"turns,omitempty"`
-	ToolCalls int       `json:"tool_calls,omitempty"`
-	Cause     Cause     `json:"cause"`
+	Messages          []Message          `json:"messages"`
+	ContextInjections []ContextInjection `json:"context_injections,omitempty"`
+	Output            string             `json:"output,omitempty"`
+	Turns             int                `json:"turns,omitempty"`
+	ToolCalls         int                `json:"tool_calls,omitempty"`
+	Cause             Cause              `json:"cause"`
 }
 
 type PluginLifecyclePayload struct {

@@ -842,7 +842,10 @@ func agentEndPayloadFromResult(
 		output = latestAssistantOutput(messages)
 	}
 	return sdk.AgentEndPayload{
-		Messages:  messages,
+		Messages: messages,
+		ContextInjections: sdk.CloneContextInjections(
+			result.ContextInjections,
+		),
 		Output:    output,
 		Turns:     result.Turns,
 		ToolCalls: result.ToolCalls,

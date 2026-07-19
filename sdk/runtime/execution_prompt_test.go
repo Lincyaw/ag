@@ -599,6 +599,15 @@ func TestQueuedContextInjectionCheckpointsBeforeProvider(t *testing.T) {
 		got[2].Content != "context accepted" {
 		t.Fatalf("result messages = %#v", got)
 	}
+	if got := result.ContextInjections; len(got) != 1 ||
+		got[0].Mode != sdk.ContextInjectionTaskNotification ||
+		got[0].Origin != "test" ||
+		got[0].TargetSessionID != session.ID() ||
+		!got[0].IsMeta ||
+		len(got[0].Messages) != 1 ||
+		got[0].Messages[0].Content != "queued context" {
+		t.Fatalf("result context injections = %#v", got)
+	}
 	trajectory, err := trajectories.Load(ctx, session.ID())
 	if err != nil {
 		t.Fatal(err)
@@ -639,6 +648,26 @@ func TestQueuedContextInjectionCheckpointsBeforeProvider(t *testing.T) {
 		len(injection.Messages) != 1 ||
 		injection.Messages[0].Content != "queued context" {
 		t.Fatalf("checkpoint context injection = %#v", injection)
+	}
+	metadata, err := trajectories.LoadMetadata(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	durableResult, err := LoadExecutionResult(ctx, trajectories, metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if durableResult == nil {
+		t.Fatal("durable result is nil")
+	}
+	if got := durableResult.ContextInjections; len(got) != 1 ||
+		got[0].Mode != sdk.ContextInjectionTaskNotification ||
+		got[0].Origin != "test" ||
+		got[0].TargetSessionID != session.ID() ||
+		!got[0].IsMeta ||
+		len(got[0].Messages) != 1 ||
+		got[0].Messages[0].Content != "queued context" {
+		t.Fatalf("durable result context injections = %#v", got)
 	}
 }
 
