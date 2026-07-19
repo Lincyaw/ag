@@ -29,6 +29,8 @@ type ExecutionBackend interface {
 	// check-then-submit would leave a composition mutation race before reservation.
 	Submit(context.Context, Session, string) (Execution, error)
 	RecoveryCandidate(context.Context, Session) (Execution, error)
+	// Recover owns the active execution gate and validates the session binding
+	// before it builds or hosts the runtime recovery.
 	Recover(context.Context, Session) (Execution, error)
 	Current(context.Context, Session) (Execution, error)
 	Get(context.Context, Session, string) (Execution, error)
@@ -311,17 +313,6 @@ func (service *Service) RecoverSessions(
 			if err != nil {
 				failures = append(failures, fmt.Errorf(
 					"inspect gateway session %s recovery: %w",
-					session.ID,
-					err,
-				))
-				continue
-			}
-			if err := service.manager.validatePluginBindings(
-				ctx,
-				session,
-			); err != nil {
-				failures = append(failures, fmt.Errorf(
-					"recover gateway session %s plugins: %w",
 					session.ID,
 					err,
 				))

@@ -138,6 +138,10 @@ the gateway logger, but they do not create a second in-memory result model.
 Gateway closes those hosts through the runtime host's detached close boundary,
 so post-cancel cleanup remains a runtime lifecycle rule instead of a gateway
 workaround.
+Startup recovery lists gateway sessions, but the execution backend owns the
+recoverability check, active execution reservation, and session binding
+validation. The service does not pre-validate plugin composition as a separate
+recovery truth.
 
 Cancellation uses the runtime execution-control model in both hosted and
 unhosted cases. If the short-lived runtime host can be opened, it performs the
