@@ -25,18 +25,31 @@ const (
 )
 
 type resumeEnvironment struct {
-	environment            sdk.TrajectoryEnvironment
-	hasCompositionSnapshot bool
+	environment sdk.TrajectoryEnvironment
+	source      resumeEnvironmentSource
 }
+
+type resumeEnvironmentSource uint8
+
+const (
+	resumeEnvironmentFallback resumeEnvironmentSource = iota
+	resumeEnvironmentDigest
+	resumeEnvironmentSnapshot
+)
 
 func newResumeEnvironment(
 	environment sdk.TrajectoryEnvironment,
 ) resumeEnvironment {
+	source := resumeEnvironmentFallback
+	switch {
+	case sdk.TrajectoryEnvironmentHasCompositionSnapshot(environment):
+		source = resumeEnvironmentSnapshot
+	case environment.SDKAPIVersion != 0 || environment.CompositionDigest != "":
+		source = resumeEnvironmentDigest
+	}
 	return resumeEnvironment{
 		environment: environment,
-		hasCompositionSnapshot: sdk.TrajectoryEnvironmentHasCompositionSnapshot(
-			environment,
-		),
+		source:      source,
 	}
 }
 
@@ -347,12 +360,14 @@ func snapshotSourceForRecordedEnvironment(
 	fallback sdk.TrajectoryEnvironment,
 	recorded resumeEnvironment,
 ) sdk.TrajectoryEnvironment {
-	if recorded.hasCompositionSnapshot {
+	switch recorded.source {
+	case resumeEnvironmentSnapshot:
 		return recorded.environment
-	}
-	if recorded.environment.CompositionDigest != "" &&
-		recorded.environment.CompositionDigest != fallback.CompositionDigest {
-		return sdk.TrajectoryEnvironment{}
+	case resumeEnvironmentDigest:
+		if recorded.environment.CompositionDigest != "" &&
+			recorded.environment.CompositionDigest != fallback.CompositionDigest {
+			return sdk.TrajectoryEnvironment{}
+		}
 	}
 	return fallback
 }
@@ -490,8 +505,8 @@ func executionResumeEnvironment(
 				)
 			}
 			return resumeEnvironment{
-				environment:            executionInput.Environment,
-				hasCompositionSnapshot: true,
+				environment: executionInput.Environment,
+				source:      resumeEnvironmentSnapshot,
 			}, nil
 		}
 	}
@@ -515,8 +530,8 @@ func executionResumeEnvironment(
 			)
 		}
 		return resumeEnvironment{
-			environment:            environment,
-			hasCompositionSnapshot: true,
+			environment: environment,
+			source:      resumeEnvironmentSnapshot,
 		}, nil
 	}
 	digest := input.Attributes[executionCompositionDigestAttribute]
@@ -543,5 +558,6 @@ func executionResumeEnvironment(
 			SDKAPIVersion:     apiVersion,
 			CompositionDigest: digest,
 		},
+		source: resumeEnvironmentDigest,
 	}, nil
 }
