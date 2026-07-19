@@ -371,6 +371,38 @@ func TestEmitReturnsSubscriberEnqueueFailure(t *testing.T) {
 	}
 }
 
+func TestEmitUsesConfiguredSubscriberEnqueueTimeout(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: enqueueDeadlineStateBackend{
+			StateBackend: newTestStateBackend(),
+			minimum:      1500 * time.Millisecond,
+		},
+		DeliveryEnqueueTimeout: 2500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	mountExecutionSubscriber(t, runtime, sdk.EventAgentStart)
+
+	if _, err := runtime.Emit(
+		ctx,
+		sdk.EventAgentStart,
+		"configured-enqueue-timeout",
+		sdk.AgentStartPayload{},
+	); err != nil {
+		t.Fatalf("Emit() error = %v", err)
+	}
+}
+
 type enqueueFailingStateBackend struct {
 	sdk.StateBackend
 	err error
@@ -399,6 +431,43 @@ func (store enqueueFailingDeliveryStore) Enqueue(
 	...sdk.Delivery,
 ) error {
 	return store.err
+}
+
+type enqueueDeadlineStateBackend struct {
+	sdk.StateBackend
+	minimum time.Duration
+}
+
+func (backend enqueueDeadlineStateBackend) Deliveries(
+	name string,
+) (sdk.DeliveryStore, error) {
+	store, err := backend.StateBackend.Deliveries(name)
+	if err != nil {
+		return nil, err
+	}
+	return enqueueDeadlineDeliveryStore{
+		DeliveryStore: store,
+		minimum:       backend.minimum,
+	}, nil
+}
+
+type enqueueDeadlineDeliveryStore struct {
+	sdk.DeliveryStore
+	minimum time.Duration
+}
+
+func (store enqueueDeadlineDeliveryStore) Enqueue(
+	ctx context.Context,
+	deliveries ...sdk.Delivery,
+) error {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return errors.New("subscriber enqueue deadline missing")
+	}
+	if time.Until(deadline) < store.minimum {
+		return errors.New("subscriber enqueue deadline shorter than configured budget")
+	}
+	return store.DeliveryStore.Enqueue(ctx, deliveries...)
 }
 
 func mountExecutionSubscriber(

@@ -15,16 +15,17 @@ import (
 
 // deliveryRuntime hosts the durable subscriber outbox workers.
 type deliveryRuntime struct {
-	store       sdk.DeliveryStore
-	workers     int
-	lease       time.Duration
-	poll        time.Duration
-	timeout     time.Duration
-	maxAttempts int
-	context     context.Context
-	cancel      context.CancelFunc
-	once        sync.Once
-	wait        sync.WaitGroup
+	store          sdk.DeliveryStore
+	workers        int
+	lease          time.Duration
+	poll           time.Duration
+	enqueueTimeout time.Duration
+	timeout        time.Duration
+	maxAttempts    int
+	context        context.Context
+	cancel         context.CancelFunc
+	once           sync.Once
+	wait           sync.WaitGroup
 }
 
 type subscriberDeliveryBinding struct {
@@ -85,7 +86,7 @@ func (runtime *Runtime) enqueueSubscribers(
 	if len(deliveries) == 0 {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	ctx, cancel := context.WithTimeout(ctx, runtime.delivery.enqueueTimeout)
 	defer cancel()
 	if err := runtime.delivery.store.Enqueue(ctx, deliveries...); err != nil {
 		return fmt.Errorf(

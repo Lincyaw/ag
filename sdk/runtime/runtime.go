@@ -42,16 +42,17 @@ type RuntimeConfig struct {
 	// EventObserver receives a cloned copy of each dispatched event after
 	// hooks and subscriber enqueueing. It is for host-side UI/diagnostics and
 	// does not participate in the runtime composition contract.
-	EventObserver       func(context.Context, sdk.Event)
-	DeliveryWorkers     int
-	DeliveryLease       time.Duration
-	DeliveryPoll        time.Duration
-	DeliveryTimeout     time.Duration
-	DeliveryMaxAttempts int
-	HookTimeout         time.Duration
-	OperationPoll       time.Duration
-	OperationLease      time.Duration
-	TrajectoryLease     time.Duration
+	EventObserver          func(context.Context, sdk.Event)
+	DeliveryWorkers        int
+	DeliveryLease          time.Duration
+	DeliveryPoll           time.Duration
+	DeliveryEnqueueTimeout time.Duration
+	DeliveryTimeout        time.Duration
+	DeliveryMaxAttempts    int
+	HookTimeout            time.Duration
+	OperationPoll          time.Duration
+	OperationLease         time.Duration
+	TrajectoryLease        time.Duration
 }
 
 type Runtime struct {
@@ -122,6 +123,9 @@ func normalizeRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 	if config.DeliveryPoll == 0 {
 		config.DeliveryPoll = 25 * time.Millisecond
 	}
+	if config.DeliveryEnqueueTimeout == 0 {
+		config.DeliveryEnqueueTimeout = 5 * time.Second
+	}
 	if config.DeliveryTimeout == 0 {
 		config.DeliveryTimeout = 5 * time.Second
 	}
@@ -141,8 +145,9 @@ func normalizeRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 		config.TrajectoryLease = 30 * time.Second
 	}
 	if config.DeliveryWorkers < 1 || config.DeliveryLease <= 0 ||
-		config.DeliveryPoll <= 0 || config.DeliveryTimeout <= 0 ||
-		config.DeliveryMaxAttempts < 1 || config.HookTimeout <= 0 ||
+		config.DeliveryPoll <= 0 || config.DeliveryEnqueueTimeout <= 0 ||
+		config.DeliveryTimeout <= 0 || config.DeliveryMaxAttempts < 1 ||
+		config.HookTimeout <= 0 ||
 		config.OperationPoll <= 0 || config.OperationLease <= 0 ||
 		config.TrajectoryLease <= 0 {
 		return RuntimeConfig{}, errors.New(
@@ -249,14 +254,15 @@ func NewRuntimeContext(
 			workerID: "runtime-" + sdk.NewID(),
 		},
 		delivery: deliveryRuntime{
-			store:       storage.delivery,
-			workers:     config.DeliveryWorkers,
-			lease:       config.DeliveryLease,
-			poll:        config.DeliveryPoll,
-			timeout:     config.DeliveryTimeout,
-			maxAttempts: config.DeliveryMaxAttempts,
-			context:     deliveryContext,
-			cancel:      cancelDeliveries,
+			store:          storage.delivery,
+			workers:        config.DeliveryWorkers,
+			lease:          config.DeliveryLease,
+			poll:           config.DeliveryPoll,
+			enqueueTimeout: config.DeliveryEnqueueTimeout,
+			timeout:        config.DeliveryTimeout,
+			maxAttempts:    config.DeliveryMaxAttempts,
+			context:        deliveryContext,
+			cancel:         cancelDeliveries,
 		},
 	}
 	runtime.current.Store(initialSnapshot())
