@@ -61,7 +61,10 @@ func (store *fileTrajectoryStore) Create(
 					readErr,
 				)
 			}
-			branch, branchErr := source.Branch(trajectory.ParentEntryID)
+			branch, branchErr := branchFromTrajectory(
+				source,
+				trajectory.ParentEntryID,
+			)
 			if branchErr != nil {
 				return fmt.Errorf(
 					"resolve trajectory %q fork point: %w",
@@ -460,7 +463,10 @@ func (store *fileTrajectoryStore) LoadMetadata(
 			return materializeErr
 		}
 		if stored.Checkpoint == "" && stored.Head != "" {
-			branch, branchErr := materialized.Branch(stored.Head)
+			branch, branchErr := branchFromTrajectory(
+				materialized,
+				stored.Head,
+			)
 			if branchErr != nil {
 				return branchErr
 			}
@@ -535,7 +541,7 @@ func (store *fileTrajectoryStore) LoadBranch(
 			return readErr
 		}
 		var branchErr error
-		branch, branchErr = trajectory.Branch(head)
+		branch, branchErr = branchFromTrajectory(trajectory, head)
 		return branchErr
 	})
 	return branch, err
@@ -745,7 +751,7 @@ func (store *fileTrajectoryStore) materializeStoredLocked(
 		if err != nil {
 			return sdk.Trajectory{}, err
 		}
-		inherited, err := parent.Branch(stored.ParentEntryID)
+		inherited, err := branchFromTrajectory(parent, stored.ParentEntryID)
 		if err != nil {
 			return sdk.Trajectory{}, err
 		}
@@ -762,7 +768,7 @@ func (store *fileTrajectoryStore) materializeStoredLocked(
 			)
 		}
 	}
-	branch, err := trajectory.Branch(trajectory.Head)
+	branch, err := branchFromTrajectory(trajectory, trajectory.Head)
 	if err != nil {
 		return sdk.Trajectory{}, err
 	}
@@ -784,6 +790,22 @@ func (store *fileTrajectoryStore) materializeStoredLocked(
 		}
 	}
 	return trajectory, nil
+}
+
+func branchFromTrajectory(
+	trajectory sdk.Trajectory,
+	head string,
+) ([]sdk.TrajectoryEntry, error) {
+	index := make(map[string]sdk.TrajectoryEntry, len(trajectory.Entries))
+	for _, entry := range trajectory.Entries {
+		index[entry.ID] = entry
+	}
+	return resolveBranch(trajectory.ID, head, func(
+		entryID string,
+	) (sdk.TrajectoryEntry, bool, error) {
+		entry, found := index[entryID]
+		return entry, found, nil
+	})
 }
 
 func (store *fileTrajectoryStore) appendStoredLocked(
