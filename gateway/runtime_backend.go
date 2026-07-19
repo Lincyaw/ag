@@ -242,7 +242,8 @@ func (backend *runtimeExecutionBackend) loadExecutionView(
 		// If the host is already closing, fall back to the durable trajectory
 		// projection; the active plan is still used to wait for host cleanup.
 		view, err := readPlan.loadView(ctx, session.ID)
-		if err == nil || !errors.Is(err, agentruntime.ErrRuntimeClosed) {
+		if err == nil || ctx.Err() != nil ||
+			!errors.Is(err, agentruntime.ErrRuntimeClosed) {
 			return view, err
 		}
 		stateView, stateErr := backend.loadStateExecutionView(ctx, session)
