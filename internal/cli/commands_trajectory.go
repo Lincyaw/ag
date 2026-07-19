@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/lincyaw/ag/internal/bootstrap"
@@ -101,17 +102,22 @@ func (application *app) trajectoryCommand() *cobra.Command {
 			}
 			defer backend.Close(context.Background())
 			store := backend.Trajectories()
-			trajectory, err := store.Load(command.Context(), args[0])
+			metadata, err := store.LoadMetadata(command.Context(), args[0])
 			if err != nil {
 				return err
 			}
-			if !trajectoryHasCheckpoint(trajectory, args[1]) {
-				return fmt.Errorf("checkpoint not found: %s", args[1])
+			if err := requireTrajectoryCheckpoint(
+				command.Context(),
+				store,
+				args[0],
+				args[1],
+			); err != nil {
+				return err
 			}
 			if rollbackDryRun {
 				return application.writeRollbackPreview(rollbackPreviewOutput{
-					TrajectoryID: trajectory.ID,
-					CurrentHead:  trajectory.Head,
+					TrajectoryID: metadata.ID,
+					CurrentHead:  metadata.Head,
 					CheckpointID: args[1],
 					DryRun:       true,
 				})
@@ -140,13 +146,13 @@ func (application *app) trajectoryCommand() *cobra.Command {
 			); err != nil {
 				return err
 			}
-			trajectory, err = store.Load(command.Context(), args[0])
+			metadata, err = store.LoadMetadata(command.Context(), args[0])
 			if err != nil {
 				return err
 			}
 			return application.writeRollback(rollbackOutput{
-				TrajectoryID: trajectory.ID,
-				Head:         trajectory.Head,
+				TrajectoryID: metadata.ID,
+				Head:         metadata.Head,
 				CheckpointID: args[1],
 			})
 		},
@@ -173,13 +179,23 @@ func (application *app) trajectoryCommand() *cobra.Command {
 	return command
 }
 
-func trajectoryHasCheckpoint(trajectory sdk.Trajectory, checkpointID string) bool {
-	for _, entry := range trajectory.Entries {
-		if entry.ID == checkpointID && entry.Kind == sdk.TrajectoryKindCheckpoint {
-			return true
-		}
+func requireTrajectoryCheckpoint(
+	ctx context.Context,
+	store sdk.TrajectoryStore,
+	trajectoryID string,
+	checkpointID string,
+) error {
+	entry, err := store.LoadEntry(ctx, trajectoryID, checkpointID)
+	if errors.Is(err, sdk.ErrTrajectoryEntryNotFound) {
+		return fmt.Errorf("checkpoint not found: %s", checkpointID)
 	}
-	return false
+	if err != nil {
+		return err
+	}
+	if entry.Kind != sdk.TrajectoryKindCheckpoint {
+		return fmt.Errorf("checkpoint not found: %s", checkpointID)
+	}
+	return nil
 }
 
 func trajectoryFromMetadata(
