@@ -45,6 +45,7 @@ func (searchTool) Spec() sdk.ToolSpec {
 		Name: "search_files",
 		Description: "Search UTF-8 files under a root-confined path and return deterministic path:line:column matches. " +
 			"Literal search is the default; regular expressions and recursive globs are optional.",
+		Concurrency: sdk.ToolConcurrencyParallel,
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

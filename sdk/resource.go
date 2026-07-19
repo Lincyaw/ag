@@ -89,11 +89,19 @@ const (
 	ToolInterruptCancel ToolInterruptBehavior = "cancel"
 )
 
+type ToolConcurrency string
+
+const (
+	ToolConcurrencyExclusive ToolConcurrency = "exclusive"
+	ToolConcurrencyParallel  ToolConcurrency = "parallel"
+)
+
 type ToolSpec struct {
 	Name              string                `json:"name"`
 	Description       string                `json:"description"`
 	Parameters        map[string]any        `json:"parameters"`
 	InterruptBehavior ToolInterruptBehavior `json:"interrupt_behavior,omitempty"`
+	Concurrency       ToolConcurrency       `json:"concurrency,omitempty"`
 }
 
 func CloneToolSpec(spec ToolSpec) ToolSpec {
@@ -108,9 +116,25 @@ func (spec ToolSpec) EffectiveInterruptBehavior() ToolInterruptBehavior {
 	return spec.InterruptBehavior
 }
 
+func (spec ToolSpec) EffectiveConcurrency() ToolConcurrency {
+	if spec.Concurrency == "" {
+		return ToolConcurrencyExclusive
+	}
+	return spec.Concurrency
+}
+
 func (behavior ToolInterruptBehavior) Valid() bool {
 	switch behavior {
 	case "", ToolInterruptBlock, ToolInterruptCancel:
+		return true
+	default:
+		return false
+	}
+}
+
+func (concurrency ToolConcurrency) Valid() bool {
+	switch concurrency {
+	case "", ToolConcurrencyExclusive, ToolConcurrencyParallel:
 		return true
 	default:
 		return false

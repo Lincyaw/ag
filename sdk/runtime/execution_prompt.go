@@ -456,17 +456,33 @@ func (execution *promptExecution) executeTools(
 			toolCallsCancelOnContextInjection(prepared),
 		)
 	defer stopToolInterrupt()
-	execution.session.submitToolCalls(
-		ctx,
-		toolCtx,
-		snapshot,
-		providerName,
-		prepared,
-	)
-	outcomes := execution.session.awaitToolCalls(ctx, toolCtx, prepared)
+	outcomes := make([]toolCallOutcome, len(prepared))
+	interrupted := false
+	for _, batch := range toolCallExecutionBatches(prepared) {
+		batchCalls := prepared[batch.start:batch.end]
+		execution.session.submitToolCalls(
+			ctx,
+			toolCtx,
+			snapshot,
+			providerName,
+			batchCalls,
+		)
+		batchOutcomes := execution.session.awaitToolCalls(
+			ctx,
+			toolCtx,
+			batchCalls,
+		)
+		copy(outcomes[batch.start:batch.end], batchOutcomes)
+		interrupted = toolOutcomesInterrupted(batchOutcomes) ||
+			errors.Is(context.Cause(toolCtx), errContextInjectionInterrupt)
+		if interrupted && batch.end < len(prepared) {
+			markInterruptedToolOutcomes(outcomes, batch.end)
+			break
+		}
+	}
 	results := make([]sdk.ToolResult, len(prepared))
 	dependencies := make([]string, len(prepared))
-	interrupted := errors.Is(
+	interrupted = interrupted || errors.Is(
 		context.Cause(toolCtx),
 		errContextInjectionInterrupt,
 	)
@@ -500,6 +516,26 @@ func (execution *promptExecution) executeTools(
 		execution.dependencies = dependencies
 	}
 	return results, interrupted, nil
+}
+
+func toolOutcomesInterrupted(outcomes []toolCallOutcome) bool {
+	for _, outcome := range outcomes {
+		if errors.Is(outcome.err, errContextInjectionInterrupt) {
+			return true
+		}
+	}
+	return false
+}
+
+func markInterruptedToolOutcomes(
+	outcomes []toolCallOutcome,
+	start int,
+) {
+	for index := start; index < len(outcomes); index++ {
+		outcomes[index] = toolCallOutcome{
+			err: errContextInjectionInterrupt,
+		}
+	}
 }
 
 func (execution *promptExecution) decide(

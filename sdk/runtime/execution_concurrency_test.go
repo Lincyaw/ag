@@ -20,6 +20,11 @@ type concurrentToolProvider struct {
 	requests []sdk.ModelRequest
 }
 
+type exclusiveToolProvider struct {
+	mu       sync.Mutex
+	requests []sdk.ModelRequest
+}
+
 func (*concurrentToolProvider) Spec() sdk.ProviderSpec {
 	return sdk.ProviderSpec{Name: "concurrent-model", Model: "test"}
 }
@@ -58,11 +63,45 @@ func (provider *concurrentToolProvider) Requests() []sdk.ModelRequest {
 	return result
 }
 
+func (*exclusiveToolProvider) Spec() sdk.ProviderSpec {
+	return sdk.ProviderSpec{Name: "exclusive-model", Model: "test"}
+}
+
+func (provider *exclusiveToolProvider) Complete(
+	_ context.Context,
+	request sdk.ModelRequest,
+) (sdk.ModelResponse, error) {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	provider.requests = append(provider.requests, request)
+	if len(provider.requests) == 1 {
+		return sdk.ModelResponse{
+			ToolCalls: []sdk.ToolCall{
+				{
+					ID:        "first-call",
+					Name:      "exclusive-barrier",
+					Arguments: json.RawMessage(`{"value":"first"}`),
+				},
+				{
+					ID:        "second-call",
+					Name:      "exclusive-barrier",
+					Arguments: json.RawMessage(`{"value":"second"}`),
+				},
+			},
+		}, nil
+	}
+	return sdk.ModelResponse{Content: "done"}, nil
+}
+
 type barrierTool struct {
 	started       chan string
 	firstRelease  chan struct{}
 	secondRelease chan struct{}
 	secondDone    chan struct{}
+}
+
+type exclusiveBarrierTool struct {
+	*barrierTool
 }
 
 type cancellingTool struct {
@@ -74,6 +113,7 @@ func (*cancellingTool) Spec() sdk.ToolSpec {
 	return sdk.ToolSpec{
 		Name:        "cancel-group",
 		Description: "blocks until its structured parent is cancelled",
+		Concurrency: sdk.ToolConcurrencyParallel,
 		Parameters:  map[string]any{"type": "object"},
 	}
 }
@@ -188,6 +228,15 @@ func (*barrierTool) Spec() sdk.ToolSpec {
 	return sdk.ToolSpec{
 		Name:        "barrier",
 		Description: "exposes concurrent execution in tests",
+		Concurrency: sdk.ToolConcurrencyParallel,
+		Parameters:  map[string]any{"type": "object"},
+	}
+}
+
+func (tool exclusiveBarrierTool) Spec() sdk.ToolSpec {
+	return sdk.ToolSpec{
+		Name:        "exclusive-barrier",
+		Description: "uses the SDK's default exclusive execution policy",
 		Parameters:  map[string]any{"type": "object"},
 	}
 }
@@ -375,6 +424,113 @@ func TestToolCallsSubmitTogetherAwaitConcurrentlyAndJoinStably(
 		len(right.Dependencies) != 1 ||
 		left.Dependencies[0] != right.Dependencies[0] {
 		t.Fatalf("tool invocation dependencies = %#v, %#v", left, right)
+	}
+}
+
+func TestToolCallsDefaultToExclusiveExecution(t *testing.T) {
+	ctx := context.Background()
+	provider := &exclusiveToolProvider{}
+	barrier := &barrierTool{
+		started:       make(chan string, 2),
+		firstRelease:  make(chan struct{}),
+		secondRelease: make(chan struct{}),
+		secondDone:    make(chan struct{}),
+	}
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: testStateBackendWithStores(
+			nil,
+			sdkstorage.NewMemoryOperationStore(),
+		),
+		OperationPoll: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			time.Second,
+		)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "exclusive-tools",
+			Version:     "1.0.0",
+			Description: "tests default exclusive tool execution",
+			APIVersion:  sdk.APIVersion,
+			Registers: []string{
+				sdk.ProviderResource("exclusive-model"),
+				sdk.ToolResource("exclusive-barrier"),
+			},
+		},
+		InstallFunc: func(
+			_ context.Context,
+			registrar sdk.Registrar,
+		) error {
+			if err := registrar.RegisterProvider(provider); err != nil {
+				return err
+			}
+			return registrar.RegisterTool(exclusiveBarrierTool{barrier})
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "exclusive-tool-session",
+		Provider: "exclusive-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resultCh := make(chan Result, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, promptErr := session.Prompt(ctx, "run serially")
+		resultCh <- result
+		errCh <- promptErr
+	}()
+
+	select {
+	case value := <-barrier.started:
+		if value != "first" {
+			t.Fatalf("first started tool = %q", value)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first exclusive tool did not start")
+	}
+	select {
+	case value := <-barrier.started:
+		t.Fatalf("exclusive sibling started before first completed: %q", value)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(barrier.firstRelease)
+	select {
+	case value := <-barrier.started:
+		if value != "second" {
+			t.Fatalf("second started tool = %q", value)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second exclusive tool did not start")
+	}
+	close(barrier.secondRelease)
+
+	var result Result
+	select {
+	case result = <-resultCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("prompt did not complete")
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "done" || result.ToolCalls != 2 {
+		t.Fatalf("result = %#v", result)
 	}
 }
 

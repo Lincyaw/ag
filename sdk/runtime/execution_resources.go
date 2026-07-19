@@ -135,6 +135,7 @@ func resolveAdvertisedTools(
 		}
 		advertised := sdk.CloneToolSpec(spec)
 		advertised.InterruptBehavior = owned.spec.InterruptBehavior
+		advertised.Concurrency = owned.spec.Concurrency
 		index[spec.Name] = advertisedTool{
 			value: owned.value,
 			spec:  sdk.CloneToolSpec(owned.spec),
@@ -154,11 +155,17 @@ type preparedToolCall struct {
 	failureReason string
 	forkAnchor    trajectoryForkAnchor
 	interrupt     sdk.ToolInterruptBehavior
+	concurrency   sdk.ToolConcurrency
 }
 
 type toolCallOutcome struct {
 	result sdk.ToolResult
 	err    error
+}
+
+type toolCallBatch struct {
+	start int
+	end   int
 }
 
 func (call preparedToolCall) operationRequest() sdk.OperationRequest {
@@ -203,6 +210,7 @@ func (session *Session) prepareToolCall(
 		invocation:    invocation,
 		correlationID: providerInvocationID,
 		interrupt:     sdk.ToolInterruptBlock,
+		concurrency:   sdk.ToolConcurrencyExclusive,
 	}
 	if err := session.appendTrajectoryWithAudit(
 		ctx,
@@ -238,12 +246,17 @@ func (session *Session) prepareToolCall(
 		return prepared, nil
 	}
 	prepared.interrupt = tool.spec.EffectiveInterruptBehavior()
+	prepared.concurrency = tool.spec.EffectiveConcurrency()
 	prepared.asynchronous = tool.value
 	return prepared, nil
 }
 
 func (call preparedToolCall) cancelsOnContextInjection() bool {
 	return call.interrupt == sdk.ToolInterruptCancel
+}
+
+func (call preparedToolCall) runsInParallel() bool {
+	return call.concurrency == sdk.ToolConcurrencyParallel
 }
 
 func toolCallsCancelOnContextInjection(calls []preparedToolCall) bool {
@@ -253,6 +266,34 @@ func toolCallsCancelOnContextInjection(calls []preparedToolCall) bool {
 		}
 	}
 	return false
+}
+
+func toolCallExecutionBatches(
+	calls []preparedToolCall,
+) []toolCallBatch {
+	if len(calls) == 0 {
+		return nil
+	}
+	batches := make([]toolCallBatch, 0, len(calls))
+	for index := 0; index < len(calls); {
+		if !calls[index].runsInParallel() {
+			batches = append(batches, toolCallBatch{
+				start: index,
+				end:   index + 1,
+			})
+			index++
+			continue
+		}
+		start := index
+		for index < len(calls) && calls[index].runsInParallel() {
+			index++
+		}
+		batches = append(batches, toolCallBatch{
+			start: start,
+			end:   index,
+		})
+	}
+	return batches
 }
 
 func (session *Session) submitToolCall(

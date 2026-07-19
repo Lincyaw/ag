@@ -20,6 +20,7 @@ func (readTool) Spec() sdk.ToolSpec {
 	return sdk.ToolSpec{
 		Name:        "read_file",
 		Description: "Read a numbered range from one UTF-8 text file. The result includes a SHA-256 revision for conflict-safe edits.",
+		Concurrency: sdk.ToolConcurrencyParallel,
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -118,6 +119,7 @@ func (listTool) Spec() sdk.ToolSpec {
 	return sdk.ToolSpec{
 		Name:        "list_files",
 		Description: "List direct children of a directory relative to the configured root.",
+		Concurrency: sdk.ToolConcurrencyParallel,
 		Parameters:  pathSchema("Relative directory path; use . for the root."),
 	}
 }

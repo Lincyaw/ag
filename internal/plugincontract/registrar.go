@@ -331,6 +331,13 @@ func ValidateToolSpec(spec sdk.ToolSpec) error {
 			spec.InterruptBehavior,
 		)
 	}
+	if !spec.Concurrency.Valid() {
+		return fmt.Errorf(
+			"tool %q concurrency %q is unsupported",
+			spec.Name,
+			spec.Concurrency,
+		)
+	}
 	return nil
 }
 
