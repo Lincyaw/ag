@@ -41,7 +41,8 @@ type RuntimeConfig struct {
 	StorageOwnership StorageOwnership
 	// EventObserver receives a cloned copy of each dispatched event after
 	// hooks and subscriber enqueueing. It is for host-side UI/diagnostics and
-	// does not participate in the runtime composition contract.
+	// does not participate in the runtime composition contract. Runtime close
+	// cancels observer contexts and waits only within the finalization boundary.
 	EventObserver          func(context.Context, sdk.Event)
 	DeliveryWorkers        int
 	DeliveryLease          time.Duration
@@ -428,11 +429,16 @@ func (runtime *Runtime) finishCloseError(
 			err = errors.Join(err, panicErr)
 		}
 	}()
+	var errs []error
 	runtime.delivery.waitStopped()
 	runtime.operation.waitStopped()
 	runtime.trajectoryExecution.waitStopped()
-	runtime.observer.waitStopped()
-	var errs []error
+	if err := runtime.observer.waitStopped(
+		ctx,
+		lifecycle.DefaultFinalizationTimeout,
+	); err != nil {
+		errs = append(errs, err)
+	}
 	for _, state := range states {
 		<-state.done
 		if err := state.closeError(); err != nil {

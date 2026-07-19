@@ -174,6 +174,26 @@ func TestRuntimeCloseCancelsEventObserverContext(t *testing.T) {
 	}
 }
 
+func TestEventObserverWaitStoppedIsBounded(t *testing.T) {
+	t.Parallel()
+	var observer eventObserverRuntime
+	release := make(chan struct{})
+	observer.wait.Add(1)
+	go func() {
+		defer observer.wait.Done()
+		<-release
+	}()
+	defer close(release)
+
+	err := observer.waitStopped(context.Background(), 10*time.Millisecond)
+	if err == nil || !strings.Contains(
+		err.Error(),
+		"runtime event observers did not stop",
+	) {
+		t.Fatalf("waitStopped() error = %v", err)
+	}
+}
+
 func TestPromptBlockCommitsWithoutCallingProvider(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

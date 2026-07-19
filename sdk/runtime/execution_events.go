@@ -684,8 +684,32 @@ func (observer *eventObserverRuntime) stop() {
 	}
 }
 
-func (observer *eventObserverRuntime) waitStopped() {
-	observer.wait.Wait()
+func (observer *eventObserverRuntime) waitStopped(
+	ctx context.Context,
+	timeout time.Duration,
+) error {
+	if timeout <= 0 {
+		timeout = lifecycle.DefaultFinalizationTimeout
+	}
+	done := make(chan struct{})
+	go func() {
+		observer.wait.Wait()
+		close(done)
+	}()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	select {
+	case <-done:
+		return nil
+	case <-waitCtx.Done():
+		return fmt.Errorf(
+			"runtime event observers did not stop: %w",
+			waitCtx.Err(),
+		)
+	}
 }
 
 func (runtime *Runtime) invokeHook(
