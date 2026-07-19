@@ -78,14 +78,15 @@ func (mode ContextInjectionMode) Effective() ContextInjectionMode {
 // ContextInjection is a model-visible payload queued by the host, hooks, or
 // runtime services for insertion at an execution boundary.
 type ContextInjection struct {
-	ID         string                   `json:"id,omitempty"`
-	Priority   ContextInjectionPriority `json:"priority,omitempty"`
-	Mode       ContextInjectionMode     `json:"mode,omitempty"`
-	Origin     string                   `json:"origin,omitempty"`
-	IsMeta     bool                     `json:"is_meta,omitempty"`
-	Messages   []Message                `json:"messages"`
-	Attributes map[string]string        `json:"attributes,omitempty"`
-	CreatedAt  time.Time                `json:"created_at,omitempty"`
+	ID              string                   `json:"id,omitempty"`
+	Priority        ContextInjectionPriority `json:"priority,omitempty"`
+	Mode            ContextInjectionMode     `json:"mode,omitempty"`
+	Origin          string                   `json:"origin,omitempty"`
+	TargetSessionID string                   `json:"target_session_id,omitempty"`
+	IsMeta          bool                     `json:"is_meta,omitempty"`
+	Messages        []Message                `json:"messages"`
+	Attributes      map[string]string        `json:"attributes,omitempty"`
+	CreatedAt       time.Time                `json:"created_at,omitempty"`
 }
 
 // NormalizeContextInjection validates a queued model-visible payload and applies
@@ -113,6 +114,14 @@ func NormalizeContextInjection(
 		)
 	}
 	injection.Mode = injection.Mode.Effective()
+	if injection.TargetSessionID != "" {
+		if err := ValidateResourceName(
+			"context injection target session",
+			injection.TargetSessionID,
+		); err != nil {
+			return ContextInjection{}, err
+		}
+	}
 	if len(injection.Messages) == 0 {
 		return ContextInjection{}, errors.New(
 			"context injection contains no messages",

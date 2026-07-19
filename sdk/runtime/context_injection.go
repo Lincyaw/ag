@@ -58,7 +58,10 @@ func (session *Session) EnqueueContextInjection(
 		return err
 	}
 	defer releaseWork()
-	queued, err := session.contextQueue.enqueue(injection)
+	queued, err := session.contextQueue.enqueue(
+		session.config.ID,
+		injection,
+	)
 	if err != nil {
 		return err
 	}
@@ -132,6 +135,7 @@ func (session *Session) enqueueHostedContextInjection(
 		)
 	}
 	queued, err := session.contextQueue.enqueueForExecution(
+		session.config.ID,
 		executionID,
 		injection,
 	)
@@ -145,17 +149,22 @@ func (session *Session) enqueueHostedContextInjection(
 }
 
 func (queue *contextInjectionQueue) enqueue(
+	sessionID string,
 	injection sdk.ContextInjection,
 ) (sdk.ContextInjection, error) {
-	return queue.enqueueForExecution("", injection)
+	return queue.enqueueForExecution(sessionID, "", injection)
 }
 
 func (queue *contextInjectionQueue) enqueueForExecution(
+	sessionID string,
 	executionID string,
 	injection sdk.ContextInjection,
 ) (sdk.ContextInjection, error) {
 	normalized, err := sdk.NormalizeContextInjection(injection, time.Now().UTC())
 	if err != nil {
+		return sdk.ContextInjection{}, err
+	}
+	if err := validateContextInjectionTarget(sessionID, normalized); err != nil {
 		return sdk.ContextInjection{}, err
 	}
 	queue.mu.Lock()
@@ -171,6 +180,7 @@ func (queue *contextInjectionQueue) enqueueForExecution(
 
 func (queue *contextInjectionQueue) drain(
 	boundary contextInjectionDrainBoundary,
+	sessionID string,
 	executionID string,
 ) []queuedContextInjection {
 	queue.mu.Lock()
@@ -185,6 +195,7 @@ func (queue *contextInjectionQueue) drain(
 			if contextInjectionPriorityRank(
 				item.injection.Priority,
 			) != rank ||
+				!contextInjectionMatchesSession(item.injection, sessionID) ||
 				!contextInjectionMatchesExecution(item, executionID) ||
 				!contextInjectionEligible(item.injection, boundary) {
 				continue
@@ -354,6 +365,28 @@ func contextInjectionMatchesExecution(
 	return injection.executionID == "" || injection.executionID == executionID
 }
 
+func contextInjectionMatchesSession(
+	injection sdk.ContextInjection,
+	sessionID string,
+) bool {
+	return injection.TargetSessionID == "" ||
+		injection.TargetSessionID == sessionID
+}
+
+func validateContextInjectionTarget(
+	sessionID string,
+	injection sdk.ContextInjection,
+) error {
+	if contextInjectionMatchesSession(injection, sessionID) {
+		return nil
+	}
+	return fmt.Errorf(
+		"context injection targets session %q, not %q",
+		injection.TargetSessionID,
+		sessionID,
+	)
+}
+
 func contextInjectionEligible(
 	injection sdk.ContextInjection,
 	boundary contextInjectionDrainBoundary,
@@ -390,7 +423,11 @@ func (execution *promptExecution) checkpointQueuedContext(
 	boundary contextInjectionDrainBoundary,
 ) (bool, error) {
 	executionID, _ := execution.session.activeExecution()
-	injections := execution.session.contextQueue.drain(boundary, executionID)
+	injections := execution.session.contextQueue.drain(
+		boundary,
+		execution.session.config.ID,
+		executionID,
+	)
 	if len(injections) == 0 {
 		return false, nil
 	}
