@@ -28,13 +28,22 @@ func (session *Session) Prompt(
 }
 
 type promptExecution struct {
-	session      *Session
-	userMessage  sdk.Message
-	messages     []sdk.Message
-	system       string
-	dependencies []string
-	result       Result
+	session          *Session
+	userMessage      sdk.Message
+	messages         []sdk.Message
+	system           string
+	dependencies     []string
+	providerAttempts map[int]int
+	result           Result
 }
+
+type promptTurnTransition uint8
+
+const (
+	promptTurnAdvance promptTurnTransition = iota
+	promptTurnRetry
+	promptTurnDone
+)
 
 func newPromptUserMessage(prompt string) sdk.Message {
 	return sdk.Message{Role: sdk.RoleUser, Content: prompt}
@@ -167,7 +176,7 @@ func (execution *promptExecution) runTurnsFrom(
 	ctx context.Context,
 	startTurn int,
 ) (Result, error) {
-	for turn := startTurn; turn < execution.session.config.MaxTurns; turn++ {
+	for turn := startTurn; turn < execution.session.config.MaxTurns; {
 		if err := ctx.Err(); err != nil {
 			cause := sdk.Cause{
 				Code:   sdk.CauseCancelled,
@@ -179,9 +188,22 @@ func (execution *promptExecution) runTurnsFrom(
 			execution.session.applyMessageProjection(execution.messages)
 			return execution.result, err
 		}
-		result, done, err := execution.executeTurn(ctx, turn)
-		if err != nil || done {
+		result, transition, err := execution.executeTurn(ctx, turn)
+		if err != nil {
 			return result, err
+		}
+		switch transition {
+		case promptTurnDone:
+			return result, nil
+		case promptTurnRetry:
+			continue
+		case promptTurnAdvance:
+			turn++
+		default:
+			return Result{}, fmt.Errorf(
+				"unknown prompt turn transition %d",
+				transition,
+			)
 		}
 	}
 	return Result{}, errors.New("agent loop exited without a terminal action")
@@ -198,11 +220,11 @@ type providerCall struct {
 func (execution *promptExecution) executeTurn(
 	ctx context.Context,
 	turn int,
-) (Result, bool, error) {
+) (Result, promptTurnTransition, error) {
 	session := execution.session
 	lease, err := session.acquireSnapshot()
 	if err != nil {
-		return Result{}, false, err
+		return Result{}, promptTurnDone, err
 	}
 	defer lease.release()
 	execution.result.Generation = lease.snapshot.generation
@@ -211,20 +233,43 @@ func (execution *promptExecution) executeTurn(
 		lease.snapshot,
 		contextInjectionBeforeProvider,
 	); err != nil {
-		return Result{}, false, err
+		return Result{}, promptTurnDone, err
 	}
 
 	call, err := execution.prepareProviderCall(ctx, lease.snapshot, turn)
 	if err != nil {
-		return Result{}, false, err
+		return Result{}, promptTurnDone, err
 	}
-	response, err := execution.callProvider(ctx, lease.snapshot, turn, call)
+	providerCtx, stopProviderInterrupt := session.
+		contextInjectionInterruptContext(ctx, true)
+	response, err := execution.callProvider(
+		ctx,
+		providerCtx,
+		lease.snapshot,
+		turn,
+		call,
+	)
+	providerInterrupted := errors.Is(
+		context.Cause(providerCtx),
+		errContextInjectionInterrupt,
+	)
+	stopProviderInterrupt()
+	if providerInterrupted {
+		if _, checkpointErr := execution.checkpointQueuedContext(
+			ctx,
+			lease.snapshot,
+			contextInjectionBeforeProvider,
+		); checkpointErr != nil {
+			return Result{}, promptTurnDone, checkpointErr
+		}
+		return Result{}, promptTurnRetry, nil
+	}
 	if err != nil {
 		result, finishErr := execution.finishWithError(
 			sdk.CauseProviderError,
 			err,
 		)
-		return result, true, finishErr
+		return result, promptTurnDone, finishErr
 	}
 
 	execution.messages = append(execution.messages, sdk.Message{
@@ -249,7 +294,7 @@ func (execution *promptExecution) executeTurn(
 			sdk.CauseHookError,
 			err,
 		)
-		return result, true, finishErr
+		return result, promptTurnDone, finishErr
 	}
 	if interrupted {
 		if _, err := execution.checkpointQueuedContext(
@@ -257,10 +302,10 @@ func (execution *promptExecution) executeTurn(
 			lease.snapshot,
 			contextInjectionBeforeProvider,
 		); err != nil {
-			return Result{}, false, err
+			return Result{}, promptTurnDone, err
 		}
 		if turn+1 >= execution.session.config.MaxTurns {
-			return execution.applyAction(
+			result, done, err := execution.applyAction(
 				ctx,
 				lease.snapshot,
 				sdk.Action{
@@ -271,8 +316,9 @@ func (execution *promptExecution) executeTurn(
 					},
 				},
 			)
+			return result, promptTransitionFromDone(done), err
 		}
-		return Result{}, false, nil
+		return Result{}, promptTurnAdvance, nil
 	}
 	action, err := execution.decide(
 		ctx,
@@ -282,9 +328,17 @@ func (execution *promptExecution) executeTurn(
 		toolResults,
 	)
 	if err != nil {
-		return Result{}, false, err
+		return Result{}, promptTurnDone, err
 	}
-	return execution.applyAction(ctx, lease.snapshot, action)
+	result, done, err := execution.applyAction(ctx, lease.snapshot, action)
+	return result, promptTransitionFromDone(done), err
+}
+
+func promptTransitionFromDone(done bool) promptTurnTransition {
+	if done {
+		return promptTurnDone
+	}
+	return promptTurnAdvance
 }
 
 func (execution *promptExecution) prepareProviderCall(
@@ -335,9 +389,13 @@ func (execution *promptExecution) prepareProviderCall(
 			requestMessages...,
 		)
 	}
+	attempt, err := execution.nextProviderAttempt(ctx, turn)
+	if err != nil {
+		return providerCall{}, err
+	}
 	invocation := session.executionInvocation(
 		"provider",
-		fmt.Sprint(turn),
+		providerInvocationCoordinate(turn, attempt),
 		fmt.Sprintf("turn/%d", turn),
 		slices.Clone(execution.dependencies),
 		0,
@@ -375,12 +433,13 @@ func (execution *promptExecution) prepareProviderCall(
 
 func (execution *promptExecution) callProvider(
 	ctx context.Context,
+	operationCtx context.Context,
 	snapshot *registrySnapshot,
 	turn int,
 	call providerCall,
 ) (sdk.ModelResponse, error) {
 	response, callErr := execution.session.invokeProvider(
-		ctx,
+		operationCtx,
 		call.name,
 		call.provider,
 		call.invocation,
@@ -411,6 +470,51 @@ func (execution *promptExecution) callProvider(
 		after,
 	)
 	return response, errors.Join(callErr, trajectoryErr)
+}
+
+func (execution *promptExecution) nextProviderAttempt(
+	ctx context.Context,
+	turn int,
+) (int, error) {
+	session := execution.session
+	if session != nil && session.runtime != nil {
+		executionID, _ := session.activeExecution()
+		analyzer, ok := session.runtime.trajectories.(sdk.TrajectoryAnalyzer)
+		if ok && executionID != "" {
+			entries, err := analyzer.AnalyzeEntries(
+				ctx,
+				sdk.TrajectoryEntryQuery{
+					TrajectoryID: session.config.ID,
+					ExecutionID:  executionID,
+					Kind:         sdk.TrajectoryKindProviderRequest,
+					Limit:        sdk.MaxPageSize,
+				},
+			)
+			if err != nil {
+				return 0, err
+			}
+			attempt := 0
+			for _, entry := range entries {
+				if entry.Fields.Turn != nil && *entry.Fields.Turn == turn {
+					attempt++
+				}
+			}
+			return attempt, nil
+		}
+	}
+	if execution.providerAttempts == nil {
+		execution.providerAttempts = make(map[int]int)
+	}
+	attempt := execution.providerAttempts[turn]
+	execution.providerAttempts[turn] = attempt + 1
+	return attempt, nil
+}
+
+func providerInvocationCoordinate(turn int, attempt int) string {
+	if attempt == 0 {
+		return fmt.Sprint(turn)
+	}
+	return fmt.Sprintf("%d/%d", turn, attempt)
 }
 
 func (execution *promptExecution) executeTools(

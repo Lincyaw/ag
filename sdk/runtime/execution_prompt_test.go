@@ -128,6 +128,52 @@ func (provider *hostedContextInjectionProvider) Requests() []sdk.ModelRequest {
 	return requests
 }
 
+type interruptibleContextProvider struct {
+	mu         sync.Mutex
+	requests   []sdk.ModelRequest
+	entered    chan struct{}
+	cancelled  chan struct{}
+	once       sync.Once
+	cancelOnce sync.Once
+}
+
+func (provider *interruptibleContextProvider) Spec() sdk.ProviderSpec {
+	return sdk.ProviderSpec{Name: "provider-interrupt", Model: "test"}
+}
+
+func (provider *interruptibleContextProvider) Complete(
+	ctx context.Context,
+	request sdk.ModelRequest,
+) (sdk.ModelResponse, error) {
+	provider.mu.Lock()
+	provider.requests = append(provider.requests, sdk.ModelRequest{
+		Messages: sdk.CloneMessages(request.Messages),
+		Tools:    append([]sdk.ToolSpec(nil), request.Tools...),
+	})
+	callCount := len(provider.requests)
+	provider.mu.Unlock()
+	if callCount == 1 {
+		provider.once.Do(func() { close(provider.entered) })
+		<-ctx.Done()
+		provider.cancelOnce.Do(func() { close(provider.cancelled) })
+		return sdk.ModelResponse{}, ctx.Err()
+	}
+	return sdk.ModelResponse{Content: "provider context accepted"}, nil
+}
+
+func (provider *interruptibleContextProvider) Requests() []sdk.ModelRequest {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	requests := make([]sdk.ModelRequest, len(provider.requests))
+	for index, request := range provider.requests {
+		requests[index] = sdk.ModelRequest{
+			Messages: sdk.CloneMessages(request.Messages),
+			Tools:    append([]sdk.ToolSpec(nil), request.Tools...),
+		}
+	}
+	return requests
+}
+
 type hostedContextInjectionTool struct {
 	entered    chan struct{}
 	release    chan struct{}
@@ -188,6 +234,32 @@ func mountHostedContextPlugin(
 				registrar.RegisterProvider(provider),
 				registrar.RegisterTool(tool),
 			)
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mountProviderInterruptPlugin(
+	t *testing.T,
+	ctx context.Context,
+	runtime *Runtime,
+	provider *interruptibleContextProvider,
+) {
+	t.Helper()
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "provider-interrupt-plugin",
+			Version:     "1.0.0",
+			Description: "interrupts provider wait with queued context",
+			APIVersion:  sdk.APIVersion,
+			Registers: []string{
+				sdk.ProviderResource("provider-interrupt"),
+			},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return registrar.RegisterProvider(provider)
 		},
 	}
 	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
@@ -978,6 +1050,132 @@ func TestNowContextInjectionInterruptsToolAndContinues(t *testing.T) {
 		!second[len(second)-2].IsError ||
 		second[len(second)-1].Content != "interrupting context" {
 		t.Fatalf("second provider messages = %#v", second)
+	}
+}
+
+func TestNowContextInjectionInterruptsProviderAndRetriesTurn(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	trajectories := sdkstorage.NewMemoryTrajectoryStore()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:       testStateBackendWithStores(trajectories, nil),
+		OperationPoll: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	provider := &interruptibleContextProvider{
+		entered:   make(chan struct{}),
+		cancelled: make(chan struct{}),
+	}
+	mountProviderInterruptPlugin(t, ctx, runtime, provider)
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "now-provider-interrupt-session",
+		Provider: "provider-interrupt",
+		MaxTurns: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultC := make(chan Result, 1)
+	errC := make(chan error, 1)
+	go func() {
+		result, promptErr := session.Prompt(ctx, "base prompt")
+		if promptErr != nil {
+			errC <- promptErr
+			return
+		}
+		resultC <- result
+	}()
+	select {
+	case <-provider.entered:
+	case <-time.After(time.Second):
+		t.Fatal("provider did not start")
+	}
+	metadata, err := trajectories.LoadMetadata(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Execution == nil {
+		t.Fatalf("running execution metadata = %#v", metadata.Execution)
+	}
+	if err := runtime.EnqueueContextInjection(
+		ctx,
+		session.ID(),
+		metadata.Execution.ID,
+		sdk.ContextInjection{
+			Priority: sdk.ContextInjectionNow,
+			Mode:     sdk.ContextInjectionPrompt,
+			Origin:   "test",
+			Messages: []sdk.Message{{
+				Role:    sdk.RoleUser,
+				Content: "interrupting provider",
+			}},
+		},
+	); err != nil {
+		t.Fatalf("enqueue now context: %v", err)
+	}
+	select {
+	case <-provider.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("provider was not interrupted")
+	}
+	var result Result
+	select {
+	case err := <-errC:
+		t.Fatal(err)
+	case result = <-resultC:
+	case <-time.After(time.Second):
+		t.Fatal("prompt did not complete")
+	}
+	if result.Output != "provider context accepted" || result.Turns != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	requests := provider.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %#v", requests)
+	}
+	second := requests[1].Messages
+	if len(second) < 2 ||
+		second[len(second)-1].Content != "interrupting provider" {
+		t.Fatalf("second provider messages = %#v", second)
+	}
+	for _, message := range second {
+		if strings.Contains(message.Content, "interrupted by context injection") {
+			t.Fatalf("provider retry received interruption marker: %#v", second)
+		}
+	}
+	analyzer, ok := trajectories.(sdk.TrajectoryAnalyzer)
+	if !ok {
+		t.Fatal("memory trajectory store does not analyze entries")
+	}
+	entries, err := analyzer.AnalyzeEntries(ctx, sdk.TrajectoryEntryQuery{
+		TrajectoryID: session.ID(),
+		ExecutionID:  metadata.Execution.ID,
+		Kind:         sdk.TrajectoryKindProviderRequest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var operationKeys []string
+	for _, entry := range entries {
+		if entry.Fields.Turn == nil || *entry.Fields.Turn != 0 {
+			continue
+		}
+		operationKeys = append(operationKeys, entry.Fields.OperationKey)
+	}
+	if len(operationKeys) != 2 ||
+		operationKeys[0] == "" ||
+		operationKeys[1] == "" ||
+		operationKeys[0] == operationKeys[1] {
+		t.Fatalf("provider retry operation keys = %v", operationKeys)
 	}
 }
 
