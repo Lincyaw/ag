@@ -29,56 +29,24 @@ func ownResource[Resource, Spec any](
 	}
 }
 
-func ownAsyncProvider(
+func ownAsyncResource[Resource, Spec any](
 	owner *mountState,
-	resource plugincontract.Contribution[sdk.Provider, sdk.ProviderSpec],
-) (ownedResource[sdk.AsyncProvider, sdk.ProviderSpec], error) {
-	asynchronous, ok := resource.Value.(sdk.AsyncProvider)
+	kind string,
+	name string,
+	value any,
+	spec Spec,
+) (ownedResource[Resource, Spec], error) {
+	asynchronous, ok := value.(Resource)
 	if !ok {
-		return ownedResource[sdk.AsyncProvider, sdk.ProviderSpec]{}, fmt.Errorf(
-			"provider %q has no asynchronous execution implementation",
-			resource.Spec.Name,
+		return ownedResource[Resource, Spec]{}, fmt.Errorf(
+			"%s %q has no asynchronous execution implementation",
+			kind,
+			name,
 		)
 	}
-	return ownedResource[sdk.AsyncProvider, sdk.ProviderSpec]{
+	return ownedResource[Resource, Spec]{
 		value: asynchronous,
-		spec:  resource.Spec,
-		owner: owner,
-	}, nil
-}
-
-func ownAsyncTool(
-	owner *mountState,
-	resource plugincontract.Contribution[sdk.Tool, sdk.ToolSpec],
-) (ownedResource[sdk.AsyncTool, sdk.ToolSpec], error) {
-	asynchronous, ok := resource.Value.(sdk.AsyncTool)
-	if !ok {
-		return ownedResource[sdk.AsyncTool, sdk.ToolSpec]{}, fmt.Errorf(
-			"tool %q has no asynchronous execution implementation",
-			resource.Spec.Name,
-		)
-	}
-	return ownedResource[sdk.AsyncTool, sdk.ToolSpec]{
-		value: asynchronous,
-		spec:  sdk.CloneToolSpec(resource.Spec),
-		owner: owner,
-	}, nil
-}
-
-func ownAsyncCapability(
-	owner *mountState,
-	resource plugincontract.Contribution[sdk.Capability, sdk.CapabilitySpec],
-) (ownedResource[sdk.AsyncCapability, sdk.CapabilitySpec], error) {
-	asynchronous, ok := resource.Value.(sdk.AsyncCapability)
-	if !ok {
-		return ownedResource[sdk.AsyncCapability, sdk.CapabilitySpec]{}, fmt.Errorf(
-			"capability %q has no asynchronous execution implementation",
-			resource.Spec.Name,
-		)
-	}
-	return ownedResource[sdk.AsyncCapability, sdk.CapabilitySpec]{
-		value: asynchronous,
-		spec:  sdk.CloneCapabilitySpec(resource.Spec),
+		spec:  spec,
 		owner: owner,
 	}, nil
 }
@@ -386,7 +354,13 @@ func (snapshot *registrySnapshot) add(
 		len(staged.Providers),
 	)
 	for providerName, provider := range staged.Providers {
-		owned, err := ownAsyncProvider(state, provider)
+		owned, err := ownAsyncResource[sdk.AsyncProvider](
+			state,
+			"provider",
+			provider.Spec.Name,
+			provider.Value,
+			provider.Spec,
+		)
 		if err != nil {
 			return err
 		}
@@ -397,7 +371,13 @@ func (snapshot *registrySnapshot) add(
 		len(staged.Tools),
 	)
 	for toolName, tool := range staged.Tools {
-		owned, err := ownAsyncTool(state, tool)
+		owned, err := ownAsyncResource[sdk.AsyncTool](
+			state,
+			"tool",
+			tool.Spec.Name,
+			tool.Value,
+			sdk.CloneToolSpec(tool.Spec),
+		)
 		if err != nil {
 			return err
 		}
@@ -408,7 +388,13 @@ func (snapshot *registrySnapshot) add(
 		len(staged.Capabilities),
 	)
 	for capabilityName, capability := range staged.Capabilities {
-		owned, err := ownAsyncCapability(state, capability)
+		owned, err := ownAsyncResource[sdk.AsyncCapability](
+			state,
+			"capability",
+			capability.Spec.Name,
+			capability.Value,
+			sdk.CloneCapabilitySpec(capability.Spec),
+		)
 		if err != nil {
 			return err
 		}
