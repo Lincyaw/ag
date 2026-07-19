@@ -2,12 +2,9 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
-	"time"
 
 	"github.com/lincyaw/ag/sdk"
 	"github.com/lincyaw/ag/sdk/runtime/internal/durability"
@@ -17,49 +14,17 @@ import (
 func (session *Session) Prompt(
 	ctx context.Context,
 	prompt string,
-) (result Result, returnErr error) {
+) (Result, error) {
+	if session == nil {
+		return Result{}, errors.New("session is nil")
+	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
-	if strings.TrimSpace(prompt) == "" {
-		return Result{}, errors.New("prompt is empty")
-	}
-	if err := session.runtime.beginTrajectoryWork(); err != nil {
+	submission, err := session.submitPromptLocked(ctx, prompt)
+	if err != nil {
 		return Result{}, err
 	}
-	defer session.runtime.endTrajectoryWork()
-	execution := newPromptExecution(session, prompt)
-	if err := session.beginExecution(ctx, execution.userMessage); err != nil {
-		return Result{}, err
-	}
-	if err := session.claimExecution(ctx); err != nil {
-		return Result{}, err
-	}
-	execution.mutated = true
-	defer func() {
-		if !execution.mutated || returnErr == nil {
-			return
-		}
-		restoreCtx, cancel := context.WithTimeout(
-			context.Background(),
-			5*time.Second,
-		)
-		defer cancel()
-		returnErr = errors.Join(
-			returnErr,
-			session.failExecution(restoreCtx, returnErr),
-		)
-	}()
-	executionCtx, stopHeartbeat := session.executionHeartbeat(ctx)
-	defer func() {
-		returnErr = errors.Join(returnErr, stopHeartbeat())
-	}()
-
-	var done bool
-	result, done, returnErr = execution.start(executionCtx)
-	if returnErr != nil || done {
-		return result, returnErr
-	}
-	return execution.runTurns(executionCtx)
+	return submission.runLocked(ctx)
 }
 
 type promptExecution struct {
@@ -69,18 +34,43 @@ type promptExecution struct {
 	system       string
 	dependencies []string
 	result       Result
-	mutated      bool
 }
 
-func newPromptExecution(session *Session, prompt string) *promptExecution {
-	userMessage := sdk.Message{Role: sdk.RoleUser, Content: prompt}
-	messages := append(cloneMessages(session.messages), userMessage)
+func newPromptUserMessage(prompt string) sdk.Message {
+	return sdk.Message{Role: sdk.RoleUser, Content: prompt}
+}
+
+func newPromptExecutionFromInput(
+	session *Session,
+	input durability.ExecutionInput,
+) (*promptExecution, error) {
+	return newPromptExecutionFromAcceptedMessages(
+		session,
+		input.BaseMessages,
+		input.Message,
+	)
+}
+
+func newPromptExecutionFromAcceptedMessages(
+	session *Session,
+	baseMessages []sdk.Message,
+	userMessage sdk.Message,
+) (*promptExecution, error) {
+	if userMessage.Role != sdk.RoleUser || userMessage.Content == "" {
+		return nil, errors.New(
+			"trajectory execution input is not a user message",
+		)
+	}
+	message := sdk.CloneMessages([]sdk.Message{userMessage})[0]
 	return &promptExecution{
 		session:     session,
-		userMessage: userMessage,
-		messages:    messages,
-		system:      session.config.System,
-	}
+		userMessage: message,
+		messages: append(
+			sdk.CloneMessages(baseMessages),
+			message,
+		),
+		system: session.config.System,
+	}, nil
 }
 
 func (execution *promptExecution) start(
@@ -92,7 +82,8 @@ func (execution *promptExecution) start(
 		return Result{}, false, err
 	}
 	defer lease.release()
-	startDispatch, err := session.runtime.dispatch(
+	beforeStart, startDispatch, err := dispatchMutableEvent(
+		session.runtime,
 		ctx,
 		lease.snapshot,
 		sdk.EventBeforeAgentStart,
@@ -105,24 +96,21 @@ func (execution *promptExecution) start(
 	if err != nil {
 		return Result{}, false, err
 	}
-	var beforeStart sdk.BeforeAgentStartPayload
-	if err := decodePayload(startDispatch.Event, &beforeStart); err != nil {
-		return Result{}, false, err
-	}
-	execution.messages = cloneMessages(beforeStart.Messages)
+	execution.messages = sdk.CloneMessages(beforeStart.Messages)
 	execution.system = beforeStart.System
 	if startDispatch.Block != nil {
 		cause := sdk.Cause{
-			Code:   "prompt_blocked",
+			Code:   sdk.CausePromptBlocked,
 			Detail: startDispatch.Block.Reason,
 		}
-		if err := session.checkpointTrajectory(
+		if err := session.checkpointTrajectoryWithAudit(
 			ctx,
-			lease.snapshot.generation,
+			lease.snapshot,
 			execution.messages,
 			execution.result,
 			sdk.Action{Kind: sdk.ActionStop, Cause: &cause},
 			execution.system,
+			trajectoryAudits(startDispatch.Audit),
 		); err != nil {
 			return Result{}, false, err
 		}
@@ -133,29 +121,21 @@ func (execution *promptExecution) start(
 			execution.result,
 			cause,
 		)
-		session.messages = cloneMessages(execution.messages)
+		session.applyMessageProjection(execution.messages)
 		return execution.result, true, err
 	}
-	if _, err := session.runtime.dispatch(
+	agentStart := sdk.AgentStartPayload{
+		Messages: execution.messages,
+		System:   execution.system,
+	}
+	if err := session.appendTrajectoryWithExecutionEvent(
 		ctx,
 		lease.snapshot,
-		sdk.EventAgentStart,
-		session.config.ID,
-		sdk.AgentStartPayload{
-			Messages: execution.messages,
-			System:   execution.system,
-		},
-	); err != nil {
-		return Result{}, false, err
-	}
-	if err := session.appendTrajectory(
-		ctx,
 		sdk.TrajectoryKindAgentStart,
-		lease.snapshot.generation,
-		sdk.AgentStartPayload{
-			Messages: execution.messages,
-			System:   execution.system,
-		},
+		agentStart,
+		trajectoryAudits(startDispatch.Audit),
+		sdk.EventAgentStart,
+		agentStart,
 	); err != nil {
 		return Result{}, false, err
 	}
@@ -168,16 +148,30 @@ func (execution *promptExecution) runTurns(
 	return execution.runTurnsFrom(ctx, 0)
 }
 
+func (execution *promptExecution) runFromStart(
+	ctx context.Context,
+) (Result, error) {
+	result, done, err := execution.start(ctx)
+	if err != nil || done {
+		return result, err
+	}
+	return execution.runTurns(ctx)
+}
+
 func (execution *promptExecution) runTurnsFrom(
 	ctx context.Context,
 	startTurn int,
 ) (Result, error) {
 	for turn := startTurn; turn < execution.session.config.MaxTurns; turn++ {
 		if err := ctx.Err(); err != nil {
-			cause := sdk.Cause{Code: "cancelled", Detail: err.Error(), Final: true}
+			cause := sdk.Cause{
+				Code:   sdk.CauseCancelled,
+				Detail: err.Error(),
+				Final:  true,
+			}
 			execution.result.Cause = cause
-			execution.result.Messages = cloneMessages(execution.messages)
-			execution.session.messages = cloneMessages(execution.messages)
+			execution.result.Messages = sdk.CloneMessages(execution.messages)
+			execution.session.applyMessageProjection(execution.messages)
 			return execution.result, err
 		}
 		result, done, err := execution.executeTurn(ctx, turn)
@@ -189,12 +183,11 @@ func (execution *promptExecution) runTurnsFrom(
 }
 
 type providerCall struct {
-	name         string
-	provider     sdk.Provider
-	operationKey string
-	invocation   sdk.Invocation
-	request      sdk.ModelRequest
-	tools        map[string]sdk.Tool
+	name       string
+	provider   sdk.Provider
+	invocation sdk.Invocation
+	request    sdk.ModelRequest
+	tools      map[string]sdk.Tool
 }
 
 func (execution *promptExecution) executeTurn(
@@ -216,9 +209,7 @@ func (execution *promptExecution) executeTurn(
 	response, err := execution.callProvider(ctx, lease.snapshot, turn, call)
 	if err != nil {
 		result, finishErr := execution.finishWithError(
-			ctx,
-			lease.snapshot,
-			"provider_error",
+			sdk.CauseProviderError,
 			err,
 		)
 		return result, true, finishErr
@@ -227,7 +218,7 @@ func (execution *promptExecution) executeTurn(
 	execution.messages = append(execution.messages, sdk.Message{
 		Role:      sdk.RoleAssistant,
 		Content:   response.Content,
-		ToolCalls: cloneToolCalls(response.ToolCalls),
+		ToolCalls: sdk.CloneToolCalls(response.ToolCalls),
 	})
 	execution.result.Output = response.Content
 	execution.result.Turns = turn + 1
@@ -243,9 +234,7 @@ func (execution *promptExecution) executeTurn(
 	)
 	if err != nil {
 		result, finishErr := execution.finishWithError(
-			ctx,
-			lease.snapshot,
-			"hook_error",
+			sdk.CauseHookError,
 			err,
 		)
 		return result, true, finishErr
@@ -269,37 +258,25 @@ func (execution *promptExecution) prepareProviderCall(
 	turn int,
 ) (providerCall, error) {
 	session := execution.session
-	if _, err := session.runtime.dispatch(
-		ctx,
-		snapshot,
-		sdk.EventTurnStart,
-		session.config.ID,
-		sdk.TurnStartPayload{Turn: turn},
-	); err != nil {
-		return providerCall{}, err
-	}
 	providerName, err := selectProviderName(snapshot, session.config.Provider)
 	if err != nil {
 		return providerCall{}, err
 	}
-	beforeProvider, err := session.runtime.dispatch(
+	payload, beforeProvider, err := dispatchMutableEvent(
+		session.runtime,
 		ctx,
 		snapshot,
 		sdk.EventBeforeProvider,
 		session.config.ID,
 		sdk.BeforeProviderPayload{
 			Turn:     turn,
-			Messages: cloneMessages(execution.messages),
+			Messages: sdk.CloneMessages(execution.messages),
 			Provider: providerName,
 			System:   execution.system,
 			Tools:    snapshotToolSpecs(snapshot),
 		},
 	)
 	if err != nil {
-		return providerCall{}, err
-	}
-	var payload sdk.BeforeProviderPayload
-	if err := decodePayload(beforeProvider.Event, &payload); err != nil {
 		return providerCall{}, err
 	}
 	ownedProvider, exists := snapshot.providers[payload.Provider]
@@ -316,41 +293,44 @@ func (execution *promptExecution) prepareProviderCall(
 	if err != nil {
 		return providerCall{}, err
 	}
-	requestMessages := cloneMessages(payload.Messages)
+	requestMessages := sdk.CloneMessages(payload.Messages)
 	if payload.System != "" {
 		requestMessages = append(
 			[]sdk.Message{{Role: sdk.RoleSystem, Content: payload.System}},
 			requestMessages...,
 		)
 	}
+	invocation := session.executionInvocation(
+		"provider",
+		fmt.Sprint(turn),
+		fmt.Sprintf("turn/%d", turn),
+		slices.Clone(execution.dependencies),
+		0,
+	)
 	call := providerCall{
-		name:         payload.Provider,
-		provider:     ownedProvider.value,
-		operationKey: session.executionOperationKey("provider", fmt.Sprint(turn)),
-		invocation: session.executionInvocation(
-			"provider",
-			fmt.Sprint(turn),
-			fmt.Sprintf("turn/%d", turn),
-			slices.Clone(execution.dependencies),
-			0,
-		),
+		name:       payload.Provider,
+		provider:   ownedProvider.value,
+		invocation: invocation,
 		request: sdk.ModelRequest{
 			Messages: requestMessages,
 			Tools:    advertisedTools,
 		},
 		tools: toolIndex,
 	}
-	if err := session.appendTrajectory(
+	if err := session.appendTrajectoryWithExecutionEvent(
 		ctx,
+		snapshot,
 		sdk.TrajectoryKindProviderRequest,
-		snapshot.generation,
 		durability.ProviderRequest{
 			Turn:         turn,
 			Provider:     call.name,
 			Model:        ownedProvider.spec.Model,
-			OperationKey: call.operationKey,
+			OperationKey: call.invocation.ID,
 			Request:      call.request,
 		},
+		trajectoryAudits(beforeProvider.Audit),
+		sdk.EventTurnStart,
+		sdk.TurnStartPayload{Turn: turn},
 	); err != nil {
 		return providerCall{}, err
 	}
@@ -367,7 +347,6 @@ func (execution *promptExecution) callProvider(
 		ctx,
 		call.name,
 		call.provider,
-		call.operationKey,
 		call.invocation,
 		call.request,
 	)
@@ -383,20 +362,16 @@ func (execution *promptExecution) callProvider(
 	} else {
 		after.Response = &response
 	}
-	_, dispatchErr := execution.session.runtime.dispatch(
+	trajectoryErr := execution.session.appendTrajectoryWithExecutionEvent(
 		ctx,
 		snapshot,
-		sdk.EventAfterProvider,
-		execution.session.config.ID,
-		after,
-	)
-	trajectoryErr := execution.session.appendTrajectory(
-		ctx,
 		sdk.TrajectoryKindProviderResponse,
-		snapshot.generation,
+		after,
+		nil,
+		sdk.EventAfterProvider,
 		after,
 	)
-	return response, errors.Join(callErr, dispatchErr, trajectoryErr)
+	return response, errors.Join(callErr, trajectoryErr)
 }
 
 func (execution *promptExecution) executeTools(
@@ -439,7 +414,6 @@ func (execution *promptExecution) executeTools(
 	execution.session.submitToolCalls(
 		ctx,
 		snapshot,
-		execution.messages,
 		providerName,
 		prepared,
 	)
@@ -485,7 +459,7 @@ func (execution *promptExecution) decide(
 ) (sdk.Action, error) {
 	defaultAction := sdk.Action{
 		Kind:  sdk.ActionStop,
-		Cause: &sdk.Cause{Code: "model_end"},
+		Cause: &sdk.Cause{Code: sdk.CauseModelEnd},
 	}
 	if len(response.ToolCalls) > 0 {
 		defaultAction = sdk.Action{Kind: sdk.ActionStep}
@@ -493,7 +467,7 @@ func (execution *promptExecution) decide(
 			defaultAction = sdk.Action{
 				Kind: sdk.ActionStop,
 				Cause: &sdk.Cause{
-					Code:  "max_turns",
+					Code:  sdk.CauseMaxTurns,
 					Final: true,
 				},
 			}
@@ -514,35 +488,40 @@ func (execution *promptExecution) decide(
 	if err != nil {
 		return sdk.Action{}, err
 	}
-	action := resolveAction(defaultAction, decision.Actions)
+	action, resolution := resolveAction(
+		defaultAction,
+		decision.Actions,
+		decision.actionSteps,
+	)
 	if turn+1 >= execution.session.config.MaxTurns &&
 		action.Kind != sdk.ActionStop {
 		action = sdk.Action{
 			Kind: sdk.ActionStop,
 			Cause: &sdk.Cause{
-				Code:  "max_turns",
+				Code:  sdk.CauseMaxTurns,
 				Final: true,
 			},
 		}
+		resolution = actionResolution(
+			action,
+			resolution.ActionSteps,
+			"max_turns_override",
+		)
 	}
-	if err := execution.session.appendTrajectory(
-		ctx,
-		sdk.TrajectoryKindDecision,
-		snapshot.generation,
-		durability.Decision{Turn: turn, Action: action},
-	); err != nil {
-		return sdk.Action{}, err
+	decision.Audit.Resolution = resolution
+	turnEnd := sdk.TurnEndPayload{
+		Turn:     turn,
+		Messages: sdk.CloneMessages(execution.messages),
+		Action:   action,
 	}
-	if _, err := execution.session.runtime.dispatch(
+	if err := execution.session.appendTrajectoryWithExecutionEvent(
 		ctx,
 		snapshot,
+		sdk.TrajectoryKindDecision,
+		durability.Decision{Turn: turn, Action: action},
+		trajectoryAudits(decision.Audit),
 		sdk.EventTurnEnd,
-		execution.session.config.ID,
-		sdk.TurnEndPayload{
-			Turn:     turn,
-			Messages: cloneMessages(execution.messages),
-			Action:   action,
-		},
+		turnEnd,
 	); err != nil {
 		return sdk.Action{}, err
 	}
@@ -557,7 +536,7 @@ func (execution *promptExecution) applyAction(
 	if action.Kind == sdk.ActionInject {
 		execution.messages = append(
 			execution.messages,
-			cloneMessages(action.Messages)...,
+			sdk.CloneMessages(action.Messages)...,
 		)
 	}
 	switch action.Kind {
@@ -570,7 +549,7 @@ func (execution *promptExecution) applyAction(
 	}
 	if err := execution.session.checkpointTrajectory(
 		ctx,
-		snapshot.generation,
+		snapshot,
 		execution.messages,
 		execution.result,
 		action,
@@ -582,7 +561,7 @@ func (execution *promptExecution) applyAction(
 	if action.Kind != sdk.ActionStop {
 		return Result{}, false, nil
 	}
-	cause := sdk.Cause{Code: "model_end"}
+	cause := sdk.Cause{Code: sdk.CauseModelEnd}
 	if action.Cause != nil {
 		cause = *action.Cause
 	}
@@ -594,26 +573,18 @@ func (execution *promptExecution) applyAction(
 		execution.result,
 		cause,
 	)
-	execution.session.messages = cloneMessages(execution.messages)
+	execution.session.applyMessageProjection(execution.messages)
 	return execution.result, true, err
 }
 
 func (execution *promptExecution) finishWithError(
-	ctx context.Context,
-	snapshot *registrySnapshot,
 	code string,
 	cause error,
 ) (Result, error) {
-	var finishErr error
-	execution.result, finishErr = execution.session.finish(
-		ctx,
-		snapshot,
-		execution.messages,
-		execution.result,
-		sdk.Cause{Code: code, Detail: cause.Error()},
-	)
-	execution.session.messages = cloneMessages(execution.messages)
-	return execution.result, errors.Join(cause, finishErr)
+	execution.result.Messages = sdk.CloneMessages(execution.messages)
+	execution.result.Cause = sdk.Cause{Code: code, Detail: cause.Error()}
+	execution.session.applyMessageProjection(execution.messages)
+	return execution.result, cause
 }
 
 func (session *Session) finish(
@@ -623,97 +594,101 @@ func (session *Session) finish(
 	result Result,
 	cause sdk.Cause,
 ) (Result, error) {
-	result.Messages = cloneMessages(messages)
+	result.Messages = sdk.CloneMessages(messages)
 	result.Cause = cause
 	end := sdk.AgentEndPayload{
-		Messages: cloneMessages(messages),
+		Messages: sdk.CloneMessages(messages),
 		Cause:    cause,
 	}
 	state := executionStateForCause(cause)
-	commitState := state
 	if state == sdk.TrajectoryExecutionFailed {
-		// Keep the lease active until Prompt's failure defer atomically restores
-		// the last checkpoint and marks the execution failed.
-		commitState = ""
+		return result, errors.New(
+			"failed execution completion is owned by failure unwind",
+		)
 	}
-	if err := session.appendTrajectoryState(
-		ctx,
-		sdk.TrajectoryKindTerminal,
-		snapshot.generation,
-		end,
-		commitState,
-		"",
-	); err != nil {
-		return result, err
-	}
-	if _, err := session.runtime.dispatch(
+	if err := session.appendTrajectoryStateWithExecutionEvent(
 		ctx,
 		snapshot,
+		sdk.TrajectoryKindTerminal,
+		end,
+		state,
+		"",
+		nil,
 		sdk.EventAgentEnd,
-		session.config.ID,
 		end,
 	); err != nil {
-		session.runtime.logger.WarnContext(
-			ctx,
-			"agent end event failed",
-			"session_id",
-			session.config.ID,
-			"error",
-			err,
-		)
+		return result, err
 	}
 	return result, nil
 }
 
-func resolveAction(defaultAction sdk.Action, actions []sdk.Action) sdk.Action {
+func resolveAction(
+	defaultAction sdk.Action,
+	actions []sdk.Action,
+	actionSteps []int,
+) (sdk.Action, sdk.EffectResolution) {
 	if defaultAction.Kind == sdk.ActionStop &&
 		defaultAction.Cause != nil &&
 		defaultAction.Cause.Final {
-		return defaultAction
+		action := sdk.CloneAction(defaultAction)
+		return action, actionResolution(action, nil, "default_final_stop")
 	}
 	var injected []sdk.Message
+	var injectedSteps []int
 	for _, action := range actions {
 		if action.Kind == sdk.ActionInject {
-			injected = append(injected, cloneMessages(action.Messages)...)
+			injected = append(injected, sdk.CloneMessages(action.Messages)...)
+		}
+	}
+	for index, action := range actions {
+		if action.Kind == sdk.ActionInject {
+			injectedSteps = append(injectedSteps, actionStepAt(actionSteps, index))
 		}
 	}
 	if len(injected) > 0 {
-		return sdk.Action{Kind: sdk.ActionInject, Messages: injected}
+		action := sdk.Action{Kind: sdk.ActionInject, Messages: injected}
+		return action, actionResolution(action, injectedSteps, "inject_merge")
 	}
-	for index := len(actions) - 1; index >= 0; index-- {
-		if actions[index].Kind == sdk.ActionStop {
-			return actions[index]
+	for index, action := range actions {
+		if action.Kind == sdk.ActionStop {
+			action = sdk.CloneAction(action)
+			return action, actionResolution(
+				action,
+				[]int{actionStepAt(actionSteps, index)},
+				"first_stop",
+			)
 		}
 	}
-	for _, action := range actions {
+	for index, action := range actions {
 		if action.Kind == sdk.ActionStep {
-			return sdk.Action{Kind: sdk.ActionStep}
+			action := sdk.Action{Kind: sdk.ActionStep}
+			return action, actionResolution(
+				action,
+				[]int{actionStepAt(actionSteps, index)},
+				"first_step",
+			)
 		}
 	}
-	return defaultAction
+	action := sdk.CloneAction(defaultAction)
+	return action, actionResolution(action, nil, "default")
 }
 
-func decodePayload(event sdk.Event, target any) error {
-	if err := json.Unmarshal(event.Payload, target); err != nil {
-		return fmt.Errorf("decode %s event payload: %w", event.Name, err)
+func actionResolution(
+	action sdk.Action,
+	steps []int,
+	rule string,
+) sdk.EffectResolution {
+	return sdk.EffectResolution{
+		Outcome:     sdk.EffectResolutionAction,
+		Action:      summarizeAction(&action),
+		ActionSteps: slices.Clone(steps),
+		ActionRule:  rule,
 	}
-	return nil
 }
 
-func cloneMessages(messages []sdk.Message) []sdk.Message {
-	result := make([]sdk.Message, len(messages))
-	for index, message := range messages {
-		result[index] = message
-		result[index].ToolCalls = cloneToolCalls(message.ToolCalls)
+func actionStepAt(steps []int, index int) int {
+	if index >= 0 && index < len(steps) {
+		return steps[index]
 	}
-	return result
-}
-
-func cloneToolCalls(calls []sdk.ToolCall) []sdk.ToolCall {
-	result := make([]sdk.ToolCall, len(calls))
-	for index, call := range calls {
-		result[index] = call
-		result[index].Arguments = append(json.RawMessage(nil), call.Arguments...)
-	}
-	return result
+	return index
 }

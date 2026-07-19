@@ -10,6 +10,8 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/lincyaw/ag/internal/lifecycle"
+	"github.com/lincyaw/ag/internal/pluginpolicy"
 	"github.com/lincyaw/ag/sdk"
 )
 
@@ -22,17 +24,23 @@ type Runner struct {
 	Lease  time.Duration
 }
 
+type Validator func(sdk.OperationRecord) error
+
+type Executor func(context.Context, sdk.OperationRecord) (json.RawMessage, error)
+
 // Run claims and executes one operation. A lost lease fences the result; a
 // cancelled worker releases its claim so another process can recover it.
 func (runner Runner) Run(
 	ctx context.Context,
 	id string,
-	validate func(sdk.OperationRecord) error,
-	execute func(context.Context, sdk.OperationRecord) (json.RawMessage, error),
+	validate Validator,
+	execute Executor,
 ) {
-	logger := runner.Logger
-	if logger == nil {
-		logger = slog.Default()
+	logger := runner.logger()
+	defer recoverRunPanic(ctx, logger, id)
+	if runner.Store == nil {
+		logger.ErrorContext(ctx, "operation store is nil", "operation_id", id)
+		return
 	}
 	record, err := runner.Store.Claim(
 		ctx,
@@ -47,8 +55,21 @@ func (runner Runner) Run(
 		}
 		return
 	}
+	if record.Execution == nil {
+		logger.ErrorContext(
+			ctx,
+			"claimed operation has no execution lease",
+			"operation_id",
+			id,
+		)
+		return
+	}
 	if validate != nil {
 		if err := validate(record); err != nil {
+			if ctx.Err() != nil {
+				runner.releaseClaimed(ctx, logger, id, record)
+				return
+			}
 			logger.Warn(
 				"claimed operation is no longer executable",
 				"operation_id",
@@ -56,6 +77,7 @@ func (runner Runner) Run(
 				"error",
 				err,
 			)
+			runner.failClaimedInvalid(ctx, logger, id, record, err)
 			return
 		}
 	}
@@ -77,7 +99,11 @@ func (runner Runner) Run(
 		leaseLost,
 	)
 
-	output, executeErr := invoke(executionCtx, record, execute)
+	output, executeErr := pluginpolicy.InvokeOperation(
+		executionCtx,
+		record,
+		execute,
+	)
 	stopHeartbeat()
 	<-heartbeatDone
 	select {
@@ -95,19 +121,12 @@ func (runner Runner) Run(
 
 	token := record.Execution.Token
 	if ctx.Err() != nil {
-		_, releaseErr := runner.Store.Release(context.Background(), id, token)
-		if releaseErr != nil && !errors.Is(releaseErr, sdk.ErrOperationFence) {
-			logger.Error(
-				"release operation",
-				"operation_id",
-				id,
-				"error",
-				releaseErr,
-			)
-		}
+		runner.releaseClaimed(ctx, logger, id, record)
 		return
 	}
 
+	finalizationCtx, cancelFinalization := runner.finalizationContext(executionCtx)
+	defer cancelFinalization()
 	state := sdk.OperationSucceeded
 	errorText := ""
 	if executeErr != nil {
@@ -116,7 +135,7 @@ func (runner Runner) Run(
 		errorText = executeErr.Error()
 	}
 	_, err = runner.Store.Complete(
-		context.Background(),
+		finalizationCtx,
 		id,
 		token,
 		state,
@@ -128,6 +147,85 @@ func (runner Runner) Run(
 	}
 }
 
+func recoverRunPanic(ctx context.Context, logger *slog.Logger, id string) {
+	if recovered := recover(); recovered != nil {
+		logger.ErrorContext(
+			ctx,
+			"operation worker panic",
+			"operation_id",
+			id,
+			"panic",
+			recovered,
+			"stack",
+			string(debug.Stack()),
+		)
+	}
+}
+
+func (runner Runner) releaseClaimed(
+	ctx context.Context,
+	logger *slog.Logger,
+	id string,
+	record sdk.OperationRecord,
+) {
+	if record.Execution == nil {
+		return
+	}
+	finalizationCtx, cancel := runner.finalizationContext(ctx)
+	defer cancel()
+	_, releaseErr := runner.Store.Release(
+		finalizationCtx,
+		id,
+		record.Execution.Token,
+	)
+	if releaseErr != nil && !errors.Is(releaseErr, sdk.ErrOperationFence) {
+		logger.Error(
+			"release operation",
+			"operation_id",
+			id,
+			"error",
+			releaseErr,
+		)
+	}
+}
+
+func (runner Runner) failClaimedInvalid(
+	ctx context.Context,
+	logger *slog.Logger,
+	id string,
+	record sdk.OperationRecord,
+	invalidErr error,
+) {
+	// Unlike FailInvalid, Runner already owns a lease token and can fence the
+	// failure against an expired worker.
+	token := record.Execution.Token
+	finalizationCtx, cancel := runner.finalizationContext(ctx)
+	defer cancel()
+	_, completeErr := runner.Store.Complete(
+		finalizationCtx,
+		id,
+		token,
+		sdk.OperationFailed,
+		nil,
+		invalidErr.Error(),
+	)
+	if completeErr != nil && !errors.Is(completeErr, sdk.ErrOperationFence) {
+		logger.Error(
+			"fail invalid operation",
+			"operation_id",
+			id,
+			"error",
+			completeErr,
+		)
+	}
+}
+
+func (runner Runner) finalizationContext(
+	ctx context.Context,
+) (context.Context, context.CancelFunc) {
+	return lifecycle.WithDetachedFinalization(ctx)
+}
+
 func (runner Runner) renewLease(
 	ctx context.Context,
 	id string,
@@ -137,6 +235,7 @@ func (runner Runner) renewLease(
 	lost chan<- error,
 ) {
 	defer close(done)
+	defer recoverRenewLeasePanic(ctx, runner.logger(), id, cancelExecution, lost)
 	interval := runner.Lease / 3
 	if interval < time.Millisecond {
 		interval = time.Millisecond
@@ -170,19 +269,41 @@ func (runner Runner) renewLease(
 	}
 }
 
-func invoke(
+func (runner Runner) logger() *slog.Logger {
+	if runner.Logger != nil {
+		return runner.Logger
+	}
+	return slog.Default()
+}
+
+func recoverRenewLeasePanic(
 	ctx context.Context,
-	record sdk.OperationRecord,
-	execute func(context.Context, sdk.OperationRecord) (json.RawMessage, error),
-) (output json.RawMessage, err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf(
-				"plugin operation panic: %v\n%s",
-				recovered,
-				debug.Stack(),
-			)
+	logger *slog.Logger,
+	id string,
+	cancelExecution context.CancelFunc,
+	lost chan<- error,
+) {
+	if recovered := recover(); recovered != nil {
+		stack := string(debug.Stack())
+		err := fmt.Errorf(
+			"renew operation lease panic: %v\n%s",
+			recovered,
+			stack,
+		)
+		logger.ErrorContext(
+			ctx,
+			"operation lease renew panic",
+			"operation_id",
+			id,
+			"panic",
+			recovered,
+			"stack",
+			stack,
+		)
+		select {
+		case lost <- err:
+		default:
 		}
-	}()
-	return execute(ctx, record)
+		cancelExecution()
+	}
 }

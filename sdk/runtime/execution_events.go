@@ -2,24 +2,97 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"runtime/debug"
 	"slices"
+	"sync"
+	"time"
 
+	"github.com/lincyaw/ag/internal/lifecycle"
+	"github.com/lincyaw/ag/internal/pluginpolicy"
 	"github.com/lincyaw/ag/sdk"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
 // DispatchResult is the merged policy effect for one execution event.
 type DispatchResult struct {
-	Event   sdk.Event
-	Block   *sdk.Block
-	Actions []sdk.Action
+	Event       sdk.Event
+	Block       *sdk.Block
+	Actions     []sdk.Action
+	Audit       sdk.EventAudit
+	actionSteps []int
+}
+
+type eventDispatchPhase uint8
+
+const (
+	eventDispatchInline eventDispatchPhase = iota
+	eventDispatchPostCommit
+)
+
+type eventSubscriberMode uint8
+
+const (
+	eventSubscribersNone eventSubscriberMode = iota
+	eventSubscribersEnqueue
+)
+
+type eventSubscriberFailureMode uint8
+
+const (
+	eventSubscriberFailureReturn eventSubscriberFailureMode = iota
+	eventSubscriberFailureWarn
+)
+
+type eventDispatchOptions struct {
+	phase              eventDispatchPhase
+	subscribers        eventSubscriberMode
+	subscriberFailures eventSubscriberFailureMode
+}
+
+func inlineEventDispatchOptions() eventDispatchOptions {
+	return eventDispatchOptions{subscribers: eventSubscribersEnqueue}
+}
+
+func executionEventDispatchOptions() eventDispatchOptions {
+	return eventDispatchOptions{
+		subscribers:        eventSubscribersEnqueue,
+		subscriberFailures: eventSubscriberFailureWarn,
+	}
+}
+
+func postCommitEventDispatchOptions(
+	delivery postCommitDelivery,
+) eventDispatchOptions {
+	subscribers := eventSubscribersNone
+	if delivery.enqueueAfterDispatch() {
+		subscribers = eventSubscribersEnqueue
+	}
+	return eventDispatchOptions{
+		phase:       eventDispatchPostCommit,
+		subscribers: subscribers,
+	}
+}
+
+func (options eventDispatchOptions) isPostCommit() bool {
+	return options.phase == eventDispatchPostCommit
+}
+
+func (options eventDispatchOptions) enqueueSubscribers() bool {
+	return options.subscribers == eventSubscribersEnqueue
+}
+
+func (options eventDispatchOptions) returnSubscriberFailures() bool {
+	return options.subscriberFailures == eventSubscriberFailureReturn
+}
+
+func afterDispatchEventContext(ctx context.Context) context.Context {
+	return lifecycle.Detached(ctx)
 }
 
 func (runtime *Runtime) Emit(
@@ -49,28 +122,109 @@ func (runtime *Runtime) dispatch(
 	sessionID string,
 	payload any,
 ) (DispatchResult, error) {
-	owned, exists := snapshot.events[eventName]
-	if !exists {
-		return DispatchResult{}, fmt.Errorf("event %q is not registered", eventName)
+	return runtime.dispatchEvent(
+		ctx,
+		snapshot,
+		eventName,
+		sessionID,
+		payload,
+		inlineEventDispatchOptions(),
+	)
+}
+
+func dispatchMutableEvent[T any](
+	runtime *Runtime,
+	ctx context.Context,
+	snapshot *registrySnapshot,
+	eventName string,
+	sessionID string,
+	payload T,
+) (T, DispatchResult, error) {
+	dispatched, err := runtime.dispatchEvent(
+		ctx,
+		snapshot,
+		eventName,
+		sessionID,
+		payload,
+		executionEventDispatchOptions(),
+	)
+	var patched T
+	if err != nil {
+		return patched, dispatched, err
+	}
+	if err := decodePayload(dispatched.Event, &patched); err != nil {
+		return patched, dispatched, err
+	}
+	return patched, dispatched, nil
+}
+
+func decodePayload(event sdk.Event, target any) error {
+	if err := json.Unmarshal(event.Payload, target); err != nil {
+		return fmt.Errorf("decode %s event payload: %w", event.Name, err)
+	}
+	return nil
+}
+
+func (runtime *Runtime) dispatchEvent(
+	ctx context.Context,
+	snapshot *registrySnapshot,
+	eventName string,
+	sessionID string,
+	payload any,
+	options eventDispatchOptions,
+) (DispatchResult, error) {
+	event, err := newDispatchEvent(snapshot, eventName, sessionID, payload)
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	return runtime.dispatchPreparedEvent(ctx, snapshot, event, options)
+}
+
+func newDispatchEvent(
+	snapshot *registrySnapshot,
+	eventName string,
+	sessionID string,
+	payload any,
+) (sdk.Event, error) {
+	if snapshot == nil {
+		return sdk.Event{}, errors.New("event registry snapshot is nil")
+	}
+	if _, exists := snapshot.events[eventName]; !exists {
+		return sdk.Event{}, fmt.Errorf("event %q is not registered", eventName)
 	}
 	raw, err := marshalEventPayload(payload)
 	if err != nil {
-		return DispatchResult{}, fmt.Errorf("encode %s event: %w", eventName, err)
+		return sdk.Event{}, fmt.Errorf("encode %s event: %w", eventName, err)
 	}
-	event := sdk.Event{
+	return sdk.Event{
 		ID:         sdk.NewID(),
 		Name:       eventName,
 		SessionID:  sessionID,
 		Generation: snapshot.generation,
 		Payload:    raw,
+	}, nil
+}
+
+func (runtime *Runtime) dispatchPreparedEvent(
+	ctx context.Context,
+	snapshot *registrySnapshot,
+	event sdk.Event,
+	options eventDispatchOptions,
+) (DispatchResult, error) {
+	if snapshot == nil {
+		return DispatchResult{}, errors.New("event registry snapshot is nil")
 	}
-	hooks := snapshot.hooks[eventName]
+	owned, exists := snapshot.events[event.Name]
+	if !exists {
+		return DispatchResult{}, fmt.Errorf("event %q is not registered", event.Name)
+	}
+	hooks := snapshot.hooks[event.Name]
 
 	ctx, span := runtime.tracer.Start(
 		ctx,
-		"event "+eventName,
+		"event "+event.Name,
 		trace.WithAttributes(
-			attribute.String("agentm.event.name", eventName),
+			attribute.String("agentm.event.name", event.Name),
 			attribute.String("agentm.event.id", event.ID),
 			attribute.Int64("agentm.registry.generation", int64(snapshot.generation)),
 			attribute.Int("agentm.event.hook_count", len(hooks)),
@@ -80,38 +234,52 @@ func (runtime *Runtime) dispatch(
 	runtime.events.Add(
 		ctx,
 		1,
-		metric.WithAttributes(attribute.String("agentm.event.name", eventName)),
+		metric.WithAttributes(attribute.String("agentm.event.name", event.Name)),
 	)
 
-	result := DispatchResult{Event: event}
-	for _, ownedHook := range hooks {
+	result := DispatchResult{
+		Event: event,
+		Audit: newEventAudit(event),
+	}
+	patchedBy := make(map[string]int)
+	for index, ownedHook := range hooks {
+		step := newHookAuditStep(index, ownedHook, event.Payload)
+		start := time.Now()
 		effect, hookErr := runtime.invokeHook(ctx, ownedHook, event)
+		step.Duration = time.Since(start)
+		step.OutputHash = step.InputHash
 		if hookErr != nil {
-			if ownedHook.spec.FailurePolicy == sdk.FailurePolicyContinue {
-				runtime.logger.WarnContext(
-					ctx,
-					"plugin hook failed; continuing",
-					"plugin",
-					ownedHook.owner.manifest.Name,
-					"hook",
-					ownedHook.spec.Name,
-					"event",
-					eventName,
-					"error",
-					hookErr,
-				)
-				continue
-			}
 			err := fmt.Errorf(
 				"hook %q from plugin %q failed on event %q: %w",
 				ownedHook.spec.Name,
 				ownedHook.owner.manifest.Name,
-				eventName,
+				event.Name,
 				hookErr,
 			)
-			recordSpanError(span, err)
-			return DispatchResult{}, err
+			if handled, err := runtime.handleHookDispatchError(
+				ctx,
+				span,
+				&result,
+				event,
+				ownedHook,
+				hookDispatchFailure{
+					step:                       step,
+					auditErr:                   hookErr,
+					dispatchErr:                err,
+					continueMessage:            "plugin hook failed; continuing",
+					allowFailurePolicyContinue: true,
+				},
+				options,
+			); err != nil {
+				return result, err
+			} else if handled {
+				continue
+			}
 		}
+		step.PatchFields = sortedPatchFields(effect.Patch)
+		step.Overwrites = overwrittenPatchFields(step.PatchFields, patchedBy)
+		step.Block = summarizeBlock(effect.Block)
+		step.Action = summarizeAction(effect.Action)
 		if err := validateEffect(owned.contract, effect); err != nil {
 			err = fmt.Errorf(
 				"hook %q from plugin %q returned invalid effect: %w",
@@ -119,51 +287,405 @@ func (runtime *Runtime) dispatch(
 				ownedHook.owner.manifest.Name,
 				err,
 			)
-			recordSpanError(span, err)
-			return DispatchResult{}, err
+			if handled, err := runtime.handleHookDispatchError(
+				ctx,
+				span,
+				&result,
+				event,
+				ownedHook,
+				hookDispatchFailure{
+					step:            step,
+					auditErr:        err,
+					dispatchErr:     err,
+					continueMessage: "plugin hook returned invalid post-commit effect; continuing",
+				},
+				options,
+			); err != nil {
+				return result, err
+			} else if handled {
+				continue
+			}
 		}
 		if len(effect.Patch) > 0 {
-			raw, err = applyPatch(raw, effect.Patch, owned.contract.MutableFields)
+			raw, err := applyPatch(
+				event.Payload,
+				effect.Patch,
+				owned.contract.MutableFields,
+			)
 			if err != nil {
-				recordSpanError(span, err)
-				return DispatchResult{}, err
+				err = fmt.Errorf(
+					"hook %q from plugin %q returned invalid patch: %w",
+					ownedHook.spec.Name,
+					ownedHook.owner.manifest.Name,
+					err,
+				)
+				if handled, err := runtime.handleHookDispatchError(
+					ctx,
+					span,
+					&result,
+					event,
+					ownedHook,
+					hookDispatchFailure{
+						step:            step,
+						auditErr:        err,
+						dispatchErr:     err,
+						continueMessage: "plugin hook returned invalid post-commit patch; continuing",
+					},
+					options,
+				); err != nil {
+					return result, err
+				} else if handled {
+					continue
+				}
 			}
 			event.Payload = raw
 			result.Event.Payload = raw
+			for _, field := range step.PatchFields {
+				patchedBy[field] = index
+			}
 		}
+		step.OutputHash = payloadHash(event.Payload)
+		step.Outcome = hookAuditOutcome(effect)
+		result.Audit.Steps = append(result.Audit.Steps, step)
 		if result.Block == nil && effect.Block != nil {
 			block := *effect.Block
 			result.Block = &block
+			result.Audit.Resolution = sdk.EffectResolution{
+				Outcome:     sdk.EffectResolutionBlocked,
+				Block:       summarizeBlock(effect.Block),
+				BlockStep:   intPtr(index),
+				PatchFields: auditPatchFields(result.Audit),
+			}
+			appendSkippedHookAuditSteps(
+				&result.Audit,
+				hooks,
+				index+1,
+				event.Payload,
+			)
+			break
 		}
 		if effect.Action != nil {
-			result.Actions = append(result.Actions, *effect.Action)
+			result.Actions = append(result.Actions, sdk.CloneAction(*effect.Action))
+			result.actionSteps = append(result.actionSteps, index)
 		}
 	}
-	if err := runtime.enqueueSubscribers(ctx, snapshot, result.Event); err != nil {
-		recordSpanError(span, err)
-		return DispatchResult{}, err
+	finalizeDispatchAudit(&result)
+	if options.enqueueSubscribers() {
+		if err := runtime.enqueueSubscribers(ctx, snapshot, result.Event); err != nil {
+			recordSpanError(span, err)
+			if options.returnSubscriberFailures() {
+				return DispatchResult{}, err
+			}
+			runtime.logger.WarnContext(
+				ctx,
+				"subscriber delivery enqueue failed",
+				"event",
+				event.Name,
+				"event_id",
+				event.ID,
+				"error",
+				err,
+			)
+		}
 	}
 	runtime.observeEvent(ctx, result.Event)
 	return result, nil
 }
 
-func (runtime *Runtime) observeEvent(ctx context.Context, event sdk.Event) {
-	if runtime.eventObserver == nil {
+type hookDispatchFailure struct {
+	step                       sdk.HookAuditStep
+	auditErr                   error
+	dispatchErr                error
+	continueMessage            string
+	allowFailurePolicyContinue bool
+}
+
+func (runtime *Runtime) handleHookDispatchError(
+	ctx context.Context,
+	span trace.Span,
+	result *DispatchResult,
+	event sdk.Event,
+	owned ownedHook,
+	failure hookDispatchFailure,
+	options eventDispatchOptions,
+) (bool, error) {
+	step := failure.step
+	step.Error = failure.auditErr.Error()
+	step.Outcome = sdk.HookAuditError
+	result.Audit.Steps = append(result.Audit.Steps, step)
+	if options.isPostCommit() ||
+		(failure.allowFailurePolicyContinue &&
+			owned.spec.FailurePolicy == sdk.FailurePolicyContinue) {
+		runtime.logger.WarnContext(
+			ctx,
+			failure.continueMessage,
+			"plugin",
+			owned.owner.manifest.Name,
+			"hook",
+			owned.spec.Name,
+			"event",
+			event.Name,
+			"error",
+			failure.auditErr,
+		)
+		return true, nil
+	}
+	result.Audit.Resolution = errorEffectResolution(failure.dispatchErr)
+	result.Audit.OutputHash = payloadHash(event.Payload)
+	recordSpanError(span, failure.dispatchErr)
+	return false, failure.dispatchErr
+}
+
+func newEventAudit(event sdk.Event) sdk.EventAudit {
+	hash := payloadHash(event.Payload)
+	return sdk.EventAudit{
+		EventID:    event.ID,
+		EventName:  event.Name,
+		Generation: event.Generation,
+		InputHash:  hash,
+		OutputHash: hash,
+		Resolution: sdk.EffectResolution{
+			Outcome: sdk.EffectResolutionNoEffect,
+		},
+	}
+}
+
+func newHookAuditStep(
+	index int,
+	owned ownedHook,
+	payload json.RawMessage,
+) sdk.HookAuditStep {
+	hash := payloadHash(payload)
+	return sdk.HookAuditStep{
+		Index:         index,
+		Plugin:        owned.owner.manifest.Name,
+		PluginVersion: owned.owner.manifest.Version,
+		Hook:          owned.spec.Name,
+		Priority:      owned.spec.Priority,
+		Sequence:      owned.seq,
+		FailurePolicy: owned.spec.FailurePolicy,
+		InputHash:     hash,
+		OutputHash:    hash,
+		Outcome:       sdk.HookAuditNoEffect,
+	}
+}
+
+func appendSkippedHookAuditSteps(
+	audit *sdk.EventAudit,
+	hooks []ownedHook,
+	start int,
+	payload json.RawMessage,
+) {
+	for index := start; index < len(hooks); index++ {
+		step := newHookAuditStep(index, hooks[index], payload)
+		step.Outcome = sdk.HookAuditSkipped
+		audit.Steps = append(audit.Steps, step)
+	}
+}
+
+func finalizeDispatchAudit(result *DispatchResult) {
+	result.Audit.OutputHash = payloadHash(result.Event.Payload)
+	if result.Audit.Resolution.Outcome == sdk.EffectResolutionBlocked ||
+		result.Audit.Resolution.Outcome == sdk.EffectResolutionError {
+		if len(result.Audit.Resolution.PatchFields) == 0 {
+			result.Audit.Resolution.PatchFields = auditPatchFields(result.Audit)
+		}
 		return
 	}
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			runtime.logger.WarnContext(
-				ctx,
-				"runtime event observer panicked",
-				"event",
-				event.Name,
-				"panic",
-				recovered,
-			)
+	if len(result.Actions) > 0 {
+		result.Audit.Resolution = sdk.EffectResolution{
+			Outcome:     sdk.EffectResolutionAction,
+			Action:      summarizeAction(&result.Actions[len(result.Actions)-1]),
+			ActionSteps: slices.Clone(result.actionSteps),
+			ActionRule:  "proposed",
+			PatchFields: auditPatchFields(result.Audit),
 		}
+		return
+	}
+	if hasHookAuditOutcome(result.Audit, sdk.HookAuditError) {
+		result.Audit.Resolution = sdk.EffectResolution{
+			Outcome:     sdk.EffectResolutionError,
+			PatchFields: auditPatchFields(result.Audit),
+		}
+		return
+	}
+	if fields := auditPatchFields(result.Audit); len(fields) > 0 {
+		result.Audit.Resolution = sdk.EffectResolution{
+			Outcome:     sdk.EffectResolutionPatched,
+			PatchFields: fields,
+		}
+		return
+	}
+	result.Audit.Resolution = sdk.EffectResolution{
+		Outcome: sdk.EffectResolutionNoEffect,
+	}
+}
+
+func hasHookAuditOutcome(
+	audit sdk.EventAudit,
+	outcome sdk.HookAuditOutcome,
+) bool {
+	for _, step := range audit.Steps {
+		if step.Outcome == outcome {
+			return true
+		}
+	}
+	return false
+}
+
+func hookAuditOutcome(effect sdk.Effect) sdk.HookAuditOutcome {
+	if effect.Block != nil {
+		return sdk.HookAuditBlocked
+	}
+	if effect.Action != nil {
+		return sdk.HookAuditAction
+	}
+	if len(effect.Patch) > 0 {
+		return sdk.HookAuditPatched
+	}
+	return sdk.HookAuditNoEffect
+}
+
+func sortedPatchFields(patch map[string]json.RawMessage) []string {
+	if len(patch) == 0 {
+		return nil
+	}
+	fields := make([]string, 0, len(patch))
+	for field := range patch {
+		fields = append(fields, field)
+	}
+	slices.Sort(fields)
+	return fields
+}
+
+func overwrittenPatchFields(
+	fields []string,
+	patchedBy map[string]int,
+) []string {
+	var overwrites []string
+	for _, field := range fields {
+		if _, exists := patchedBy[field]; exists {
+			overwrites = append(overwrites, field)
+		}
+	}
+	return overwrites
+}
+
+func auditPatchFields(audit sdk.EventAudit) []string {
+	seen := make(map[string]struct{})
+	for _, step := range audit.Steps {
+		for _, field := range step.PatchFields {
+			seen[field] = struct{}{}
+		}
+	}
+	fields := make([]string, 0, len(seen))
+	for field := range seen {
+		fields = append(fields, field)
+	}
+	slices.Sort(fields)
+	return fields
+}
+
+func summarizeBlock(block *sdk.Block) *sdk.BlockSummary {
+	if block == nil {
+		return nil
+	}
+	return &sdk.BlockSummary{
+		Reason: block.Reason,
+		Kind:   block.Kind,
+	}
+}
+
+func summarizeAction(action *sdk.Action) *sdk.ActionSummary {
+	if action == nil {
+		return nil
+	}
+	summary := &sdk.ActionSummary{
+		Kind:         action.Kind,
+		MessageCount: len(action.Messages),
+	}
+	if action.Cause != nil {
+		summary.CauseCode = action.Cause.Code
+		summary.CauseFinal = action.Cause.Final
+	}
+	return summary
+}
+
+func errorEffectResolution(err error) sdk.EffectResolution {
+	return sdk.EffectResolution{
+		Outcome: sdk.EffectResolutionError,
+		Error:   err.Error(),
+	}
+}
+
+func intPtr(value int) *int {
+	return &value
+}
+
+func payloadHash(payload json.RawMessage) string {
+	sum := sha256.Sum256(payload)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func (runtime *Runtime) observeEvent(ctx context.Context, event sdk.Event) {
+	runtime.observer.dispatch(runtime, ctx, event)
+}
+
+type eventObserverRuntime struct {
+	observe func(context.Context, sdk.Event)
+	context context.Context
+	cancel  context.CancelFunc
+	wait    sync.WaitGroup
+}
+
+func (observer *eventObserverRuntime) dispatch(
+	runtime *Runtime,
+	ctx context.Context,
+	event sdk.Event,
+) {
+	if observer.observe == nil {
+		return
+	}
+	observe := observer.observe
+	observed := sdk.CloneEvent(event)
+	observerCtx := lifecycle.WithValues(
+		observer.context,
+		afterDispatchEventContext(ctx),
+	)
+	releaseObserver, ok := observer.begin(runtime)
+	if !ok {
+		return
+	}
+	go func() {
+		defer releaseObserver()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				runtime.logger.WarnContext(
+					observerCtx,
+					"runtime event observer panicked",
+					"event",
+					observed.Name,
+					"panic",
+					recovered,
+				)
+			}
+		}()
+		observe(observerCtx, observed)
 	}()
-	runtime.eventObserver(ctx, sdk.CloneEvent(event))
+}
+
+func (observer *eventObserverRuntime) begin(runtime *Runtime) (func(), bool) {
+	return runtime.beginRuntimeWork(&observer.wait)
+}
+
+func (observer *eventObserverRuntime) stop() {
+	if observer.cancel != nil {
+		observer.cancel()
+	}
+}
+
+func (observer *eventObserverRuntime) waitStopped() {
+	observer.wait.Wait()
 }
 
 func (runtime *Runtime) invokeHook(
@@ -171,11 +693,6 @@ func (runtime *Runtime) invokeHook(
 	owned ownedHook,
 	event sdk.Event,
 ) (effect sdk.Effect, err error) {
-	if owned.spec.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, owned.spec.Timeout)
-		defer cancel()
-	}
 	ctx, span := runtime.tracer.Start(
 		ctx,
 		"hook "+owned.spec.Name,
@@ -196,43 +713,11 @@ func (runtime *Runtime) invokeHook(
 			attribute.String("agentm.hook.event", owned.spec.Event),
 		),
 	)
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("panic: %v\n%s", recovered, debug.Stack())
-			recordSpanError(span, err)
-		}
-	}()
-	effect, err = owned.value.Handle(ctx, sdk.CloneEvent(event))
+	effect, err = pluginpolicy.HandleHook(ctx, owned.value, owned.spec, event)
 	if err != nil {
 		recordSpanError(span, err)
-	} else {
-		effect = cloneEffect(effect)
 	}
 	return effect, err
-}
-
-func cloneEffect(effect sdk.Effect) sdk.Effect {
-	if effect.Patch != nil {
-		patch := make(map[string]json.RawMessage, len(effect.Patch))
-		for field, value := range effect.Patch {
-			patch[field] = append(json.RawMessage(nil), value...)
-		}
-		effect.Patch = patch
-	}
-	if effect.Block != nil {
-		block := *effect.Block
-		effect.Block = &block
-	}
-	if effect.Action != nil {
-		action := *effect.Action
-		if action.Cause != nil {
-			cause := *action.Cause
-			action.Cause = &cause
-		}
-		action.Messages = cloneMessages(action.Messages)
-		effect.Action = &action
-	}
-	return effect
 }
 
 func validateEffect(contract sdk.EventContract, effect sdk.Effect) error {
@@ -320,65 +805,4 @@ func marshalEventPayload(payload any) (json.RawMessage, error) {
 		return nil, errors.New("event payload must encode as a JSON object")
 	}
 	return raw, nil
-}
-
-func recordSpanError(span trace.Span, err error) {
-	span.RecordError(err)
-	span.SetStatus(codes.Error, err.Error())
-}
-
-func (runtime *Runtime) InvokeCapability(
-	ctx context.Context,
-	name string,
-	input json.RawMessage,
-) (json.RawMessage, error) {
-	lease, err := runtime.acquireSnapshot()
-	if err != nil {
-		return nil, err
-	}
-	defer lease.release()
-	owned, exists := lease.snapshot.capabilities[name]
-	if !exists {
-		return nil, fmt.Errorf("capability %q is not registered", name)
-	}
-	ctx, span := runtime.tracer.Start(
-		ctx,
-		"capability "+name,
-		trace.WithAttributes(
-			attribute.String("agentm.capability.name", name),
-			attribute.String("agentm.plugin.name", owned.owner.manifest.Name),
-		),
-	)
-	defer span.End()
-	asynchronous, ok := owned.value.(sdk.AsyncCapability)
-	if !ok {
-		err := fmt.Errorf("capability %q has no asynchronous execution implementation", name)
-		recordSpanError(span, err)
-		return nil, err
-	}
-	initial, err := asynchronous.SubmitInvoke(ctx, sdk.OperationRequest{
-		IdempotencyKey: sdk.NewID(),
-		Input:          append(json.RawMessage(nil), input...),
-	})
-	if err != nil {
-		recordSpanError(span, err)
-		return nil, fmt.Errorf("submit capability %q: %w", name, err)
-	}
-	operation, err := runtime.awaitOperation(
-		ctx,
-		initial,
-		asynchronous.PollInvoke,
-		asynchronous.CancelInvoke,
-	)
-	if err != nil {
-		recordSpanError(span, err)
-		return nil, fmt.Errorf("invoke capability %q: %w", name, err)
-	}
-	output := operation.Output
-	if !json.Valid(output) {
-		err := fmt.Errorf("capability %q returned invalid JSON", name)
-		recordSpanError(span, err)
-		return nil, err
-	}
-	return append(json.RawMessage(nil), output...), nil
 }

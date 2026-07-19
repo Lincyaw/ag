@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lincyaw/ag/internal/lifecycle"
 	"github.com/lincyaw/ag/pluginrpc"
 	pluginregistry "github.com/lincyaw/ag/registry"
 	"github.com/lincyaw/ag/sdk"
@@ -70,8 +71,8 @@ func Serve(ctx context.Context, config Config) (returnErr error) {
 		runCancel()
 		var cleanupErr error
 		if registryClient != nil {
-			cleanupCtx, cancel := context.WithTimeout(
-				context.Background(),
+			cleanupCtx, cancel := lifecycle.WithDetachedTimeout(
+				ctx,
 				2*time.Second,
 			)
 			if lease.ID != "" {
@@ -107,8 +108,8 @@ func Serve(ctx context.Context, config Config) (returnErr error) {
 				cleanupErr = errors.Join(cleanupErr, err)
 			}
 		}
-		closeCtx, cancel := context.WithTimeout(
-			context.Background(),
+		closeCtx, cancel := lifecycle.WithDetachedTimeout(
+			ctx,
 			15*time.Second,
 		)
 		if adapter != nil {
@@ -120,8 +121,8 @@ func Serve(ctx context.Context, config Config) (returnErr error) {
 		}
 		cancel()
 		if storage != nil {
-			closeCtx, cancel = context.WithTimeout(
-				context.Background(),
+			closeCtx, cancel = lifecycle.WithDetachedTimeout(
+				ctx,
 				5*time.Second,
 			)
 			cleanupErr = errors.Join(cleanupErr, storage.Close(closeCtx))

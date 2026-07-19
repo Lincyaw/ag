@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -117,6 +118,70 @@ func (cancellingToolProvider) Complete(
 			},
 		},
 	}, nil
+}
+
+type panicSubmitProvider struct{}
+
+func (panicSubmitProvider) Spec() sdk.ProviderSpec {
+	return sdk.ProviderSpec{Name: "panic-submit-model", Model: "test"}
+}
+
+func (panicSubmitProvider) Complete(
+	_ context.Context,
+	request sdk.ModelRequest,
+) (sdk.ModelResponse, error) {
+	for _, message := range request.Messages {
+		if message.Role == sdk.RoleTool &&
+			message.ToolCallID == "panic-submit" {
+			if strings.Contains(message.Content, "submit exploded") {
+				return sdk.ModelResponse{
+					Content: "panic captured",
+				}, nil
+			}
+			return sdk.ModelResponse{
+				Content: "unexpected tool error: " + message.Content,
+			}, nil
+		}
+	}
+	return sdk.ModelResponse{
+		ToolCalls: []sdk.ToolCall{{
+			ID:        "panic-submit",
+			Name:      "panic-submit",
+			Arguments: json.RawMessage(`{}`),
+		}},
+	}, nil
+}
+
+type panicSubmitTool struct{}
+
+func (panicSubmitTool) Spec() sdk.ToolSpec {
+	return sdk.ToolSpec{
+		Name:        "panic-submit",
+		Description: "panics while submitting an async operation",
+		Parameters:  map[string]any{"type": "object"},
+	}
+}
+
+func (panicSubmitTool) SubmitCall(
+	context.Context,
+	sdk.OperationRequest,
+) (sdk.Operation, error) {
+	panic("submit exploded")
+}
+
+func (panicSubmitTool) PollCall(
+	context.Context,
+	string,
+	uint64,
+) (sdk.Operation, error) {
+	return sdk.Operation{}, nil
+}
+
+func (panicSubmitTool) CancelCall(
+	context.Context,
+	string,
+) (sdk.Operation, error) {
+	return sdk.Operation{}, nil
 }
 
 func (*barrierTool) Spec() sdk.ToolSpec {
@@ -421,5 +486,66 @@ func TestToolCallGroupCancellationReachesEverySibling(t *testing.T) {
 			cancelledOperations,
 			records,
 		)
+	}
+}
+
+func TestToolCallSubmitPanicBecomesToolFailure(t *testing.T) {
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: newTestStateBackend(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			time.Second,
+		)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "panic-submit-tools",
+			Version:     "1.0.0",
+			Description: "tests structured fan-out panic capture",
+			APIVersion:  sdk.APIVersion,
+			Registers: []string{
+				sdk.ProviderResource("panic-submit-model"),
+				sdk.ToolResource("panic-submit"),
+			},
+		},
+		InstallFunc: func(
+			_ context.Context,
+			registrar sdk.Registrar,
+		) error {
+			if err := registrar.RegisterProvider(
+				panicSubmitProvider{},
+			); err != nil {
+				return err
+			}
+			return registrar.RegisterTool(panicSubmitTool{})
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "panic-submit-session",
+		Provider: "panic-submit-model",
+		MaxTurns: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := session.Prompt(ctx, "recover panic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "panic captured" || result.ToolCalls != 1 {
+		t.Fatalf("result = %#v", result)
 	}
 }

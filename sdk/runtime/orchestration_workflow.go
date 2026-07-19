@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/lincyaw/ag/sdk"
 )
@@ -31,32 +30,26 @@ func (invoker *scopedAgentInvoker) ExecuteWorkflow(
 			"workflow idempotency key is required",
 		)
 	}
-	invocationID := invoker.parentSession.executionOperationKey(
-		"workflow",
-		invoker.parentInvocation.ID+"/"+request.Name+"/"+
-			request.IdempotencyKey,
-	)
-	invocation := sdk.Invocation{
-		ID:           invocationID,
-		RootID:       invoker.parentInvocation.RootID,
-		ParentID:     invoker.parentInvocation.ID,
-		SessionID:    invoker.parentInvocation.SessionID,
-		ExecutionID:  invoker.parentInvocation.ExecutionID,
-		Dependencies: append([]string(nil), request.Dependencies...),
-		Ordinal:      request.Ordinal,
-	}
-	if invocation.RootID == "" {
-		invocation.RootID = invoker.parentInvocation.ID
-	}
+	coordinate := request.Name + "/" + request.IdempotencyKey
+	groupCoordinate := ""
 	if request.Group != "" {
-		invocation.GroupID =
-			invoker.parentSession.executionOperationKey(
-				"group",
-				"workflows/"+request.Group,
-			)
+		groupCoordinate = "workflows/" + request.Group
 	}
+	invocation := invoker.childInvocation(childInvocationConfig{
+		kind:            "workflow",
+		coordinate:      coordinate,
+		groupCoordinate: groupCoordinate,
+		dependencies:    request.Dependencies,
+		ordinal:         request.Ordinal,
+	})
 	if err := sdk.ValidateInvocation(invocation); err != nil {
 		return sdk.WorkflowResult{}, err
+	}
+	target := localOperationTarget{
+		runtime:  invoker.runtime,
+		kind:     sdk.OperationKindWorkflow,
+		resource: request.Name,
+		snapshot: invoker.snapshot,
 	}
 	raw, err := json.Marshal(request)
 	if err != nil {
@@ -66,25 +59,16 @@ func (invoker *scopedAgentInvoker) ExecuteWorkflow(
 			err,
 		)
 	}
-	pin, err := invoker.runtime.acquireRegistrySnapshot(
-		invoker.snapshot,
-	)
-	if err != nil {
-		return sdk.WorkflowResult{}, err
-	}
-	defer pin.release()
 	operationCtx := sdk.WithAgentInvoker(ctx, nil)
 	operationCtx = sdk.WithWorkflowInvoker(operationCtx, nil)
-	initial, err := invoker.runtime.submitLocalOperation(
+	operationRequest := sdk.OperationRequest{
+		IdempotencyKey: invocation.ID,
+		Input:          raw,
+		Invocation:     invocation,
+	}
+	initial, err := target.submit(
 		operationCtx,
-		sdk.OperationKindWorkflow,
-		request.Name,
-		"",
-		sdk.OperationRequest{
-			IdempotencyKey: invocationID,
-			Input:          raw,
-			Invocation:     invocation,
-		},
+		operationRequest,
 		func(
 			executionCtx context.Context,
 			_ json.RawMessage,
@@ -107,47 +91,18 @@ func (invoker *scopedAgentInvoker) ExecuteWorkflow(
 			err,
 		)
 	}
-	operation, err := invoker.runtime.awaitOperation(
+	result, err := awaitOperationRequestJSON[sdk.WorkflowResult](
+		invoker.runtime,
 		ctx,
+		operationRequest,
 		initial,
-		func(
-			pollCtx context.Context,
-			id string,
-			_ uint64,
-		) (sdk.Operation, error) {
-			return invoker.runtime.pollLocalOperation(
-				pollCtx,
-				sdk.OperationKindWorkflow,
-				request.Name,
-				id,
-			)
-		},
-		func(
-			cancelCtx context.Context,
-			id string,
-		) (sdk.Operation, error) {
-			return invoker.runtime.cancelLocalOperation(
-				cancelCtx,
-				sdk.OperationKindWorkflow,
-				request.Name,
-				id,
-			)
-		},
+		target.poll,
+		target.cancel,
+		fmt.Sprintf("workflow %q", request.Name),
+		fmt.Sprintf("workflow %q result", request.Name),
 	)
 	if err != nil {
-		return sdk.WorkflowResult{}, fmt.Errorf(
-			"workflow %q: %w",
-			request.Name,
-			err,
-		)
-	}
-	var result sdk.WorkflowResult
-	if err := json.Unmarshal(operation.Output, &result); err != nil {
-		return sdk.WorkflowResult{}, fmt.Errorf(
-			"decode workflow %q result: %w",
-			request.Name,
-			err,
-		)
+		return sdk.WorkflowResult{}, err
 	}
 	return result, nil
 }
@@ -332,31 +287,19 @@ func (invoker *scopedAgentInvoker) runWorkflow(
 				request.Name,
 			)
 		}
-		waveCtx, cancel := context.WithCancel(ctx)
 		outcomes := make([]struct {
 			result sdk.AgentResult
 			err    error
 		}, len(ready))
-		var wait sync.WaitGroup
-		var cancelOnce sync.Once
-		var slots chan struct{}
-		if request.MaxConcurrency > 0 {
-			slots = make(chan struct{}, request.MaxConcurrency)
-		}
-		for readyIndex, nodeIndex := range ready {
-			wait.Add(1)
-			go func(readyIndex, nodeIndex int) {
-				defer wait.Done()
-				if slots != nil {
-					select {
-					case slots <- struct{}{}:
-						defer func() { <-slots }()
-					case <-waveCtx.Done():
-						outcomes[readyIndex].err =
-							waveCtx.Err()
-						return
-					}
-				}
+		errs := runParallelIndexed(
+			ctx,
+			len(ready),
+			parallelIndexedOptions{
+				Limit:         request.MaxConcurrency,
+				CancelOnError: true,
+			},
+			func(ctx context.Context, readyIndex int) error {
+				nodeIndex := ready[readyIndex]
 				node := request.Nodes[nodeIndex]
 				agentRequest := node.Agent
 				if agentRequest.IdempotencyKey == "" {
@@ -393,16 +336,17 @@ func (invoker *scopedAgentInvoker) runWorkflow(
 				outcomes[readyIndex].result,
 					outcomes[readyIndex].err =
 					childInvoker.InvokeAgent(
-						waveCtx,
+						ctx,
 						agentRequest,
 					)
-				if outcomes[readyIndex].err != nil {
-					cancelOnce.Do(cancel)
-				}
-			}(readyIndex, nodeIndex)
+				return outcomes[readyIndex].err
+			},
+		)
+		for readyIndex, err := range errs {
+			if err != nil {
+				outcomes[readyIndex].err = err
+			}
 		}
-		wait.Wait()
-		cancel()
 		var waveErrors []error
 		for readyIndex, nodeIndex := range ready {
 			if outcomes[readyIndex].err != nil {

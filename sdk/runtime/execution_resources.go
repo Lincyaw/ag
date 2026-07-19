@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/lincyaw/ag/internal/plugincontract"
 	"github.com/lincyaw/ag/sdk"
@@ -19,7 +18,6 @@ func (session *Session) invokeProvider(
 	ctx context.Context,
 	name string,
 	provider sdk.Provider,
-	operationKey string,
 	invocation sdk.Invocation,
 	request sdk.ModelRequest,
 ) (sdk.ModelResponse, error) {
@@ -28,32 +26,30 @@ func (session *Session) invokeProvider(
 		if err != nil {
 			return sdk.ModelResponse{}, fmt.Errorf("encode provider %q request: %w", name, err)
 		}
-		initial, err := asynchronous.SubmitCompletion(ctx, sdk.OperationRequest{
-			IdempotencyKey: operationKey,
+		operationRequest := sdk.OperationRequest{
+			IdempotencyKey: invocation.ID,
 			Input:          input,
-			Invocation:     sdk.CloneInvocation(invocation),
-		})
+			Invocation:     invocation,
+		}
+		initial, err := asynchronous.SubmitCompletion(
+			ctx,
+			sdk.CloneOperationRequest(operationRequest),
+		)
 		if err != nil {
 			return sdk.ModelResponse{}, fmt.Errorf("submit provider %q completion: %w", name, err)
 		}
-		if initial.IdempotencyKey != operationKey {
-			return sdk.ModelResponse{}, fmt.Errorf(
-				"provider %q returned operation with unexpected idempotency key",
-				name,
-			)
-		}
-		operation, err := session.runtime.awaitOperation(
+		response, err := awaitOperationRequestJSON[sdk.ModelResponse](
+			session.runtime,
 			ctx,
+			operationRequest,
 			initial,
 			asynchronous.PollCompletion,
 			asynchronous.CancelCompletion,
+			fmt.Sprintf("provider %q completion", name),
+			fmt.Sprintf("provider %q response", name),
 		)
 		if err != nil {
-			return sdk.ModelResponse{}, fmt.Errorf("provider %q completion: %w", name, err)
-		}
-		var response sdk.ModelResponse
-		if err := json.Unmarshal(operation.Output, &response); err != nil {
-			return sdk.ModelResponse{}, fmt.Errorf("decode provider %q response: %w", name, err)
+			return sdk.ModelResponse{}, err
 		}
 		return response, nil
 	}
@@ -98,13 +94,13 @@ func selectProviderName(
 	for name := range snapshot.providers {
 		return name, nil
 	}
-	panic("unreachable")
+	return "", errors.New("no provider is mounted")
 }
 
 func snapshotToolSpecs(snapshot *registrySnapshot) []sdk.ToolSpec {
 	specs := make([]sdk.ToolSpec, 0, len(snapshot.tools))
 	for _, owned := range snapshot.tools {
-		specs = append(specs, plugincontract.CloneToolSpec(owned.spec))
+		specs = append(specs, sdk.CloneToolSpec(owned.spec))
 	}
 	slices.SortFunc(specs, func(left, right sdk.ToolSpec) int {
 		return strings.Compare(left.Name, right.Name)
@@ -143,7 +139,6 @@ func resolveAdvertisedTools(
 
 type preparedToolCall struct {
 	call          sdk.ToolCall
-	operationKey  string
 	invocation    sdk.Invocation
 	asynchronous  sdk.AsyncTool
 	initial       sdk.Operation
@@ -157,6 +152,14 @@ type toolCallOutcome struct {
 	err    error
 }
 
+func (call preparedToolCall) operationRequest() sdk.OperationRequest {
+	return sdk.OperationRequest{
+		IdempotencyKey: call.invocation.ID,
+		Input:          call.call.Arguments,
+		Invocation:     call.invocation,
+	}
+}
+
 func (session *Session) prepareToolCall(
 	ctx context.Context,
 	snapshot *registrySnapshot,
@@ -166,7 +169,8 @@ func (session *Session) prepareToolCall(
 	toolIndex map[string]sdk.Tool,
 	providerInvocationID string,
 ) (preparedToolCall, error) {
-	before, err := session.runtime.dispatch(
+	payload, before, err := dispatchMutableEvent(
+		session.runtime,
 		ctx,
 		snapshot,
 		sdk.EventBeforeTool,
@@ -176,35 +180,29 @@ func (session *Session) prepareToolCall(
 	if err != nil {
 		return preparedToolCall{}, err
 	}
-	var payload sdk.BeforeToolPayload
-	if err := decodePayload(before.Event, &payload); err != nil {
-		return preparedToolCall{}, err
-	}
 	call := payload.Call
-	operationKey := session.executionOperationKey(
+	coordinate := fmt.Sprintf("%d/%s", turn, call.ID)
+	invocation := session.executionInvocation(
 		"tool",
-		fmt.Sprintf("%d/%s", turn, call.ID),
+		coordinate,
+		fmt.Sprintf("tools/%d", turn),
+		[]string{providerInvocationID},
+		uint32(index),
 	)
 	prepared := preparedToolCall{
-		call:         call,
-		operationKey: operationKey,
-		invocation: session.executionInvocation(
-			"tool",
-			fmt.Sprintf("%d/%s", turn, call.ID),
-			fmt.Sprintf("tools/%d", turn),
-			[]string{providerInvocationID},
-			uint32(index),
-		),
+		call:       call,
+		invocation: invocation,
 	}
-	if err := session.appendTrajectory(
+	if err := session.appendTrajectoryWithAudit(
 		ctx,
+		snapshot,
 		sdk.TrajectoryKindToolCall,
-		snapshot.generation,
 		durability.ToolCall{
 			Turn:         turn,
 			Call:         call,
-			OperationKey: operationKey,
+			OperationKey: invocation.ID,
 		},
+		trajectoryAudits(before.Audit),
 	); err != nil {
 		return preparedToolCall{}, err
 	}
@@ -240,7 +238,6 @@ func (session *Session) prepareToolCall(
 func (session *Session) submitToolCall(
 	ctx context.Context,
 	snapshot *registrySnapshot,
-	messages []sdk.Message,
 	providerName string,
 	call *preparedToolCall,
 ) {
@@ -253,20 +250,16 @@ func (session *Session) submitToolCall(
 		parentSession:    session,
 		parentInvocation: call.invocation,
 		parentProvider:   providerName,
-		parentMessages:   cloneMessages(messages),
 		forkHead:         call.forkHead,
 		forkInvocationID: call.invocation.ID,
 	}
 	ctx = sdk.WithAgentInvoker(ctx, invoker)
 	ctx = sdk.WithWorkflowInvoker(ctx, invoker)
-	initial, err := call.asynchronous.SubmitCall(ctx, sdk.OperationRequest{
-		IdempotencyKey: call.operationKey,
-		Input: append(
-			json.RawMessage(nil),
-			call.call.Arguments...,
-		),
-		Invocation: sdk.CloneInvocation(call.invocation),
-	})
+	request := call.operationRequest()
+	initial, err := call.asynchronous.SubmitCall(
+		ctx,
+		sdk.CloneOperationRequest(request),
+	)
 	if err != nil {
 		call.failureKind = "execution_failed"
 		call.failureReason = fmt.Sprintf(
@@ -276,39 +269,40 @@ func (session *Session) submitToolCall(
 		)
 		return
 	}
-	if initial.IdempotencyKey != call.operationKey {
-		call.failureKind = "execution_failed"
-		call.failureReason = fmt.Sprintf(
-			"tool %q returned operation with unexpected idempotency key",
-			call.call.Name,
-		)
-		return
-	}
 	call.initial = initial
 }
 
 func (session *Session) submitToolCalls(
 	ctx context.Context,
 	snapshot *registrySnapshot,
-	messages []sdk.Message,
 	providerName string,
 	calls []preparedToolCall,
 ) {
-	var wait sync.WaitGroup
-	for index := range calls {
-		wait.Add(1)
-		go func(index int) {
-			defer wait.Done()
+	errs := runParallelIndexed(
+		ctx,
+		len(calls),
+		parallelIndexedOptions{},
+		func(ctx context.Context, index int) error {
 			session.submitToolCall(
 				ctx,
 				snapshot,
-				messages,
 				providerName,
 				&calls[index],
 			)
-		}(index)
+			return nil
+		},
+	)
+	for index, err := range errs {
+		if err == nil {
+			continue
+		}
+		calls[index].failureKind = "execution_failed"
+		calls[index].failureReason = fmt.Sprintf(
+			"submit tool %q call: %v",
+			calls[index].call.Name,
+			err,
+		)
 	}
-	wait.Wait()
 }
 
 func (session *Session) awaitToolCalls(
@@ -316,46 +310,41 @@ func (session *Session) awaitToolCalls(
 	calls []preparedToolCall,
 ) []toolCallOutcome {
 	outcomes := make([]toolCallOutcome, len(calls))
-	var wait sync.WaitGroup
-	for index := range calls {
-		if calls[index].failureKind != "" {
-			outcomes[index].result = sdk.ToolResult{
-				Content: calls[index].failureReason,
-				IsError: true,
+	errs := runParallelIndexed(
+		ctx,
+		len(calls),
+		parallelIndexedOptions{},
+		func(ctx context.Context, index int) error {
+			if calls[index].failureKind != "" {
+				outcomes[index].result = sdk.ToolResult{
+					Content: calls[index].failureReason,
+					IsError: true,
+				}
+				return nil
 			}
-			continue
-		}
-		wait.Add(1)
-		go func(index int) {
-			defer wait.Done()
 			call := calls[index]
-			operation, err := session.runtime.awaitOperation(
+			result, err := awaitOperationRequestJSON[sdk.ToolResult](
+				session.runtime,
 				ctx,
+				call.operationRequest(),
 				call.initial,
 				call.asynchronous.PollCall,
 				call.asynchronous.CancelCall,
+				fmt.Sprintf("tool %q call", call.call.Name),
+				fmt.Sprintf("tool %q result", call.call.Name),
 			)
 			if err != nil {
-				outcomes[index].err = fmt.Errorf(
-					"tool %q call: %w",
-					call.call.Name,
-					err,
-				)
-				return
+				return err
 			}
-			if err := json.Unmarshal(
-				operation.Output,
-				&outcomes[index].result,
-			); err != nil {
-				outcomes[index].err = fmt.Errorf(
-					"decode tool %q result: %w",
-					call.call.Name,
-					err,
-				)
-			}
-		}(index)
+			outcomes[index].result = result
+			return nil
+		},
+	)
+	for index, err := range errs {
+		if err != nil {
+			outcomes[index].err = err
+		}
 	}
-	wait.Wait()
 	return outcomes
 }
 
@@ -410,7 +399,8 @@ func (session *Session) afterToolError(
 	reason string,
 	result sdk.ToolResult,
 ) (sdk.ToolCall, sdk.ToolResult, error) {
-	dispatched, err := session.runtime.dispatch(
+	payload, dispatched, err := dispatchMutableEvent(
+		session.runtime,
 		ctx,
 		snapshot,
 		sdk.EventToolError,
@@ -426,11 +416,14 @@ func (session *Session) afterToolError(
 	if err != nil {
 		return sdk.ToolCall{}, sdk.ToolResult{}, err
 	}
-	var payload sdk.ToolErrorPayload
-	if err := decodePayload(dispatched.Event, &payload); err != nil {
-		return sdk.ToolCall{}, sdk.ToolResult{}, err
-	}
-	return session.afterTool(ctx, snapshot, turn, call, payload.Result)
+	return session.afterTool(
+		ctx,
+		snapshot,
+		turn,
+		call,
+		payload.Result,
+		dispatched.Audit,
+	)
 }
 
 func (session *Session) afterTool(
@@ -439,8 +432,10 @@ func (session *Session) afterTool(
 	turn int,
 	call sdk.ToolCall,
 	result sdk.ToolResult,
+	audits ...sdk.EventAudit,
 ) (sdk.ToolCall, sdk.ToolResult, error) {
-	dispatched, err := session.runtime.dispatch(
+	payload, dispatched, err := dispatchMutableEvent(
+		session.runtime,
 		ctx,
 		snapshot,
 		sdk.EventAfterTool,
@@ -450,15 +445,14 @@ func (session *Session) afterTool(
 	if err != nil {
 		return sdk.ToolCall{}, sdk.ToolResult{}, err
 	}
-	var payload sdk.AfterToolPayload
-	if err := decodePayload(dispatched.Event, &payload); err != nil {
-		return sdk.ToolCall{}, sdk.ToolResult{}, err
-	}
-	if err := session.appendTrajectory(
+	combinedAudits := append([]sdk.EventAudit(nil), audits...)
+	combinedAudits = append(combinedAudits, dispatched.Audit)
+	if err := session.appendTrajectoryWithAudit(
 		ctx,
+		snapshot,
 		sdk.TrajectoryKindToolResult,
-		snapshot.generation,
 		payload,
+		trajectoryAudits(combinedAudits...),
 	); err != nil {
 		return sdk.ToolCall{}, sdk.ToolResult{}, err
 	}

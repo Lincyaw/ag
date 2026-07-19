@@ -37,6 +37,26 @@ type trajectoryHandoffBackend struct {
 	trajectoryID string
 }
 
+type panicRenewExecutionStore struct {
+	sdk.TrajectoryStore
+	entered chan<- struct{}
+}
+
+func (store panicRenewExecutionStore) RenewExecution(
+	context.Context,
+	string,
+	string,
+	string,
+	time.Time,
+	time.Duration,
+) (sdk.TrajectoryExecution, error) {
+	select {
+	case store.entered <- struct{}{}:
+	default:
+	}
+	panic("broken trajectory heartbeat")
+}
+
 func (backend *trajectoryHandoffBackend) Close(ctx context.Context) error {
 	metadata, err := backend.Trajectories().LoadMetadata(
 		ctx,
@@ -53,6 +73,52 @@ func (backend *trajectoryHandoffBackend) Close(ctx context.Context) error {
 		)
 	}
 	return nil
+}
+
+func TestExecutionHeartbeatPanicCancelsExecutionContext(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{}, 1)
+	store := panicRenewExecutionStore{
+		TrajectoryStore: sdkstorage.NewMemoryTrajectoryStore(),
+		entered:         entered,
+	}
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:         testStateBackendWithStores(store, nil),
+		TrajectoryLease: 3 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	session := &Session{
+		runtime:        runtime,
+		config:         SessionConfig{ID: "heartbeat-panic"},
+		executionID:    "execution-heartbeat-panic",
+		executionToken: "heartbeat-token",
+	}
+	executionCtx, stopHeartbeat := session.executionHeartbeat(context.Background())
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat did not renew execution")
+	}
+	select {
+	case <-executionCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat panic did not cancel execution context")
+	}
+	err = stopHeartbeat()
+	if err == nil ||
+		!strings.Contains(err.Error(), "trajectory execution lease lost") ||
+		!strings.Contains(err.Error(), "broken trajectory heartbeat") {
+		t.Fatalf("stop heartbeat error = %v", err)
+	}
 }
 
 func (*shutdownBlockingTrajectoryProvider) Spec() sdk.ProviderSpec {
@@ -631,9 +697,14 @@ func TestSessionRollbackDoesNotReloadAfterCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	lease, err := runtime.acquireSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.release()
 	if err := session.checkpointTrajectory(
 		ctx,
-		0,
+		lease.snapshot,
 		[]sdk.Message{{Role: sdk.RoleUser, Content: "checkpoint"}},
 		Result{},
 		sdk.Action{Kind: sdk.ActionStep},
@@ -679,9 +750,14 @@ func TestResumeDoesNotMaterializeTrajectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	lease, err := runtime.acquireSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.release()
 	if err := session.checkpointTrajectory(
 		ctx,
-		0,
+		lease.snapshot,
 		[]sdk.Message{{Role: sdk.RoleUser, Content: "checkpoint"}},
 		Result{},
 		sdk.Action{Kind: sdk.ActionStep},
@@ -701,6 +777,79 @@ func TestResumeDoesNotMaterializeTrajectory(t *testing.T) {
 	if got := resumed.Messages(); len(got) != 1 ||
 		got[0].Content != "checkpoint" {
 		t.Fatalf("resumed messages = %#v", got)
+	}
+}
+
+func TestTrajectoryAppendEventUsesAppendSnapshot(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	events := make(chan sdk.Event, 4)
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:          newTestStateBackend(),
+		StorageOwnership: StorageBorrowed,
+		EventObserver: func(_ context.Context, event sdk.Event) {
+			if event.Name == sdk.EventTrajectoryAppend {
+				events <- event
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID: "append-snapshot-event",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := runtime.acquireSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.release()
+	eventGeneration := lease.snapshot.generation
+	if _, err := runtime.Mount(ctx, sdk.Local(sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "generation-advance",
+			Version:     "1.0.0",
+			Description: "advances composition generation",
+			APIVersion:  sdk.APIVersion,
+		},
+		InstallFunc: func(context.Context, sdk.Registrar) error {
+			return nil
+		},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.current.Load().generation == eventGeneration {
+		t.Fatal("mount did not advance runtime generation")
+	}
+	if err := session.appendTrajectory(
+		ctx,
+		lease.snapshot,
+		sdk.TrajectoryKindAgentStart,
+		sdk.AgentStartPayload{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-events:
+		if event.Generation != eventGeneration {
+			t.Fatalf(
+				"trajectory event generation = %d, want append snapshot generation %d",
+				event.Generation,
+				eventGeneration,
+			)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("trajectory append event was not observed")
 	}
 }
 
@@ -1078,6 +1227,185 @@ func TestCallerCancellationTerminatesTrajectoryExecution(t *testing.T) {
 	}
 	if len(recoverable) != 0 {
 		t.Fatalf("cancelled execution remained recoverable: %#v", recoverable)
+	}
+}
+
+func TestRuntimeCancelExecutionInterruptsHostedTrajectoryExecution(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store := sdkstorage.NewMemoryTrajectoryStore()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:          testStateBackendWithStores(store, nil),
+		StorageOwnership: StorageBorrowed,
+		OperationPoll:    time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			time.Second,
+		)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	provider := &shutdownBlockingTrajectoryProvider{
+		entered: make(chan struct{}),
+	}
+	tool := &trajectoryTestTool{
+		operations: make(map[string]sdk.Operation),
+	}
+	if _, err := runtime.Mount(
+		ctx,
+		sdk.Local(trajectoryRecoveryPlugin(provider, tool)),
+	); err != nil {
+		t.Fatal(err)
+	}
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "runtime-cancelled",
+		Provider: "scripted",
+		MaxTurns: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	promptDone := make(chan error, 1)
+	go func() {
+		_, promptErr := session.Prompt(
+			context.Background(),
+			"cancel from runtime",
+		)
+		promptDone <- promptErr
+	}()
+	select {
+	case <-provider.entered:
+	case <-time.After(time.Second):
+		t.Fatal("provider submission did not start")
+	}
+	metadata, err := store.LoadMetadata(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Execution == nil {
+		t.Fatalf("running execution metadata = %#v", metadata.Execution)
+	}
+	cancelled, err := runtime.CancelExecution(
+		ctx,
+		session.ID(),
+		metadata.Execution.ID,
+		"runtime requested cancellation",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Execution.State != sdk.TrajectoryExecutionCancelled {
+		t.Fatalf("cancelled execution view = %#v", cancelled)
+	}
+	select {
+	case promptErr := <-promptDone:
+		if !errors.Is(promptErr, context.Canceled) {
+			t.Fatalf("prompt error = %v, want context cancellation", promptErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("prompt did not stop after runtime cancellation")
+	}
+}
+
+func TestRuntimeCancelExecutionCompletesUnhostedTrajectoryExecution(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store := sdkstorage.NewMemoryTrajectoryStore()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:          testStateBackendWithStores(store, nil),
+		StorageOwnership: StorageBorrowed,
+		OperationPoll:    time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			time.Second,
+		)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	if err := store.Create(ctx, sdk.Trajectory{ID: "unhosted-cancel"}); err != nil {
+		t.Fatal(err)
+	}
+	input := sdk.TrajectoryEntry{
+		ID:        "unhosted-cancel-input",
+		Kind:      sdk.TrajectoryKindUserMessage,
+		Timestamp: time.Now().UTC(),
+		Payload:   json.RawMessage(`{"role":"user","content":"stop"}`),
+	}
+	if _, err := store.BeginExecution(
+		ctx,
+		"unhosted-cancel",
+		"",
+		sdk.TrajectoryExecutionStart{
+			ID:       "unhosted-cancel-execution",
+			Provider: "scripted",
+			MaxTurns: 3,
+		},
+		input,
+	); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimExecution(
+		ctx,
+		"unhosted-cancel",
+		"remote-worker",
+		time.Now().UTC(),
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, err := runtime.CancelExecution(
+		ctx,
+		"unhosted-cancel",
+		claimed.ID,
+		"runtime requested cancellation",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Execution.State != sdk.TrajectoryExecutionCancelled {
+		t.Fatalf("cancelled execution view = %#v", cancelled)
+	}
+	trajectory, err := store.Load(ctx, "unhosted-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terminal sdk.TrajectoryEntry
+	for _, entry := range trajectory.Entries {
+		if entry.Kind == sdk.TrajectoryKindTerminal {
+			terminal = entry
+			break
+		}
+	}
+	if terminal.ID == "" || terminal.ParentID != input.ID {
+		t.Fatalf("terminal entry = %#v", terminal)
+	}
+	branch, err := trajectory.Branch(trajectory.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(branch) == 0 ||
+		branch[len(branch)-1].Kind != sdk.TrajectoryKindRestore {
+		t.Fatalf("cancelled execution head branch = %#v", branch)
+	}
+	for _, entry := range branch {
+		if entry.ID == terminal.ID {
+			t.Fatalf("terminal entry %q remained on active branch", entry.ID)
+		}
 	}
 }
 

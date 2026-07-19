@@ -2,131 +2,113 @@ package pluginrpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"runtime/debug"
 	"time"
 
+	"github.com/lincyaw/ag/internal/deliveryworker"
+	"github.com/lincyaw/ag/internal/pluginpolicy"
 	"github.com/lincyaw/ag/sdk"
 )
 
+type serverDeliveryTargetState uint8
+
+const (
+	serverDeliveryTargetReady serverDeliveryTargetState = iota
+	serverDeliveryTargetWrongPlugin
+	serverDeliveryTargetMissing
+	serverDeliveryTargetStale
+)
+
+type serverDeliveryTarget struct {
+	state      serverDeliveryTargetState
+	cause      error
+	subscriber sdk.Subscriber
+	timeout    time.Duration
+}
+
 func (server *server) inboxLoop(worker int) {
 	defer server.wait.Done()
-	for {
-		if server.context.Err() != nil {
-			return
-		}
-		delivery, err := server.inbox.Lease(server.context, time.Now().UTC(), server.inboxLease)
-		if errors.Is(err, sdk.ErrNoDelivery) {
-			if !wait(server.context, server.inboxPoll) {
-				return
-			}
-			continue
-		}
-		if err != nil {
-			server.logger.Warn("lease plugin inbox", "worker", worker, "error", err)
-			if !wait(server.context, server.inboxPoll) {
-				return
-			}
-			continue
-		}
-		server.receiveDelivery(delivery)
+	runner := deliveryworker.Runner{
+		Store:       server.inbox,
+		Logger:      server.logger,
+		Context:     server.context,
+		Queue:       "plugin inbox",
+		Lease:       server.inboxLease,
+		Poll:        server.inboxPoll,
+		MaxAttempts: server.inboxMaxAttempts,
 	}
+	runner.Run(worker, server.receiveDelivery)
 }
 
-func (server *server) receiveDelivery(delivery sdk.Delivery) {
+func (server *server) receiveDelivery(
+	ctx context.Context,
+	delivery sdk.Delivery,
+) error {
+	target := server.resolveDeliveryTarget(delivery)
+	switch target.state {
+	case serverDeliveryTargetReady:
+	default:
+		return deliveryworker.Permanent(target.cause)
+	}
+	return pluginpolicy.ReceiveSubscriber(
+		ctx,
+		target.subscriber,
+		delivery,
+		target.timeout,
+	)
+}
+
+func (server *server) resolveDeliveryTarget(
+	delivery sdk.Delivery,
+) serverDeliveryTarget {
+	if delivery.Plugin != server.manifest.Name {
+		return serverDeliveryTarget{
+			state: serverDeliveryTargetWrongPlugin,
+			cause: fmt.Errorf(
+				"delivery targets plugin %q",
+				delivery.Plugin,
+			),
+		}
+	}
 	subscriber, exists := server.registrar.Subscribers[delivery.Subscription]
 	if !exists {
-		server.retryDelivery(delivery, errors.New("subscriber disappeared"))
-		return
-	}
-	expectedRevision := sdk.ResourceRevision(
-		server.manifest,
-		"subscriber",
-		delivery.Subscription,
-		subscriber.Spec,
-	)
-	if delivery.Plugin != server.manifest.Name ||
-		(delivery.PluginVersion != "" &&
-			delivery.PluginVersion != server.manifest.Version) ||
-		(delivery.ResourceRevision != "" &&
-			delivery.ResourceRevision != expectedRevision) {
-		err := server.inbox.DeadLetter(
-			server.context,
-			delivery.ID,
-			delivery.LeaseToken,
-			time.Now().UTC(),
-			fmt.Sprintf(
-				"delivery target %s@%s revision %s does not match current %s@%s revision %s",
-				delivery.Plugin,
-				delivery.PluginVersion,
-				delivery.ResourceRevision,
-				server.manifest.Name,
-				server.manifest.Version,
-				expectedRevision,
+		return serverDeliveryTarget{
+			state: serverDeliveryTargetMissing,
+			cause: fmt.Errorf(
+				"subscriber %q not found",
+				delivery.Subscription,
 			),
-		)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			server.logger.Warn(
-				"dead-letter stale plugin delivery",
-				"delivery_id",
-				delivery.ID,
-				"error",
-				err,
-			)
 		}
-		return
 	}
-	timeout := server.subscriberTimeout
-	if configured := subscriber.Spec.Timeout; configured > 0 && configured < timeout {
-		timeout = configured
-	}
-	ctx, cancel := context.WithTimeout(server.context, timeout)
-	err := safeReceive(ctx, subscriber.Value, delivery)
-	cancel()
-	if err != nil {
-		server.retryDelivery(delivery, err)
-		return
-	}
-	if err := server.inbox.Ack(server.context, delivery.ID, delivery.LeaseToken, time.Now().UTC()); err != nil && !errors.Is(err, context.Canceled) {
-		server.logger.Warn("ack plugin inbox", "delivery_id", delivery.ID, "error", err)
-	}
-}
-
-func (server *server) retryDelivery(delivery sdk.Delivery, cause error) {
-	if server.context.Err() != nil {
-		return
-	}
-	now := time.Now().UTC()
-	var err error
-	if delivery.Attempt >= server.inboxMaxAttempts {
-		err = server.inbox.DeadLetter(server.context, delivery.ID, delivery.LeaseToken, now, cause.Error())
-	} else {
-		shift := min(max(delivery.Attempt-1, 0), 10)
-		delay := min(server.inboxPoll*time.Duration(1<<shift), 30*time.Second)
-		err = server.inbox.Retry(server.context, delivery.ID, delivery.LeaseToken, now.Add(delay), cause.Error())
-	}
-	if err != nil && !errors.Is(err, context.Canceled) {
-		server.logger.Warn("reschedule plugin inbox", "delivery_id", delivery.ID, "error", err)
-	}
-}
-
-func safeReceive(ctx context.Context, subscriber sdk.Subscriber, delivery sdk.Delivery) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("subscriber panic: %v\n%s", recovered, debug.Stack())
+	if err := server.subscriberDeliveryTarget(
+		delivery.Subscription,
+	).Validate(delivery); err != nil {
+		return serverDeliveryTarget{
+			state: serverDeliveryTargetStale,
+			cause: err,
 		}
-	}()
-	return subscriber.Receive(ctx, delivery)
+	}
+	return serverDeliveryTarget{
+		state:      serverDeliveryTargetReady,
+		subscriber: subscriber.Value,
+		timeout: pluginpolicy.SubscriberTimeout(
+			server.subscriberTimeout,
+			subscriber.Spec.Timeout,
+		),
+	}
 }
 
-func wait(ctx context.Context, duration time.Duration) bool {
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
+func (server *server) subscriberDeliveryTarget(
+	subscription string,
+) deliveryworker.Target {
+	return deliveryworker.Target{
+		Plugin:        server.manifest.Name,
+		PluginVersion: server.manifest.Version,
+		Subscription:  subscription,
+		ResourceRevision: server.registrar.ResourceRevision(
+			server.manifest,
+			sdk.ResourceKindSubscriber,
+			subscription,
+		),
 	}
 }

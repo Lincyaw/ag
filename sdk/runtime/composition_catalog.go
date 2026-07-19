@@ -4,7 +4,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/lincyaw/ag/internal/plugincontract"
 	"github.com/lincyaw/ag/sdk"
 )
 
@@ -29,40 +28,66 @@ type CatalogSnapshot struct {
 	Events       []sdk.EventContract  `json:"events"`
 }
 
-var builtinEventContracts = [...]sdk.EventContract{
-	{
+type builtinEventContract struct {
+	sdk.EventContract
+	// trajectoryEnvironmentScoped marks built-in events that must remain part
+	// of the durable trajectory environment used for resume and recovery.
+	trajectoryEnvironmentScoped bool
+}
+
+var builtinEventContracts = [...]builtinEventContract{
+	trajectoryEnvironmentEvent(sdk.EventContract{
 		Name:          sdk.EventBeforeAgentStart,
 		MutableFields: []string{"messages", "system"},
 		AllowBlock:    true,
-	},
-	{Name: sdk.EventAgentStart},
-	{Name: sdk.EventTurnStart},
-	{
+	}),
+	trajectoryEnvironmentEvent(sdk.EventContract{Name: sdk.EventAgentStart}),
+	trajectoryEnvironmentEvent(sdk.EventContract{Name: sdk.EventTurnStart}),
+	trajectoryEnvironmentEvent(sdk.EventContract{
 		Name:          sdk.EventBeforeProvider,
 		MutableFields: []string{"messages", "provider", "system", "tools"},
-	},
-	{Name: sdk.EventAfterProvider},
-	{
+	}),
+	trajectoryEnvironmentEvent(sdk.EventContract{Name: sdk.EventAfterProvider}),
+	trajectoryEnvironmentEvent(sdk.EventContract{
 		Name:          sdk.EventBeforeTool,
 		MutableFields: []string{"call"},
 		AllowBlock:    true,
-	},
-	{
+	}),
+	trajectoryEnvironmentEvent(sdk.EventContract{
 		Name:          sdk.EventToolError,
 		MutableFields: []string{"result"},
-	},
-	{
+	}),
+	trajectoryEnvironmentEvent(sdk.EventContract{
 		Name:          sdk.EventAfterTool,
 		MutableFields: []string{"result"},
-	},
-	{Name: sdk.EventDecide, AllowAction: true},
-	{Name: sdk.EventTurnEnd},
-	{Name: sdk.EventAgentEnd},
-	{Name: sdk.EventPluginMounted},
-	{Name: sdk.EventPluginUnmounted},
-	{Name: sdk.EventTrajectoryAppend},
-	{Name: sdk.EventTrajectoryRestore},
-	{Name: sdk.EventTrajectoryRollback},
+	}),
+	trajectoryEnvironmentEvent(sdk.EventContract{
+		Name:        sdk.EventDecide,
+		AllowAction: true,
+	}),
+	trajectoryEnvironmentEvent(sdk.EventContract{Name: sdk.EventTurnEnd}),
+	trajectoryEnvironmentEvent(sdk.EventContract{Name: sdk.EventAgentEnd}),
+	{EventContract: sdk.EventContract{Name: sdk.EventPluginMounted}},
+	{EventContract: sdk.EventContract{Name: sdk.EventPluginUnmounted}},
+	trajectoryEnvironmentEvent(sdk.EventContract{Name: sdk.EventTrajectoryAppend}),
+	trajectoryEnvironmentEvent(sdk.EventContract{Name: sdk.EventTrajectoryRestore}),
+	trajectoryEnvironmentEvent(sdk.EventContract{Name: sdk.EventTrajectoryRollback}),
+}
+
+func trajectoryEnvironmentEvent(contract sdk.EventContract) builtinEventContract {
+	return builtinEventContract{
+		EventContract:               contract,
+		trajectoryEnvironmentScoped: true,
+	}
+}
+
+func builtinEventInTrajectoryEnvironment(name string) bool {
+	for _, contract := range builtinEventContracts {
+		if contract.Name == name {
+			return contract.trajectoryEnvironmentScoped
+		}
+	}
+	return false
 }
 
 func (runtime *Runtime) Catalog() CatalogSnapshot {
@@ -89,7 +114,7 @@ func catalogFromSnapshot(snapshot *registrySnapshot) CatalogSnapshot {
 	for _, tool := range snapshot.tools {
 		result.Tools = append(
 			result.Tools,
-			plugincontract.CloneToolSpec(tool.spec),
+			sdk.CloneToolSpec(tool.spec),
 		)
 	}
 	for _, agent := range snapshot.agents {
@@ -104,20 +129,22 @@ func catalogFromSnapshot(snapshot *registrySnapshot) CatalogSnapshot {
 		}
 	}
 	for _, subscriber := range snapshot.subscribers {
-		spec := subscriber.spec
-		spec.Events = append([]string(nil), spec.Events...)
-		result.Subscribers = append(result.Subscribers, spec)
+		result.Subscribers = append(
+			result.Subscribers,
+			sdk.CloneSubscriberSpec(subscriber.spec),
+		)
 	}
 	for _, capability := range snapshot.capabilities {
 		result.Capabilities = append(
 			result.Capabilities,
-			plugincontract.CloneCapabilitySpec(capability.spec),
+			sdk.CloneCapabilitySpec(capability.spec),
 		)
 	}
 	for _, event := range snapshot.events {
-		contract := event.contract
-		contract.MutableFields = append([]string(nil), contract.MutableFields...)
-		result.Events = append(result.Events, contract)
+		result.Events = append(
+			result.Events,
+			sdk.CloneEventContract(event.contract),
+		)
 	}
 	sortCatalog(&result)
 	return result

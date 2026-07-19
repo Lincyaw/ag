@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
+	"github.com/lincyaw/ag/internal/lifecycle"
 	"github.com/lincyaw/ag/internal/plugincontract"
 	"github.com/lincyaw/ag/sdk"
 	"go.opentelemetry.io/otel/attribute"
@@ -70,13 +72,18 @@ func (runtime *Runtime) Mount(
 			err,
 		)
 	}
+	pluginName := ""
 	closeOnError := func(cause error) (*Mount, error) {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		closeCtx, cancel := lifecycle.WithDetachedTimeout(ctx, 5*time.Second)
 		defer cancel()
-		return nil, errors.Join(cause, connection.Close(closeCtx))
+		return nil, errors.Join(
+			cause,
+			closePluginConnection(closeCtx, pluginName, connection),
+		)
 	}
 
-	manifest := plugincontract.CloneManifest(connection.Manifest())
+	manifest := sdk.CloneManifest(connection.Manifest())
+	pluginName = manifest.Name
 	if err := manifest.Validate(); err != nil {
 		recordSpanError(span, err)
 		return closeOnError(fmt.Errorf("validate plugin manifest: %w", err))
@@ -99,9 +106,10 @@ func (runtime *Runtime) Mount(
 		recordSpanError(span, err)
 		return closeOnError(err)
 	}
-	runtime.adaptSynchronousResources(staged, manifest)
-
 	state := newMountState(manifest, description, connection)
+	runtime.adaptSynchronousResources(staged, state)
+	var eventLease *snapshotLease
+	var lifecycleEvents postCommitEventBundle
 	runtime.mu.Lock()
 	if runtime.closed {
 		runtime.mu.Unlock()
@@ -119,11 +127,36 @@ func (runtime *Runtime) Mount(
 		return closeOnError(err)
 	}
 	next.generation++
+	eventLease, err = acquireMountsLocked(next.plugins)
+	if err != nil {
+		runtime.mu.Unlock()
+		recordSpanError(span, err)
+		return closeOnError(err)
+	}
+	eventLease.snapshot = next
+	lifecycleEvent, err := runtime.preparePluginLifecycleEventPlan(
+		eventLease.snapshot,
+		sdk.EventPluginMounted,
+		sdk.PluginLifecyclePayload{
+			Name:       manifest.Name,
+			Version:    manifest.Version,
+			Source:     state.source,
+			Generation: next.generation,
+		},
+	)
+	if err != nil {
+		runtime.mu.Unlock()
+		eventLease.release()
+		recordSpanError(span, err)
+		return closeOnError(err)
+	}
+	lifecycleEvents = postCommitEventBundle{lifecycleEvent}
 	runtime.current.Store(next)
 	if len(staged.Subscribers) > 0 {
 		runtime.startDeliveryWorkersLocked()
 	}
 	runtime.mu.Unlock()
+	defer eventLease.release()
 
 	runtime.mounts.Add(
 		ctx,
@@ -142,26 +175,7 @@ func (runtime *Runtime) Mount(
 		"source",
 		state.source,
 	)
-	if _, emitErr := runtime.Emit(
-		ctx,
-		sdk.EventPluginMounted,
-		"",
-		sdk.PluginLifecyclePayload{
-			Name:       manifest.Name,
-			Version:    manifest.Version,
-			Source:     state.source,
-			Generation: next.generation,
-		},
-	); emitErr != nil {
-		runtime.logger.WarnContext(
-			ctx,
-			"plugin mounted event failed",
-			"plugin",
-			manifest.Name,
-			"error",
-			emitErr,
-		)
-	}
+	lifecycleEvents.dispatch(ctx, runtime)
 	return &Mount{runtime: runtime, state: state}, nil
 }
 
@@ -186,6 +200,8 @@ func (runtime *Runtime) unmount(
 	)
 	defer span.End()
 
+	var eventLease *snapshotLease
+	var lifecycleEvents postCommitEventBundle
 	runtime.mu.Lock()
 	current := runtime.current.Load()
 	active, exists := current.plugins[state.manifest.Name]
@@ -200,9 +216,34 @@ func (runtime *Runtime) unmount(
 		return fmt.Errorf("unmount plugin %q: %w", state.manifest.Name, err)
 	}
 	next.generation++
+	eventLease, err := acquireMountsLocked(next.plugins)
+	if err != nil {
+		runtime.mu.Unlock()
+		recordSpanError(span, err)
+		return fmt.Errorf("unmount plugin %q: %w", state.manifest.Name, err)
+	}
+	eventLease.snapshot = next
+	lifecycleEvent, err := runtime.preparePluginLifecycleEventPlan(
+		eventLease.snapshot,
+		sdk.EventPluginUnmounted,
+		sdk.PluginLifecyclePayload{
+			Name:       state.manifest.Name,
+			Version:    state.manifest.Version,
+			Source:     state.source,
+			Generation: next.generation,
+		},
+	)
+	if err != nil {
+		runtime.mu.Unlock()
+		eventLease.release()
+		recordSpanError(span, err)
+		return fmt.Errorf("unmount plugin %q: %w", state.manifest.Name, err)
+	}
+	lifecycleEvents = postCommitEventBundle{lifecycleEvent}
 	runtime.current.Store(next)
-	state.retire()
+	state.retire(ctx)
 	runtime.mu.Unlock()
+	defer eventLease.release()
 
 	runtime.unmounts.Add(
 		ctx,
@@ -217,36 +258,27 @@ func (runtime *Runtime) unmount(
 		"generation",
 		next.generation,
 	)
-	if _, emitErr := runtime.Emit(
-		ctx,
-		sdk.EventPluginUnmounted,
-		"",
-		sdk.PluginLifecyclePayload{
-			Name:       state.manifest.Name,
-			Version:    state.manifest.Version,
-			Source:     state.source,
-			Generation: next.generation,
-		},
-	); emitErr != nil {
-		runtime.logger.WarnContext(
-			ctx,
-			"plugin unmounted event failed",
-			"plugin",
-			state.manifest.Name,
-			"error",
-			emitErr,
-		)
-	}
+	lifecycleEvents.dispatch(ctx, runtime)
 	return nil
 }
 
 type snapshotLease struct {
 	snapshot *registrySnapshot
 	mounts   []*mountState
+	mu       sync.Mutex
+	released bool
 }
 
 func (runtime *Runtime) acquireSnapshot() (*snapshotLease, error) {
-	return runtime.acquireRegistrySnapshot(runtime.current.Load())
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.closed {
+		return nil, errors.New("runtime is closed")
+	}
+	// Current snapshot reads are linearized with composition mutations so new
+	// callers cannot retain a snapshot that has just been unpublished.
+	snapshot := runtime.current.Load()
+	return acquireRegistrySnapshotLocked(snapshot)
 }
 
 func (runtime *Runtime) acquireRegistrySnapshot(
@@ -257,22 +289,76 @@ func (runtime *Runtime) acquireRegistrySnapshot(
 	if runtime.closed {
 		return nil, errors.New("runtime is closed")
 	}
-	mounts := make([]*mountState, 0, len(snapshot.plugins))
-	for _, state := range snapshot.plugins {
-		state.acquire()
+	return acquireRegistrySnapshotLocked(snapshot)
+}
+
+func acquireRegistrySnapshotLocked(
+	snapshot *registrySnapshot,
+) (*snapshotLease, error) {
+	if snapshot == nil {
+		return nil, errors.New("runtime registry snapshot is nil")
+	}
+	lease, err := acquireMountsLocked(snapshot.plugins)
+	if err != nil {
+		return nil, err
+	}
+	lease.snapshot = snapshot
+	return lease, nil
+}
+
+func (runtime *Runtime) acquireMounts(
+	states ...*mountState,
+) (*snapshotLease, error) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.closed {
+		return nil, errors.New("runtime is closed")
+	}
+	index := make(map[string]*mountState, len(states))
+	for _, state := range states {
+		if state != nil {
+			index[state.manifest.Name] = state
+		}
+	}
+	return acquireMountsLocked(index)
+}
+
+func acquireMountsLocked(
+	index map[string]*mountState,
+) (*snapshotLease, error) {
+	mounts := make([]*mountState, 0, len(index))
+	for _, state := range index {
+		if err := state.acquire(); err != nil {
+			for _, acquired := range mounts {
+				acquired.release()
+			}
+			return nil, err
+		}
 		mounts = append(mounts, state)
 	}
-	return &snapshotLease{snapshot: snapshot, mounts: mounts}, nil
+	return &snapshotLease{mounts: mounts}, nil
 }
 
 func (lease *snapshotLease) release() {
 	if lease == nil {
 		return
 	}
-	for _, state := range lease.mounts {
+	lease.mu.Lock()
+	if lease.released {
+		lease.mu.Unlock()
+		return
+	}
+	lease.released = true
+	mounts := lease.mounts
+	lease.mu.Unlock()
+	for _, state := range mounts {
 		state.release()
 	}
 }
+
+var errMountReferenceUnderflow = errors.New(
+	"sdk: plugin mount reference released more than acquired",
+)
 
 type mountState struct {
 	manifest   sdk.Manifest
@@ -282,6 +368,7 @@ type mountState struct {
 	refs       int
 	retired    bool
 	closing    bool
+	closeCtx   context.Context
 	closeErr   error
 	done       chan struct{}
 }
@@ -299,26 +386,41 @@ func newMountState(
 	}
 }
 
-func (state *mountState) acquire() {
+func (state *mountState) acquire() error {
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	if state.closing {
+		return fmt.Errorf(
+			"plugin %q mount is closing",
+			state.manifest.Name,
+		)
+	}
 	state.refs++
+	return nil
 }
 
 func (state *mountState) release() {
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	state.refs--
-	if state.refs < 0 {
-		panic("sdk: negative plugin mount reference count")
+	if state.refs == 0 {
+		if !errors.Is(state.closeErr, errMountReferenceUnderflow) {
+			state.closeErr = errors.Join(
+				state.closeErr,
+				errMountReferenceUnderflow,
+			)
+		}
+		state.startCloseLocked()
+		return
 	}
+	state.refs--
 	state.startCloseLocked()
 }
 
-func (state *mountState) retire() {
+func (state *mountState) retire(ctx context.Context) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	state.retired = true
+	state.closeCtx = lifecycle.Detached(ctx)
 	state.startCloseLocked()
 }
 
@@ -327,15 +429,40 @@ func (state *mountState) startCloseLocked() {
 		return
 	}
 	state.closing = true
+	closeCtx := state.closeCtx
+	if closeCtx == nil {
+		closeCtx = context.Background()
+	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(closeCtx, 10*time.Second)
 		defer cancel()
-		err := state.connection.Close(ctx)
+		err := closePluginConnection(ctx, state.manifest.Name, state.connection)
 		state.mu.Lock()
-		state.closeErr = err
+		state.closeErr = errors.Join(state.closeErr, err)
 		close(state.done)
 		state.mu.Unlock()
 	}()
+}
+
+func closePluginConnection(
+	ctx context.Context,
+	pluginName string,
+	connection sdk.Connection,
+) (err error) {
+	if pluginName == "" {
+		pluginName = "<unknown>"
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf(
+				"close plugin %q connection panic: %v\n%s",
+				pluginName,
+				recovered,
+				debug.Stack(),
+			)
+		}
+	}()
+	return connection.Close(ctx)
 }
 
 func (state *mountState) closeError() error {

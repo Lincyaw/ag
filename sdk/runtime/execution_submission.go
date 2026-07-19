@@ -6,16 +6,16 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/lincyaw/ag/sdk"
+	"github.com/lincyaw/ag/sdk/runtime/internal/durability"
 )
 
 // PromptSubmission separates durable acceptance from execution hosting.
 type PromptSubmission struct {
 	mu        sync.Mutex
 	session   *Session
-	prompt    string
+	input     durability.ExecutionInput
 	execution sdk.TrajectoryExecution
 	started   bool
 }
@@ -29,37 +29,29 @@ func (session *Session) SubmitPrompt(
 	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
+	return session.submitPromptLocked(ctx, prompt)
+}
+
+func (session *Session) submitPromptLocked(
+	ctx context.Context,
+	prompt string,
+) (*PromptSubmission, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return nil, errors.New("prompt is empty")
 	}
-	execution := newPromptExecution(session, prompt)
-	if err := session.beginExecution(ctx, execution.userMessage); err != nil {
+	releaseWork, err := session.runtime.beginTrajectoryWork()
+	if err != nil {
 		return nil, err
 	}
-	loadCtx, cancel := context.WithTimeout(
-		context.WithoutCancel(ctx),
-		5*time.Second,
-	)
-	defer cancel()
-	metadata, err := session.runtime.trajectories.LoadMetadata(
-		loadCtx,
-		session.config.ID,
-	)
+	defer releaseWork()
+	accepted, err := session.beginExecution(ctx, newPromptUserMessage(prompt))
 	if err != nil {
-		return nil, fmt.Errorf("load submitted trajectory execution: %w", err)
-	}
-	if metadata.Execution == nil ||
-		metadata.Execution.Terminal() {
-		return nil, fmt.Errorf(
-			"%w: trajectory %s has no pending execution after submit",
-			sdk.ErrTrajectoryExecution,
-			session.config.ID,
-		)
+		return nil, err
 	}
 	return &PromptSubmission{
 		session:   session,
-		prompt:    prompt,
-		execution: *metadata.Execution,
+		input:     accepted.Input,
+		execution: accepted.Execution,
 	}, nil
 }
 
@@ -72,12 +64,34 @@ func (submission *PromptSubmission) Execution() sdk.TrajectoryExecution {
 	return submission.execution
 }
 
+func (submission *PromptSubmission) ExecutionView() ExecutionView {
+	if submission == nil || submission.session == nil {
+		return ExecutionView{}
+	}
+	submission.mu.Lock()
+	defer submission.mu.Unlock()
+	return ExecutionView{
+		TrajectoryID: submission.session.config.ID,
+		Execution:    submission.execution,
+	}
+}
+
 func (submission *PromptSubmission) Run(
 	ctx context.Context,
-) (result Result, returnErr error) {
+) (Result, error) {
 	if submission == nil || submission.session == nil {
 		return Result{}, errors.New("prompt submission is nil")
 	}
+	session := submission.session
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return submission.runLocked(ctx)
+}
+
+// runLocked requires submission.session.mu to be held by the caller.
+func (submission *PromptSubmission) runLocked(
+	ctx context.Context,
+) (Result, error) {
 	submission.mu.Lock()
 	if submission.started {
 		submission.mu.Unlock()
@@ -85,11 +99,25 @@ func (submission *PromptSubmission) Run(
 	}
 	submission.started = true
 	expectedExecutionID := submission.execution.ID
+	input := durability.NewExecutionInput(
+		submission.input.Message,
+		submission.input.Environment,
+		submission.input.BaseMessages,
+	)
 	submission.mu.Unlock()
 
 	session := submission.session
-	session.mu.Lock()
-	defer session.mu.Unlock()
+	releaseWork, err := session.runtime.beginTrajectoryWork()
+	if err != nil {
+		return Result{}, err
+	}
+	defer releaseWork()
+	pin, restoreSnapshot, err := session.pinExecutionSnapshot(input.Environment)
+	if err != nil {
+		return Result{}, err
+	}
+	defer restoreSnapshot()
+	defer pin.release()
 	if err := session.claimExecution(ctx); err != nil {
 		return Result{}, err
 	}
@@ -101,31 +129,10 @@ func (submission *PromptSubmission) Run(
 			expectedExecutionID,
 		)
 	}
-	execution := newPromptExecution(session, submission.prompt)
-	execution.mutated = true
-	defer func() {
-		if returnErr == nil {
-			return
-		}
-		restoreCtx, cancel := context.WithTimeout(
-			context.Background(),
-			5*time.Second,
-		)
-		defer cancel()
-		returnErr = errors.Join(
-			returnErr,
-			session.failExecution(restoreCtx, returnErr),
-		)
-	}()
-	executionCtx, stopHeartbeat := session.executionHeartbeat(ctx)
-	defer func() {
-		returnErr = errors.Join(returnErr, stopHeartbeat())
-	}()
-
-	var done bool
-	result, done, returnErr = execution.start(executionCtx)
-	if returnErr != nil || done {
-		return result, returnErr
+	session.applyMessageProjection(input.BaseMessages)
+	execution, err := newPromptExecutionFromInput(session, input)
+	if err != nil {
+		return Result{}, err
 	}
-	return execution.runTurns(executionCtx)
+	return session.runClaimedExecution(ctx, execution.runFromStart)
 }

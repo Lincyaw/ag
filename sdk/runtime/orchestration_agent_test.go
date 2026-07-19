@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lincyaw/ag/sdk"
+	"github.com/lincyaw/ag/sdk/runtime/internal/durability"
 	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 )
 
@@ -93,8 +94,15 @@ func TestMountRejectsAgentUnavailableResources(t *testing.T) {
 }
 
 type nestedAgentProvider struct {
-	mu       sync.Mutex
-	requests []sdk.ModelRequest
+	mu            sync.Mutex
+	requests      []sdk.ModelRequest
+	failOnContent string
+}
+
+func (provider *nestedAgentProvider) observedRequests() []sdk.ModelRequest {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	return append([]sdk.ModelRequest(nil), provider.requests...)
 }
 
 func TestAgentCannotExpandInheritedTurnLimit(t *testing.T) {
@@ -240,6 +248,100 @@ func TestAgentInvocationRequiresStableIdentity(t *testing.T) {
 	}
 }
 
+func TestExistingForkedAgentSessionMustMatchTrajectoryAncestry(
+	t *testing.T,
+) {
+	parent := &Session{config: SessionConfig{ID: "parent-session"}}
+	invoker := &scopedAgentInvoker{
+		parentSession:    parent,
+		forkHead:         "expected-fork-head",
+		forkInvocationID: "tool-invocation",
+	}
+	metadata := sdk.TrajectoryMetadata{
+		ID:            "child-session",
+		ParentID:      "parent-session",
+		ParentEntryID: "other-fork-head",
+		Environment: sdk.TrajectoryEnvironment{
+			ParentSessionID:        "parent-session",
+			OriginInvocationID:     "agent-invocation",
+			OriginForkInvocationID: "tool-invocation",
+			OriginMode:             sdk.AgentSessionFork,
+		},
+	}
+	err := validateExistingAgentSessionForTest(
+		t,
+		invoker,
+		metadata,
+		sdk.AgentRequest{
+			SessionID: "child-session",
+			Mode:      sdk.AgentSessionFork,
+		},
+		sdk.Invocation{
+			ID:       "agent-invocation",
+			ParentID: "tool-invocation",
+		},
+	)
+	if err == nil || !strings.Contains(
+		err.Error(),
+		"already forks trajectory",
+	) {
+		t.Fatalf("fork ancestry error = %v", err)
+	}
+}
+
+func TestExistingAgentSessionMustMatchInvocationRoot(t *testing.T) {
+	parent := &Session{config: SessionConfig{ID: "parent-session"}}
+	invoker := &scopedAgentInvoker{parentSession: parent}
+	metadata := sdk.TrajectoryMetadata{
+		ID: "child-session",
+		Environment: sdk.TrajectoryEnvironment{
+			ParentSessionID:        "parent-session",
+			OriginInvocationID:     "agent-invocation",
+			OriginInvocationRootID: "other-root",
+			OriginMode:             sdk.AgentSessionNew,
+		},
+	}
+	err := validateExistingAgentSessionForTest(
+		t,
+		invoker,
+		metadata,
+		sdk.AgentRequest{
+			SessionID: "child-session",
+			Mode:      sdk.AgentSessionNew,
+		},
+		sdk.Invocation{
+			ID:     "agent-invocation",
+			RootID: "expected-root",
+		},
+	)
+	if err == nil || !strings.Contains(
+		err.Error(),
+		"already belongs to invocation root",
+	) {
+		t.Fatalf("invocation root error = %v", err)
+	}
+}
+
+func validateExistingAgentSessionForTest(
+	t *testing.T,
+	invoker *scopedAgentInvoker,
+	metadata sdk.TrajectoryMetadata,
+	request sdk.AgentRequest,
+	invocation sdk.Invocation,
+) error {
+	t.Helper()
+	binding, err := invoker.bindAgentSession(
+		request,
+		sdk.AgentSpec{},
+		"",
+		invocation,
+	)
+	if err != nil {
+		return err
+	}
+	return binding.validateExisting(metadata)
+}
+
 func (*nestedAgentProvider) Spec() sdk.ProviderSpec {
 	return sdk.ProviderSpec{Name: "nested-model", Model: "test"}
 }
@@ -251,6 +353,16 @@ func (provider *nestedAgentProvider) Complete(
 	provider.mu.Lock()
 	provider.requests = append(provider.requests, request)
 	provider.mu.Unlock()
+	if provider.failOnContent != "" {
+		for _, message := range request.Messages {
+			if message.Content == provider.failOnContent {
+				return sdk.ModelResponse{}, fmt.Errorf(
+					"provider failed on %q",
+					provider.failOnContent,
+				)
+			}
+		}
+	}
 	if len(request.Messages) > 0 &&
 		request.Messages[0].Role == sdk.RoleSystem &&
 		request.Messages[0].Content == "child system" {
@@ -481,6 +593,12 @@ func TestToolCanInvokeForkedAgentWithRecursiveInvocationGraph(
 			child.Environment.Tools,
 		)
 	}
+	if len(child.Environment.Agents) != 0 {
+		t.Fatalf(
+			"child agent resources were recorded without a tool entrypoint: %#v",
+			child.Environment.Agents,
+		)
+	}
 	if len(child.Environment.Providers) != 1 ||
 		child.Environment.Providers[0].Name != "nested-model" {
 		t.Fatalf(
@@ -493,5 +611,587 @@ func TestToolCanInvokeForkedAgentWithRecursiveInvocationGraph(
 		agent.Invocation.TargetSessionID,
 	) {
 		t.Fatalf("agent invocation is not printable: %s", got)
+	}
+}
+
+func TestExistingForkedAgentSessionResumesTrajectoryCheckpoint(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	trajectories := sdkstorage.NewMemoryTrajectoryStore()
+	provider := &nestedAgentProvider{}
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: testStateBackendWithStores(
+			trajectories,
+			sdkstorage.NewMemoryOperationStore(),
+		),
+		OperationPoll: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			time.Second,
+		)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "existing-fork-resume",
+			Version:     "1.0.0",
+			Description: "tests existing forked agent resume",
+			APIVersion:  sdk.APIVersion,
+			Registers: []string{
+				sdk.ProviderResource("nested-model"),
+				sdk.AgentResource("researcher"),
+			},
+		},
+		InstallFunc: func(
+			_ context.Context,
+			registrar sdk.Registrar,
+		) error {
+			if err := registrar.RegisterProvider(provider); err != nil {
+				return err
+			}
+			return sdk.RegisterAgent(registrar, sdk.AgentSpec{
+				Name:        "researcher",
+				Description: "answers delegated research questions",
+				System:      "child system",
+				Tools:       []string{},
+			})
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	parent, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "parent-existing-fork",
+		Provider: "nested-model",
+		MaxTurns: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parent.Prompt(ctx, "parent context"); err != nil {
+		t.Fatal(err)
+	}
+
+	request := sdk.AgentRequest{
+		Agent:          "researcher",
+		Prompt:         "child prompt",
+		SessionID:      "child-existing-fork",
+		Mode:           sdk.AgentSessionFork,
+		IdempotencyKey: "child-existing-fork",
+	}
+	invocation := sdk.Invocation{
+		ID:          parent.executionOperationKey("agent", "seed"),
+		RootID:      "root-invocation",
+		ParentID:    "fork-tool",
+		SessionID:   parent.ID(),
+		ExecutionID: "parent-execution",
+	}
+	spec := sdk.AgentSpec{
+		Name:        "researcher",
+		Description: "answers delegated research questions",
+		System:      "child system",
+		Tools:       []string{},
+	}
+	lease, err := runtime.acquireSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	childSnapshot, providerName, err := narrowAgentSnapshot(
+		lease.snapshot,
+		parent.config.Provider,
+		spec,
+	)
+	if err != nil {
+		lease.release()
+		t.Fatal(err)
+	}
+	initialInvoker := &scopedAgentInvoker{
+		runtime:          runtime,
+		snapshot:         lease.snapshot,
+		parentSession:    parent,
+		parentInvocation: invocation,
+		parentProvider:   parent.config.Provider,
+		forkHead:         parent.head,
+		forkInvocationID: "fork-tool",
+	}
+	if _, err := initialInvoker.newAgentSession(
+		ctx,
+		request,
+		spec,
+		childSnapshot,
+		providerName,
+		invocation,
+	); err != nil {
+		lease.release()
+		t.Fatal(err)
+	}
+	lease.release()
+
+	resumeLease, err := runtime.acquireSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeSnapshot, providerName, err := narrowAgentSnapshot(
+		resumeLease.snapshot,
+		parent.config.Provider,
+		spec,
+	)
+	if err != nil {
+		resumeLease.release()
+		t.Fatal(err)
+	}
+	resumeInvoker := &scopedAgentInvoker{
+		runtime:          runtime,
+		snapshot:         resumeLease.snapshot,
+		parentSession:    parent,
+		parentInvocation: invocation,
+		parentProvider:   parent.config.Provider,
+		forkHead:         parent.head,
+		forkInvocationID: "fork-tool",
+	}
+	if _, err := resumeInvoker.executeAgentSession(
+		ctx,
+		request,
+		spec,
+		resumeSnapshot,
+		providerName,
+		invocation,
+	); err != nil {
+		resumeLease.release()
+		t.Fatal(err)
+	}
+	resumeLease.release()
+
+	var childRequest sdk.ModelRequest
+	for _, observed := range provider.observedRequests() {
+		for _, message := range observed.Messages {
+			if message.Content == "child prompt" {
+				childRequest = observed
+			}
+		}
+	}
+	if childRequest.Messages == nil {
+		t.Fatal("child provider request was not observed")
+	}
+	contents := fmt.Sprint(childRequest.Messages)
+	if !strings.Contains(contents, "parent context") {
+		t.Fatalf("child request did not resume parent checkpoint: %s", contents)
+	}
+	if strings.Contains(contents, "stale parent state") {
+		t.Fatalf("child request used caller parent messages: %s", contents)
+	}
+}
+
+func TestNewForkedAgentSessionInitializesFromParentTrajectoryBranch(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	trajectories := sdkstorage.NewMemoryTrajectoryStore()
+	provider := &nestedAgentProvider{}
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: testStateBackendWithStores(
+			trajectories,
+			sdkstorage.NewMemoryOperationStore(),
+		),
+		OperationPoll: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			time.Second,
+		)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "new-fork-branch",
+			Version:     "1.0.0",
+			Description: "tests fork branch projection",
+			APIVersion:  sdk.APIVersion,
+			Registers: []string{
+				sdk.ProviderResource("nested-model"),
+				sdk.AgentResource("researcher"),
+			},
+		},
+		InstallFunc: func(
+			_ context.Context,
+			registrar sdk.Registrar,
+		) error {
+			if err := registrar.RegisterProvider(provider); err != nil {
+				return err
+			}
+			return sdk.RegisterAgent(registrar, sdk.AgentSpec{
+				Name:        "researcher",
+				Description: "answers delegated research questions",
+				System:      "child system",
+				Tools:       []string{},
+			})
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	parent, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "parent-branch-fork",
+		Provider: "nested-model",
+		MaxTurns: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointRaw, err := json.Marshal(durability.Checkpoint{
+		Messages: []sdk.Message{{
+			Role:    sdk.RoleUser,
+			Content: "checkpoint context",
+		}},
+		Provider: "nested-model",
+		System:   "parent system",
+		Turns:    1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := sdk.TrajectoryEntry{
+		ID:        "branch-base-checkpoint",
+		Kind:      sdk.TrajectoryKindCheckpoint,
+		Timestamp: time.Now().UTC(),
+		Payload:   checkpointRaw,
+	}
+	head, err := trajectories.Append(ctx, parent.ID(), "", checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := sdk.AfterProviderPayload{
+		Turn:     1,
+		Provider: "nested-model",
+		Response: &sdk.ModelResponse{
+			Content: "post checkpoint assistant",
+			ToolCalls: []sdk.ToolCall{{
+				ID:        "branch-call",
+				Name:      "delegate",
+				Arguments: json.RawMessage(`{"question":"inspect"}`),
+			}},
+		},
+	}
+	responseRaw, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forkEntry := sdk.TrajectoryEntry{
+		ID:        "branch-provider-response",
+		ParentID:  head,
+		Kind:      sdk.TrajectoryKindProviderResponse,
+		Timestamp: time.Now().UTC(),
+		Fields:    durability.EntryFields(response),
+		Payload:   responseRaw,
+	}
+	head, err = trajectories.Append(ctx, parent.ID(), head, forkEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent.head = head
+
+	spec := sdk.AgentSpec{
+		Name:        "researcher",
+		Description: "answers delegated research questions",
+		System:      "child system",
+		Tools:       []string{},
+	}
+	snapshot := runtime.current.Load()
+	childSnapshot, providerName, err := narrowAgentSnapshot(
+		snapshot,
+		parent.config.Provider,
+		spec,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := sdk.Invocation{
+		ID:          parent.executionOperationKey("agent", "branch-fork"),
+		RootID:      "root-invocation",
+		ParentID:    "branch-call",
+		SessionID:   parent.ID(),
+		ExecutionID: "parent-execution",
+	}
+	invoker := &scopedAgentInvoker{
+		runtime:          runtime,
+		snapshot:         snapshot,
+		parentSession:    parent,
+		parentInvocation: invocation,
+		parentProvider:   parent.config.Provider,
+		forkHead:         head,
+		forkInvocationID: "branch-call",
+	}
+	child, err := invoker.newAgentSession(
+		ctx,
+		sdk.AgentRequest{
+			Agent:          "researcher",
+			Prompt:         "child prompt",
+			SessionID:      "child-branch-fork",
+			Mode:           sdk.AgentSessionFork,
+			IdempotencyKey: "child-branch-fork",
+		},
+		spec,
+		childSnapshot,
+		providerName,
+		invocation,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := runtime.ResumeSession(
+		ctx,
+		child.ID(),
+		SessionConfig{
+			System:   child.config.System,
+			MaxTurns: child.config.MaxTurns,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.head != head {
+		t.Fatalf(
+			"resumed fork head = %q, want fork anchor %q",
+			resumed.head,
+			head,
+		)
+	}
+	if resumed.config.Provider != providerName {
+		t.Fatalf(
+			"resumed fork provider = %q, want recorded provider %q",
+			resumed.config.Provider,
+			providerName,
+		)
+	}
+	resumedContents := fmt.Sprint(resumed.Messages())
+	if !strings.Contains(resumedContents, "checkpoint context") ||
+		!strings.Contains(resumedContents, "post checkpoint assistant") {
+		t.Fatalf(
+			"resumed fork did not project inherited branch: %s",
+			resumedContents,
+		)
+	}
+	if _, err := child.Prompt(ctx, "child prompt"); err != nil {
+		t.Fatal(err)
+	}
+
+	var childRequest sdk.ModelRequest
+	for _, observed := range provider.observedRequests() {
+		for _, message := range observed.Messages {
+			if message.Content == "child prompt" {
+				childRequest = observed
+			}
+		}
+	}
+	if childRequest.Messages == nil {
+		t.Fatal("child provider request was not observed")
+	}
+	contents := fmt.Sprint(childRequest.Messages)
+	if !strings.Contains(contents, "checkpoint context") ||
+		!strings.Contains(contents, "post checkpoint assistant") {
+		t.Fatalf("child request did not project parent branch: %s", contents)
+	}
+}
+
+func TestForkedAgentFailureRestoresToExecutionBaseHead(t *testing.T) {
+	ctx := context.Background()
+	trajectories := sdkstorage.NewMemoryTrajectoryStore()
+	provider := &nestedAgentProvider{failOnContent: "failing child prompt"}
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: testStateBackendWithStores(
+			trajectories,
+			sdkstorage.NewMemoryOperationStore(),
+		),
+		OperationPoll: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			time.Second,
+		)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "fork-failure-base-head",
+			Version:     "1.0.0",
+			Description: "tests fork failure restore anchor",
+			APIVersion:  sdk.APIVersion,
+			Registers: []string{
+				sdk.ProviderResource("nested-model"),
+				sdk.AgentResource("researcher"),
+			},
+		},
+		InstallFunc: func(
+			_ context.Context,
+			registrar sdk.Registrar,
+		) error {
+			if err := registrar.RegisterProvider(provider); err != nil {
+				return err
+			}
+			return sdk.RegisterAgent(registrar, sdk.AgentSpec{
+				Name:        "researcher",
+				Description: "answers delegated research questions",
+				System:      "child system",
+				Tools:       []string{},
+			})
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	parent, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "parent-fork-failure",
+		Provider: "nested-model",
+		MaxTurns: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointRaw, err := json.Marshal(durability.Checkpoint{
+		Messages: []sdk.Message{{
+			Role:    sdk.RoleUser,
+			Content: "checkpoint context",
+		}},
+		Provider: "nested-model",
+		System:   "parent system",
+		Turns:    1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := sdk.TrajectoryEntry{
+		ID:        "failure-base-checkpoint",
+		Kind:      sdk.TrajectoryKindCheckpoint,
+		Timestamp: time.Now().UTC(),
+		Payload:   checkpointRaw,
+	}
+	head, err := trajectories.Append(ctx, parent.ID(), "", checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := sdk.AfterProviderPayload{
+		Turn:     1,
+		Provider: "nested-model",
+		Response: &sdk.ModelResponse{
+			Content: "post checkpoint assistant",
+		},
+	}
+	responseRaw, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forkAnchor := sdk.TrajectoryEntry{
+		ID:        "failure-base-provider-response",
+		ParentID:  head,
+		Kind:      sdk.TrajectoryKindProviderResponse,
+		Timestamp: time.Now().UTC(),
+		Fields:    durability.EntryFields(response),
+		Payload:   responseRaw,
+	}
+	head, err = trajectories.Append(ctx, parent.ID(), head, forkAnchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent.head = head
+
+	spec := sdk.AgentSpec{
+		Name:        "researcher",
+		Description: "answers delegated research questions",
+		System:      "child system",
+		Tools:       []string{},
+	}
+	snapshot := runtime.current.Load()
+	childSnapshot, providerName, err := narrowAgentSnapshot(
+		snapshot,
+		parent.config.Provider,
+		spec,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := sdk.Invocation{
+		ID:          parent.executionOperationKey("agent", "fork-failure"),
+		RootID:      "root-invocation",
+		ParentID:    "delegate-call",
+		SessionID:   parent.ID(),
+		ExecutionID: "parent-execution",
+	}
+	invoker := &scopedAgentInvoker{
+		runtime:          runtime,
+		snapshot:         snapshot,
+		parentSession:    parent,
+		parentInvocation: invocation,
+		parentProvider:   parent.config.Provider,
+		forkHead:         head,
+		forkInvocationID: "delegate-call",
+	}
+	child, err := invoker.newAgentSession(
+		ctx,
+		sdk.AgentRequest{
+			Agent:          "researcher",
+			Prompt:         "failing child prompt",
+			SessionID:      "child-fork-failure",
+			Mode:           sdk.AgentSessionFork,
+			IdempotencyKey: "child-fork-failure",
+		},
+		spec,
+		childSnapshot,
+		providerName,
+		invocation,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := child.Prompt(ctx, "failing child prompt"); err == nil ||
+		!strings.Contains(err.Error(), "provider failed") {
+		t.Fatalf("child prompt error = %v", err)
+	}
+	if child.head == "" {
+		t.Fatal("failed child session did not record a restore")
+	}
+	trajectory, err := trajectories.Load(ctx, child.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trajectory.Execution == nil ||
+		trajectory.Execution.State != sdk.TrajectoryExecutionFailed {
+		t.Fatalf("child execution = %#v", trajectory.Execution)
+	}
+	branch, err := trajectory.Branch(trajectory.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := branch[len(branch)-1]
+	if last.Kind != sdk.TrajectoryKindRestore || last.ParentID != head {
+		t.Fatalf("failure restore = %#v, want parent fork anchor %q", last, head)
+	}
+	contents := fmt.Sprint(child.Messages())
+	if !strings.Contains(contents, "checkpoint context") ||
+		!strings.Contains(contents, "post checkpoint assistant") ||
+		strings.Contains(contents, "failing child prompt") {
+		t.Fatalf("failed child messages = %s", contents)
 	}
 }

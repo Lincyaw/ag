@@ -440,6 +440,7 @@ func submitRemote(
 	resource string,
 	request sdk.OperationRequest,
 ) (sdk.Operation, error) {
+	request = sdk.CloneOperationRequest(request)
 	input, err := rawToStruct(request.Input)
 	if err != nil {
 		return sdk.Operation{}, err

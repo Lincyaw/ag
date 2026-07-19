@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime/debug"
+	"time"
 
+	"github.com/lincyaw/ag/internal/lifecycle"
 	"github.com/lincyaw/ag/internal/operationworker"
+	"github.com/lincyaw/ag/internal/pluginpolicy"
 	"github.com/lincyaw/ag/sdk"
 )
 
@@ -19,28 +23,18 @@ func (server *server) submitStored(
 	if !server.reserveOperation() {
 		return sdk.Operation{}, errors.New("RPC server is closed")
 	}
-	started := false
-	defer func() {
-		if !started {
-			server.wait.Done()
-		}
-	}()
-	record, created, err := server.operations.Submit(ctx, sdk.OperationRecord{
-		Operation:        sdk.Operation{IdempotencyKey: request.IdempotencyKey},
-		Kind:             kind,
-		Resource:         resource,
-		ResourceRevision: server.resourceRevision(kind, resource),
-		Input:            request.Input,
-		Invocation:       sdk.CloneInvocation(request.Invocation),
-	})
+	target := server.operationTarget(kind, resource)
+	operation, err := server.operationHost().SubmitReserved(
+		ctx,
+		target,
+		request,
+		server.executeLocal,
+		server.wait.Done,
+	)
 	if err != nil {
 		return sdk.Operation{}, err
 	}
-	if created {
-		server.startReservedOperation(ctx, record.Operation.ID)
-		started = true
-	}
-	return record.Operation, nil
+	return operation, nil
 }
 
 func (server *server) getStored(
@@ -53,10 +47,7 @@ func (server *server) getStored(
 	if err != nil {
 		return sdk.Operation{}, err
 	}
-	if record.Kind != kind || record.Resource != resource {
-		return sdk.Operation{}, fmt.Errorf("operation %q does not belong to %s %q", id, kind, resource)
-	}
-	if err := server.validateResourceRevision(record); err != nil {
+	if err := server.operationTarget(kind, resource).Validate(record); err != nil {
 		return sdk.Operation{}, err
 	}
 	return record.Operation, nil
@@ -68,74 +59,140 @@ func (server *server) cancelStored(
 	resource string,
 	id string,
 ) (sdk.Operation, error) {
-	for {
-		record, err := server.operations.Get(ctx, id)
-		if err != nil {
-			return sdk.Operation{}, err
-		}
-		if record.Kind != kind || record.Resource != resource {
-			return sdk.Operation{}, fmt.Errorf("operation %q does not belong to %s %q", id, kind, resource)
-		}
-		if err := server.validateResourceRevision(record); err != nil {
-			return sdk.Operation{}, err
-		}
-		if record.Operation.Terminal() {
-			return record.Operation, nil
-		}
-		cancelled, err := server.operations.Cancel(
-			ctx,
-			id,
-			record.Operation.Revision,
-		)
-		if errors.Is(err, sdk.ErrOperationConflict) {
-			continue
-		}
-		if err != nil {
-			return sdk.Operation{}, err
-		}
-		server.cancelMu.Lock()
-		cancel := server.operationCancels[id]
-		server.cancelMu.Unlock()
-		if cancel != nil {
-			cancel()
-		}
-		return cancelled.Operation, nil
+	cancelled, err := server.operationHost().Cancel(
+		ctx,
+		id,
+		server.operationTarget(kind, resource).ValidateTarget,
+	)
+	if err != nil {
+		return sdk.Operation{}, err
 	}
+	return cancelled.Operation, nil
 }
 
 func (server *server) recoverOperations(ctx context.Context) error {
-	records, err := server.operations.List(ctx)
+	candidates, err := operationworker.ListRecoveryCandidates(
+		ctx,
+		server.operations,
+		time.Now().UTC(),
+	)
 	if err != nil {
-		return fmt.Errorf("list operations for recovery: %w", err)
+		return err
 	}
-	for _, record := range records {
-		if record.Operation.Terminal() {
-			continue
-		}
-		if revisionErr := server.validateResourceRevision(record); revisionErr != nil {
-			_, err := server.operations.Fail(
-				ctx,
-				record.Operation.ID,
-				record.Operation.Revision,
-				revisionErr.Error(),
-			)
-			if errors.Is(err, sdk.ErrOperationConflict) {
-				continue
-			}
-			if err != nil {
-				return fmt.Errorf(
-					"fail stale operation %q: %w",
-					record.Operation.ID,
-					err,
-				)
+	for _, candidate := range candidates {
+		if candidate.Delay > 0 {
+			if server.reserveOperation() {
+				server.startReservedRecovery(ctx, candidate)
 			}
 			continue
 		}
-		if server.reserveOperation() {
-			server.startReservedOperation(ctx, record.Operation.ID)
+		if err := server.recoverOperation(ctx, candidate.OperationID); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func (server *server) recoverOperation(
+	ctx context.Context,
+	operationID string,
+) error {
+	current, err := server.operations.Get(ctx, operationID)
+	if err != nil {
+		return fmt.Errorf(
+			"recover operation %q: %w",
+			operationID,
+			err,
+		)
+	}
+	candidate, ok := operationworker.RecoveryCandidateFromRecord(
+		current,
+		time.Now().UTC(),
+	)
+	if !ok {
+		return nil
+	}
+	if candidate.Delay > 0 {
+		if server.reserveOperation() {
+			server.startReservedRecovery(ctx, candidate)
+		}
+		return nil
+	}
+	record, failed, err := operationworker.FailInvalid(
+		ctx,
+		server.operations,
+		operationID,
+		server.validateOperationRevision,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"recover operation %q: %w",
+			operationID,
+			err,
+		)
+	}
+	if record.Operation.Terminal() || failed {
+		return nil
+	}
+	if server.reserveOperation() {
+		server.startReservedOperation(ctx, operationID)
+	}
+	return nil
+}
+
+func (server *server) startReservedRecovery(
+	parent context.Context,
+	candidate operationworker.RecoveryCandidate,
+) {
+	go func() {
+		defer server.wait.Done()
+		defer server.recoverReservedRecoveryPanic(
+			lifecycle.Detached(parent),
+			candidate.OperationID,
+		)
+		if err := candidate.Wait(server.context); err != nil {
+			return
+		}
+		recoveryCtx, cancelRecovery := context.WithCancel(
+			lifecycle.Detached(parent),
+		)
+		stopServerCancel := context.AfterFunc(server.context, cancelRecovery)
+		defer func() {
+			stopServerCancel()
+			cancelRecovery()
+		}()
+		if err := server.recoverOperation(
+			recoveryCtx,
+			candidate.OperationID,
+		); err != nil {
+			server.logger.WarnContext(
+				recoveryCtx,
+				"recover operation",
+				"operation_id",
+				candidate.OperationID,
+				"error",
+				err,
+			)
+		}
+	}()
+}
+
+func (server *server) recoverReservedRecoveryPanic(
+	ctx context.Context,
+	operationID string,
+) {
+	if recovered := recover(); recovered != nil {
+		server.logger.ErrorContext(
+			ctx,
+			"recover operation panic",
+			"operation_id",
+			operationID,
+			"panic",
+			recovered,
+			"stack",
+			string(debug.Stack()),
+		)
+	}
 }
 
 func (server *server) reserveOperation() bool {
@@ -149,84 +206,49 @@ func (server *server) reserveOperation() bool {
 }
 
 func (server *server) startReservedOperation(parent context.Context, id string) {
-	go func() {
-		defer server.wait.Done()
-		server.executeStored(parent, id)
-	}()
-}
-
-func (server *server) executeStored(parent context.Context, id string) {
-	operationContext, cancel := context.WithCancel(context.WithoutCancel(parent))
-	stopServerCancel := context.AfterFunc(server.context, cancel)
-	defer func() {
-		stopServerCancel()
-		cancel()
-	}()
-	server.cancelMu.Lock()
-	if _, running := server.operationCancels[id]; running {
-		server.cancelMu.Unlock()
+	if server.operationHost().StartAsync(
+		parent,
+		id,
+		server.validateOperationRevision,
+		server.executeLocal,
+		server.wait.Done,
+	) {
 		return
 	}
-	server.operationCancels[id] = cancel
-	server.cancelMu.Unlock()
-	defer func() {
-		server.cancelMu.Lock()
-		delete(server.operationCancels, id)
-		server.cancelMu.Unlock()
-	}()
-
-	worker := operationworker.Runner{
-		Store:  server.operations,
-		Logger: server.logger,
-		Owner:  server.operationWorkerID,
-		Lease:  server.operationLease,
-	}
-	worker.Run(
-		operationContext,
-		id,
-		server.validateResourceRevision,
-		server.executeLocal,
-	)
+	server.wait.Done()
 }
 
-func (server *server) resourceRevision(
+func (server *server) operationHost() operationworker.Host {
+	return operationworker.Host{
+		Inflight: &server.operationInflight,
+		Runner: operationworker.Runner{
+			Store:  server.operations,
+			Logger: server.logger,
+			Owner:  server.operationWorkerID,
+			Lease:  server.operationLease,
+		},
+	}
+}
+
+func (server *server) operationTarget(
 	kind sdk.OperationKind,
 	resource string,
-) string {
-	var spec any
-	switch kind {
-	case sdk.OperationKindProvider:
-		if provider, exists := server.registrar.Providers[resource]; exists {
-			spec = provider.Spec
-		}
-	case sdk.OperationKindTool:
-		if tool, exists := server.registrar.Tools[resource]; exists {
-			spec = tool.Spec
-		}
-	case sdk.OperationKindCapability:
-		if capability, exists := server.registrar.Capabilities[resource]; exists {
-			spec = capability.Spec
-		}
+) operationworker.Target {
+	return operationworker.Target{
+		Kind:     kind,
+		Resource: resource,
+		ResourceRevision: server.registrar.ResourceRevision(
+			server.manifest,
+			sdk.ResourceKind(kind),
+			resource,
+		),
 	}
-	return sdk.ResourceRevision(server.manifest, string(kind), resource, spec)
 }
 
-func (server *server) validateResourceRevision(
+func (server *server) validateOperationRevision(
 	record sdk.OperationRecord,
 ) error {
-	if record.ResourceRevision == "" {
-		return nil
-	}
-	current := server.resourceRevision(record.Kind, record.Resource)
-	if record.ResourceRevision != current {
-		return fmt.Errorf(
-			"operation %q resource revision %s does not match current revision %s",
-			record.Operation.ID,
-			record.ResourceRevision,
-			current,
-		)
-	}
-	return nil
+	return server.operationTarget(record.Kind, record.Resource).Validate(record)
 }
 
 func (server *server) executeLocal(
@@ -239,31 +261,19 @@ func (server *server) executeLocal(
 		if !ok {
 			return nil, fmt.Errorf("provider %q is not synchronous", record.Resource)
 		}
-		var request sdk.ModelRequest
-		if err := json.Unmarshal(record.Input, &request); err != nil {
-			return nil, err
-		}
-		response, err := provider.Complete(ctx, request)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(response)
+		return pluginpolicy.InvokeProviderOperation(ctx, provider, record.Input)
 	case sdk.OperationKindTool:
 		tool, ok := server.registrar.Tools[record.Resource].Value.(sdk.SyncTool)
 		if !ok {
 			return nil, fmt.Errorf("tool %q is not synchronous", record.Resource)
 		}
-		result, err := tool.Call(ctx, record.Input)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(result)
+		return pluginpolicy.InvokeToolOperation(ctx, tool, record.Input)
 	case sdk.OperationKindCapability:
 		capability, ok := server.registrar.Capabilities[record.Resource].Value.(sdk.SyncCapability)
 		if !ok {
 			return nil, fmt.Errorf("capability %q is not synchronous", record.Resource)
 		}
-		return capability.Invoke(ctx, record.Input)
+		return pluginpolicy.InvokeCapabilityOperation(ctx, capability, record.Input)
 	default:
 		return nil, fmt.Errorf("unsupported stored operation kind %q", record.Kind)
 	}

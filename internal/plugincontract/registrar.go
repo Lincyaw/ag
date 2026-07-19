@@ -3,10 +3,8 @@
 package plugincontract
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 
@@ -99,7 +97,7 @@ func (registrar *Registrar) RegisterTool(tool sdk.Tool) error {
 		"tool",
 		spec.Name,
 		tool,
-		CloneToolSpec(spec),
+		sdk.CloneToolSpec(spec),
 	)
 }
 
@@ -145,13 +143,12 @@ func (registrar *Registrar) RegisterSubscriber(
 	if err := validateSubscriberSpec(spec); err != nil {
 		return err
 	}
-	spec.Events = slices.Clone(spec.Events)
 	return register(
 		registrar.Subscribers,
 		"subscriber",
 		spec.Name,
 		subscriber,
-		spec,
+		sdk.CloneSubscriberSpec(spec),
 	)
 }
 
@@ -178,7 +175,7 @@ func (registrar *Registrar) RegisterCapability(
 		"capability",
 		spec.Name,
 		capability,
-		CloneCapabilitySpec(spec),
+		sdk.CloneCapabilitySpec(spec),
 	)
 }
 
@@ -189,8 +186,7 @@ func (registrar *Registrar) RegisterEvent(contract sdk.EventContract) error {
 	if _, exists := registrar.Events[contract.Name]; exists {
 		return fmt.Errorf("event %q registered twice", contract.Name)
 	}
-	contract.MutableFields = slices.Clone(contract.MutableFields)
-	registrar.Events[contract.Name] = contract
+	registrar.Events[contract.Name] = sdk.CloneEventContract(contract)
 	return nil
 }
 
@@ -209,6 +205,54 @@ func register[Resource, Spec any](
 		Spec:  spec,
 	}
 	return nil
+}
+
+func (registrar *Registrar) ResourceSpec(
+	kind sdk.ResourceKind,
+	name string,
+) (any, bool) {
+	if registrar == nil {
+		return nil, false
+	}
+	switch kind {
+	case sdk.ResourceKindProvider:
+		resource, exists := registrar.Providers[name]
+		return resource.Spec, exists
+	case sdk.ResourceKindTool:
+		resource, exists := registrar.Tools[name]
+		return resource.Spec, exists
+	case sdk.ResourceKindHook:
+		resource, exists := registrar.Hooks[name]
+		return resource.Spec, exists
+	case sdk.ResourceKindSubscriber:
+		resource, exists := registrar.Subscribers[name]
+		return resource.Spec, exists
+	case sdk.ResourceKindCapability:
+		resource, exists := registrar.Capabilities[name]
+		return resource.Spec, exists
+	case sdk.ResourceKindEvent:
+		resource, exists := registrar.Events[name]
+		return resource, exists
+	default:
+		return nil, false
+	}
+}
+
+func (registrar *Registrar) ResourceIdentity(
+	manifest sdk.Manifest,
+	kind sdk.ResourceKind,
+	name string,
+) sdk.ResourceIdentity {
+	spec, _ := registrar.ResourceSpec(kind, name)
+	return sdk.NewResourceIdentity(manifest, kind, name, spec)
+}
+
+func (registrar *Registrar) ResourceRevision(
+	manifest sdk.Manifest,
+	kind sdk.ResourceKind,
+	name string,
+) string {
+	return registrar.ResourceIdentity(manifest, kind, name).Revision()
 }
 
 func (registrar *Registrar) Resources() []string {
@@ -258,24 +302,6 @@ func appendNames[Value any](
 		target = append(target, name(resource))
 	}
 	return target
-}
-
-func CloneManifest(manifest sdk.Manifest) sdk.Manifest {
-	manifest.Requires = slices.Clone(manifest.Requires)
-	manifest.Conflicts = slices.Clone(manifest.Conflicts)
-	manifest.Registers = slices.Clone(manifest.Registers)
-	return manifest
-}
-
-func CloneToolSpec(spec sdk.ToolSpec) sdk.ToolSpec {
-	spec.Parameters = cloneJSONMap(spec.Parameters)
-	return spec
-}
-
-func CloneCapabilitySpec(spec sdk.CapabilitySpec) sdk.CapabilitySpec {
-	spec.InputSchema = cloneJSONMap(spec.InputSchema)
-	spec.OutputSchema = cloneJSONMap(spec.OutputSchema)
-	return spec
 }
 
 func validateProviderSpec(spec sdk.ProviderSpec) error {
@@ -420,40 +446,6 @@ func validateEventContract(contract sdk.EventContract) error {
 		}
 	}
 	return nil
-}
-
-func cloneJSONMap(source map[string]any) map[string]any {
-	if source == nil {
-		return nil
-	}
-	result := make(map[string]any, len(source))
-	for name, value := range source {
-		result[name] = cloneJSONValue(value)
-	}
-	return result
-}
-
-func cloneJSONValue(value any) any {
-	switch value := value.(type) {
-	case map[string]any:
-		return cloneJSONMap(value)
-	case map[string]string:
-		return maps.Clone(value)
-	case []any:
-		result := make([]any, len(value))
-		for index := range value {
-			result[index] = cloneJSONValue(value[index])
-		}
-		return result
-	case []string:
-		return slices.Clone(value)
-	case json.RawMessage:
-		return slices.Clone(value)
-	case []byte:
-		return slices.Clone(value)
-	default:
-		return value
-	}
 }
 
 var _ sdk.Registrar = (*Registrar)(nil)

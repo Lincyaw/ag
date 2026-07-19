@@ -9,11 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/lincyaw/ag/internal/lifecycle"
+	"github.com/lincyaw/ag/internal/operationworker"
 	"github.com/lincyaw/ag/sdk"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -52,32 +55,35 @@ type RuntimeConfig struct {
 }
 
 type Runtime struct {
-	mu                 sync.Mutex
-	current            atomic.Pointer[registrySnapshot]
-	closed             bool
-	closeDone          chan struct{}
-	closeErr           error
-	nextSequence       uint64
-	version            string
-	logger             *slog.Logger
-	tracer             trace.Tracer
-	mounts             metric.Int64Counter
-	unmounts           metric.Int64Counter
-	events             metric.Int64Counter
-	hooks              metric.Int64Counter
-	hookTimeout        time.Duration
-	eventObserver      func(context.Context, sdk.Event)
-	storage            sdk.StateBackend
-	atomicState        sdk.AtomicStateBackend
-	closeStorage       bool
-	trajectories       sdk.TrajectoryStore
-	trajectoryLease    time.Duration
-	trajectoryWorkerID string
-	trajectoryContext  context.Context
-	cancelTrajectories context.CancelFunc
-	trajectoryWait     sync.WaitGroup
-	operation          operationRuntime
-	delivery           deliveryRuntime
+	mu                  sync.Mutex
+	current             atomic.Pointer[registrySnapshot]
+	closed              bool
+	closeDone           chan struct{}
+	closeErr            error
+	nextSequence        uint64
+	version             string
+	logger              *slog.Logger
+	tracer              trace.Tracer
+	mounts              metric.Int64Counter
+	unmounts            metric.Int64Counter
+	events              metric.Int64Counter
+	hooks               metric.Int64Counter
+	hookTimeout         time.Duration
+	storage             sdk.StateBackend
+	atomicState         sdk.AtomicStateBackend
+	closeStorage        bool
+	trajectories        sdk.TrajectoryStore
+	observer            eventObserverRuntime
+	trajectoryExecution trajectoryExecutionRuntime
+	operation           operationRuntime
+	delivery            deliveryRuntime
+}
+
+type runtimeStoragePorts struct {
+	trajectories sdk.TrajectoryStore
+	operations   sdk.OperationStore
+	delivery     sdk.DeliveryStore
+	atomicState  sdk.AtomicStateBackend
 }
 
 func normalizeRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
@@ -152,7 +158,17 @@ func normalizeRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 }
 
 func NewRuntime(config RuntimeConfig) (*Runtime, error) {
+	return NewRuntimeContext(context.Background(), config)
+}
+
+func NewRuntimeContext(
+	ctx context.Context,
+	config RuntimeConfig,
+) (*Runtime, error) {
 	// Ownership of Storage transfers only when construction succeeds.
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	config, err := normalizeRuntimeConfig(config)
 	if err != nil {
 		return nil, err
@@ -186,62 +202,54 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create hooks counter: %w", err)
 	}
-	if err := config.Storage.Health(context.Background()); err != nil {
+	if err := config.Storage.Health(ctx); err != nil {
 		return nil, fmt.Errorf("state backend health: %w", err)
 	}
-	var atomicState sdk.AtomicStateBackend
-	if config.Storage.Capabilities().AtomicState {
-		var ok bool
-		atomicState, ok = config.Storage.(sdk.AtomicStateBackend)
-		if !ok {
-			return nil, errors.New(
-				"state backend advertises atomic state without implementing AtomicStateBackend",
-			)
-		}
-	}
-	trajectories := config.Storage.Trajectories()
-	operations := config.Storage.Operations()
-	deliveryStore, err := config.Storage.Deliveries(sdk.HostOutboxQueue)
+	storage, err := resolveRuntimeStoragePorts(config.Storage)
 	if err != nil {
-		return nil, fmt.Errorf("open host outbox: %w", err)
-	}
-	if trajectories == nil || operations == nil || deliveryStore == nil {
-		return nil, errors.New("state backend returned a nil store")
+		return nil, err
 	}
 	deliveryContext, cancelDeliveries := context.WithCancel(context.Background())
 	operationContext, cancelOperations := context.WithCancel(context.Background())
 	trajectoryContext, cancelTrajectories :=
 		context.WithCancel(context.Background())
+	observerContext, cancelObservers := context.WithCancel(context.Background())
 	runtime := &Runtime{
-		version:            config.RuntimeVersion,
-		logger:             config.Logger,
-		tracer:             config.Tracer,
-		closeDone:          make(chan struct{}),
-		mounts:             mounts,
-		unmounts:           unmounts,
-		events:             events,
-		hooks:              hooks,
-		hookTimeout:        config.HookTimeout,
-		eventObserver:      config.EventObserver,
-		storage:            config.Storage,
-		atomicState:        atomicState,
-		closeStorage:       config.StorageOwnership == StorageOwned,
-		trajectories:       trajectories,
-		trajectoryLease:    config.TrajectoryLease,
-		trajectoryWorkerID: "trajectory-runtime-" + sdk.NewID(),
-		trajectoryContext:  trajectoryContext,
-		cancelTrajectories: cancelTrajectories,
+		version:      config.RuntimeVersion,
+		logger:       config.Logger,
+		tracer:       config.Tracer,
+		closeDone:    make(chan struct{}),
+		mounts:       mounts,
+		unmounts:     unmounts,
+		events:       events,
+		hooks:        hooks,
+		hookTimeout:  config.HookTimeout,
+		storage:      config.Storage,
+		atomicState:  storage.atomicState,
+		closeStorage: config.StorageOwnership == StorageOwned,
+		trajectories: storage.trajectories,
+		observer: eventObserverRuntime{
+			observe: config.EventObserver,
+			context: observerContext,
+			cancel:  cancelObservers,
+		},
+		trajectoryExecution: trajectoryExecutionRuntime{
+			context:  trajectoryContext,
+			cancel:   cancelTrajectories,
+			hosts:    newHostedExecutionRegistry(),
+			lease:    config.TrajectoryLease,
+			workerID: "trajectory-runtime-" + sdk.NewID(),
+		},
 		operation: operationRuntime{
-			store:    operations,
-			context:  operationContext,
+			store:    storage.operations,
 			cancel:   cancelOperations,
-			cancels:  make(map[string]context.CancelFunc),
+			inflight: operationworker.NewInflight(operationContext),
 			poll:     config.OperationPoll,
 			lease:    config.OperationLease,
 			workerID: "runtime-" + sdk.NewID(),
 		},
 		delivery: deliveryRuntime{
-			store:       deliveryStore,
+			store:       storage.delivery,
 			workers:     config.DeliveryWorkers,
 			lease:       config.DeliveryLease,
 			poll:        config.DeliveryPoll,
@@ -255,13 +263,79 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	return runtime, nil
 }
 
-// Close starts shutdown once. A caller timeout stops waiting, not cleanup, so
-// a later call can wait for the same shutdown and receive its final error.
-func (runtime *Runtime) Close(ctx context.Context) error {
-	if runtime == nil {
-		return nil
+func resolveRuntimeStoragePorts(
+	backend sdk.StateBackend,
+) (runtimeStoragePorts, error) {
+	capabilities := backend.Capabilities()
+	if !capabilities.OperationFencing {
+		return runtimeStoragePorts{}, errors.New(
+			"state backend must advertise operation fencing",
+		)
 	}
+	if !capabilities.NamedQueues {
+		return runtimeStoragePorts{}, errors.New(
+			"state backend must advertise named delivery queues",
+		)
+	}
+	atomicState, err := resolveAtomicStateBackend(backend, capabilities)
+	if err != nil {
+		return runtimeStoragePorts{}, err
+	}
+	trajectories := backend.Trajectories()
+	operations := backend.Operations()
+	deliveryStore, err := backend.Deliveries(sdk.HostOutboxQueue)
+	if err != nil {
+		return runtimeStoragePorts{}, fmt.Errorf("open host outbox: %w", err)
+	}
+	if trajectories == nil || operations == nil || deliveryStore == nil {
+		return runtimeStoragePorts{}, errors.New(
+			"state backend returned a nil store",
+		)
+	}
+	return runtimeStoragePorts{
+		trajectories: trajectories,
+		operations:   operations,
+		delivery:     deliveryStore,
+		atomicState:  atomicState,
+	}, nil
+}
 
+func resolveAtomicStateBackend(
+	backend sdk.StateBackend,
+	capabilities sdk.StorageCapabilities,
+) (sdk.AtomicStateBackend, error) {
+	atomicState, implementsAtomicState := backend.(sdk.AtomicStateBackend)
+	switch {
+	case capabilities.AtomicState && !implementsAtomicState:
+		return nil, errors.New(
+			"state backend advertises atomic state without implementing AtomicStateBackend",
+		)
+	case !capabilities.AtomicState && implementsAtomicState:
+		return nil, errors.New(
+			"state backend implements AtomicStateBackend without advertising atomic state",
+		)
+	case capabilities.AtomicState:
+		return atomicState, nil
+	default:
+		return nil, nil
+	}
+}
+
+// RequestClose starts shutdown once without waiting for cleanup to finish.
+// Supervisors can use this to ask active runtime-owned work to unwind, then
+// wait on the goroutine that owns the borrowed host.
+func (runtime *Runtime) RequestClose(ctx context.Context) {
+	if runtime == nil {
+		return
+	}
+	runtime.startClose(ctx)
+}
+
+func (runtime *Runtime) startClose(ctx context.Context) <-chan struct{} {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	closeCtx := lifecycle.Detached(ctx)
 	runtime.mu.Lock()
 	var states []*mountState
 	if !runtime.closed {
@@ -270,7 +344,7 @@ func (runtime *Runtime) Close(ctx context.Context) error {
 		states = make([]*mountState, 0, len(current.plugins))
 		for _, state := range current.plugins {
 			states = append(states, state)
-			state.retire()
+			state.retire(closeCtx)
 		}
 		empty := initialSnapshot()
 		empty.generation = current.generation + 1
@@ -280,11 +354,25 @@ func (runtime *Runtime) Close(ctx context.Context) error {
 	runtime.mu.Unlock()
 
 	if states != nil {
-		runtime.cancelTrajectories()
-		runtime.delivery.cancel()
-		runtime.operation.cancel()
-		go runtime.finishClose(states)
+		runtime.trajectoryExecution.stop()
+		runtime.delivery.stop()
+		runtime.operation.stop()
+		runtime.observer.stop()
+		go runtime.finishClose(closeCtx, states)
 	}
+	return done
+}
+
+// Close starts shutdown once. A caller timeout stops waiting, not cleanup, so
+// a later call can wait for the same shutdown and receive its final error.
+func (runtime *Runtime) Close(ctx context.Context) error {
+	if runtime == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	done := runtime.startClose(ctx)
 
 	select {
 	case <-done:
@@ -299,10 +387,34 @@ func (runtime *Runtime) Close(ctx context.Context) error {
 	}
 }
 
-func (runtime *Runtime) finishClose(states []*mountState) {
-	runtime.delivery.wait.Wait()
-	runtime.operation.wait.Wait()
-	runtime.trajectoryWait.Wait()
+func (runtime *Runtime) finishClose(ctx context.Context, states []*mountState) {
+	runtime.closeErr = runtime.finishCloseError(ctx, states)
+	close(runtime.closeDone)
+}
+
+func (runtime *Runtime) finishCloseError(
+	ctx context.Context,
+	states []*mountState,
+) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			panicErr := fmt.Errorf(
+				"runtime close panic: %v\n%s",
+				recovered,
+				debug.Stack(),
+			)
+			runtime.logger.ErrorContext(
+				ctx,
+				"runtime close panic",
+				"panic", recovered,
+			)
+			err = errors.Join(err, panicErr)
+		}
+	}()
+	runtime.delivery.waitStopped()
+	runtime.operation.waitStopped()
+	runtime.trajectoryExecution.waitStopped()
+	runtime.observer.waitStopped()
 	var errs []error
 	for _, state := range states {
 		<-state.done
@@ -315,10 +427,9 @@ func (runtime *Runtime) finishClose(states []*mountState) {
 		}
 	}
 	if runtime.storage != nil && runtime.closeStorage {
-		if err := runtime.storage.Close(context.Background()); err != nil {
+		if err := runtime.storage.Close(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("close state backend: %w", err))
 		}
 	}
-	runtime.closeErr = errors.Join(errs...)
-	close(runtime.closeDone)
+	return errors.Join(errs...)
 }

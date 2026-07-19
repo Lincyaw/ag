@@ -4,17 +4,20 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/lincyaw/ag/internal/deliveryworker"
 	"github.com/lincyaw/ag/sdk"
 )
 
 type subscriberTestPlugin struct {
 	manifest   sdk.Manifest
+	hook       sdk.Hook
 	subscriber sdk.Subscriber
 	closed     chan struct{}
 	closeOnce  sync.Once
@@ -28,7 +31,15 @@ func (plugin *subscriberTestPlugin) Install(
 	_ context.Context,
 	registrar sdk.Registrar,
 ) error {
-	return registrar.RegisterSubscriber(plugin.subscriber)
+	if plugin.hook != nil {
+		if err := registrar.RegisterHook(plugin.hook); err != nil {
+			return err
+		}
+	}
+	if plugin.subscriber != nil {
+		return registrar.RegisterSubscriber(plugin.subscriber)
+	}
+	return nil
 }
 
 func (plugin *subscriberTestPlugin) Close(context.Context) error {
@@ -94,6 +105,19 @@ func TestSubscriberDoesNotBlockEmitAndUnmountWaitsForDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mount: %v", err)
 	}
+	unrelated := &subscriberTestPlugin{
+		manifest: sdk.Manifest{
+			Name:        "unrelated-observer",
+			Version:     "1.0.0",
+			Description: "should not be leased by another subscriber delivery",
+			APIVersion:  sdk.APIVersion,
+		},
+		closed: make(chan struct{}),
+	}
+	unrelatedMount, err := runtime.Mount(context.Background(), sdk.Local(unrelated))
+	if err != nil {
+		t.Fatalf("mount unrelated: %v", err)
+	}
 
 	emitted := make(chan error, 1)
 	go func() {
@@ -117,6 +141,15 @@ func TestSubscriberDoesNotBlockEmitAndUnmountWaitsForDelivery(t *testing.T) {
 	case <-entered:
 	case <-time.After(time.Second):
 		t.Fatal("subscriber was not invoked")
+	}
+
+	if err := unrelatedMount.Unmount(context.Background()); err != nil {
+		t.Fatalf("unmount unrelated: %v", err)
+	}
+	select {
+	case <-unrelated.closed:
+	case <-time.After(time.Second):
+		t.Fatal("unrelated plugin stayed leased during subscriber callback")
 	}
 
 	if err := mount.Unmount(context.Background()); err != nil {
@@ -251,6 +284,309 @@ func TestDrainDeliveriesWaitsForCurrentSubscribersAndHonorsContext(t *testing.T)
 	}
 	if len(deliveries) != 1 || deliveries[0].State != sdk.DeliveryDelivered {
 		t.Fatalf("drained deliveries = %#v", deliveries)
+	}
+}
+
+func TestSubscriberDeliveryTargetMatchesCurrentAndLegacyDeliveries(t *testing.T) {
+	t.Parallel()
+	target := deliveryworker.Target{
+		Plugin:           "observer",
+		PluginVersion:    "2.0.0",
+		Subscription:     "events",
+		ResourceRevision: "revision-new",
+	}
+	cases := []struct {
+		name     string
+		delivery sdk.Delivery
+		match    bool
+	}{
+		{
+			name: "current target",
+			delivery: sdk.Delivery{
+				Plugin:           "observer",
+				PluginVersion:    "2.0.0",
+				Subscription:     "events",
+				ResourceRevision: "revision-new",
+			},
+			match: true,
+		},
+		{
+			name: "legacy delivery without versioned target",
+			delivery: sdk.Delivery{
+				Plugin:       "observer",
+				Subscription: "events",
+			},
+			match: true,
+		},
+		{
+			name: "stale plugin version",
+			delivery: sdk.Delivery{
+				Plugin:           "observer",
+				PluginVersion:    "1.0.0",
+				Subscription:     "events",
+				ResourceRevision: "revision-new",
+			},
+		},
+		{
+			name: "stale resource revision",
+			delivery: sdk.Delivery{
+				Plugin:           "observer",
+				PluginVersion:    "2.0.0",
+				Subscription:     "events",
+				ResourceRevision: "revision-old",
+			},
+		},
+		{
+			name: "other plugin",
+			delivery: sdk.Delivery{
+				Plugin:           "other",
+				PluginVersion:    "2.0.0",
+				Subscription:     "events",
+				ResourceRevision: "revision-new",
+			},
+		},
+		{
+			name: "other subscription",
+			delivery: sdk.Delivery{
+				Plugin:           "observer",
+				PluginVersion:    "2.0.0",
+				Subscription:     "other",
+				ResourceRevision: "revision-new",
+			},
+		},
+	}
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := target.Matches(testCase.delivery); got != testCase.match {
+				t.Fatalf("Matches() = %v, want %v", got, testCase.match)
+			}
+		})
+	}
+}
+
+func TestTrajectoryEventEnqueueSurvivesCallerCancellation(t *testing.T) {
+	t.Parallel()
+	runtime := newSubscriberTestRuntime(t)
+	received := make(chan sdk.Delivery, 1)
+	plugin := &subscriberTestPlugin{
+		manifest: sdk.Manifest{
+			Name:        "trajectory-observer",
+			Version:     "1.0.0",
+			Description: "observes committed trajectory events",
+			APIVersion:  sdk.APIVersion,
+			Registers:   []string{sdk.SubscriberResource("trajectory-events")},
+		},
+		subscriber: sdk.SubscriberFunc{
+			SubscriberSpec: sdk.SubscriberSpec{
+				Name:   "trajectory-events",
+				Events: []string{sdk.EventTrajectoryAppend},
+			},
+			ReceiveFunc: func(_ context.Context, delivery sdk.Delivery) error {
+				received <- delivery
+				return nil
+			},
+		},
+		closed: make(chan struct{}),
+	}
+	if _, err := runtime.Mount(context.Background(), sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	dispatchSubscriberTestPostCommit(
+		t,
+		runtime,
+		cancelled,
+		sdk.EventTrajectoryAppend,
+		"cancelled-after-commit",
+		sdk.TrajectoryEventPayload{
+			TrajectoryID: "cancelled-after-commit",
+			EntryID:      "entry-after-commit",
+			EntryKind:    sdk.TrajectoryKindCheckpoint,
+		},
+	)
+
+	select {
+	case delivery := <-received:
+		if delivery.Event.SessionID != "cancelled-after-commit" {
+			t.Fatalf("delivery event = %#v", delivery.Event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("trajectory event was not delivered")
+	}
+}
+
+func TestPostCommitHookFailureDoesNotBlockSubscriberDelivery(t *testing.T) {
+	t.Parallel()
+	runtime := newSubscriberTestRuntime(t)
+	received := make(chan sdk.Delivery, 1)
+	plugin := &subscriberTestPlugin{
+		manifest: sdk.Manifest{
+			Name:        "post-commit-observer",
+			Version:     "1.0.0",
+			Description: "tests post-commit hook failure isolation",
+			APIVersion:  sdk.APIVersion,
+			Registers: []string{
+				sdk.HookResource("failing-trajectory-hook"),
+				sdk.SubscriberResource("trajectory-events"),
+			},
+		},
+		hook: sdk.HookFunc{
+			HookSpec: sdk.HookSpec{
+				Name:          "failing-trajectory-hook",
+				Event:         sdk.EventTrajectoryAppend,
+				FailurePolicy: sdk.FailurePolicyFailClosed,
+			},
+			HandleFunc: func(context.Context, sdk.Event) (sdk.Effect, error) {
+				return sdk.Effect{}, errors.New("hook failed after commit")
+			},
+		},
+		subscriber: sdk.SubscriberFunc{
+			SubscriberSpec: sdk.SubscriberSpec{
+				Name:   "trajectory-events",
+				Events: []string{sdk.EventTrajectoryAppend},
+			},
+			ReceiveFunc: func(_ context.Context, delivery sdk.Delivery) error {
+				received <- delivery
+				return nil
+			},
+		},
+		closed: make(chan struct{}),
+	}
+	if _, err := runtime.Mount(context.Background(), sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+
+	dispatchSubscriberTestPostCommit(
+		t,
+		runtime,
+		context.Background(),
+		sdk.EventTrajectoryAppend,
+		"post-commit-hook-failure",
+		sdk.TrajectoryEventPayload{
+			TrajectoryID: "post-commit-hook-failure",
+			EntryID:      "post-commit-entry",
+			EntryKind:    sdk.TrajectoryKindDecision,
+		},
+	)
+
+	select {
+	case delivery := <-received:
+		if delivery.Event.SessionID != "post-commit-hook-failure" {
+			t.Fatalf("delivery event = %#v", delivery.Event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscriber delivery was blocked by post-commit hook failure")
+	}
+}
+
+func TestPostCommitHookPatchFailureDoesNotBlockSubscriberDelivery(t *testing.T) {
+	t.Parallel()
+	runtime := newSubscriberTestRuntime(t)
+	received := make(chan sdk.Delivery, 1)
+	plugin := &subscriberTestPlugin{
+		manifest: sdk.Manifest{
+			Name:        "post-commit-patch-observer",
+			Version:     "1.0.0",
+			Description: "tests post-commit patch failure isolation",
+			APIVersion:  sdk.APIVersion,
+			Registers: []string{
+				sdk.HookResource("bad-post-commit-patch"),
+				sdk.SubscriberResource("patch-failure-subscriber"),
+			},
+		},
+		hook: sdk.HookFunc{
+			HookSpec: sdk.HookSpec{
+				Name:  "bad-post-commit-patch",
+				Event: sdk.EventBeforeProvider,
+			},
+			HandleFunc: func(context.Context, sdk.Event) (sdk.Effect, error) {
+				return sdk.Effect{
+					Patch: map[string]json.RawMessage{
+						"provider": json.RawMessage(`{`),
+					},
+				}, nil
+			},
+		},
+		subscriber: sdk.SubscriberFunc{
+			SubscriberSpec: sdk.SubscriberSpec{
+				Name:   "patch-failure-subscriber",
+				Events: []string{sdk.EventBeforeProvider},
+			},
+			ReceiveFunc: func(_ context.Context, delivery sdk.Delivery) error {
+				received <- delivery
+				return nil
+			},
+		},
+		closed: make(chan struct{}),
+	}
+	if _, err := runtime.Mount(context.Background(), sdk.Local(plugin)); err != nil {
+		t.Fatal(err)
+	}
+	dispatchSubscriberTestPostCommit(
+		t,
+		runtime,
+		context.Background(),
+		sdk.EventBeforeProvider,
+		"post-commit-patch-failure",
+		sdk.BeforeProviderPayload{Provider: "gateway-test"},
+	)
+
+	select {
+	case delivery := <-received:
+		if delivery.Event.SessionID != "post-commit-patch-failure" {
+			t.Fatalf("delivery event = %#v", delivery.Event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscriber delivery was blocked by post-commit patch failure")
+	}
+}
+
+func dispatchSubscriberTestPostCommit(
+	t *testing.T,
+	runtime *Runtime,
+	ctx context.Context,
+	eventName string,
+	sessionID string,
+	payload any,
+) {
+	t.Helper()
+	plan, err := preparePostCommitEventPlan(
+		runtime.current.Load(),
+		eventName,
+		postCommitSessionSubject(sessionID),
+		payload,
+		postCommitDeliveryBoundaryAfterDispatch,
+	)
+	if err != nil {
+		t.Fatalf("prepare post-commit event: %v", err)
+	}
+	postCommitEventBundle{plan}.dispatch(ctx, runtime)
+}
+
+func TestPostCommitStateMutationDeliveriesReturnsOwnedDeliveries(t *testing.T) {
+	delivery := postCommitDelivery{
+		mode: postCommitDeliveryModeStateMutation,
+		stateMutation: []sdk.Delivery{{
+			ID: "delivery-1",
+			Event: sdk.Event{
+				ID:      "event-1",
+				Name:    "example.event",
+				Payload: json.RawMessage(`{"value":1}`),
+			},
+		}},
+	}
+	first := delivery.stateMutationDeliveries()
+	first[0].ID = "changed"
+	first[0].Event.Payload[0] = '['
+
+	second := delivery.stateMutationDeliveries()
+	if second[0].ID != "delivery-1" ||
+		string(second[0].Event.Payload) != `{"value":1}` {
+		t.Fatalf("state mutation delivery aliased internal delivery: %#v", second)
 	}
 }
 

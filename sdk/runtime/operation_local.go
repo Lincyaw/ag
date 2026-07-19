@@ -4,35 +4,122 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/lincyaw/ag/internal/operationworker"
 	"github.com/lincyaw/ag/internal/plugincontract"
+	"github.com/lincyaw/ag/internal/pluginpolicy"
 	"github.com/lincyaw/ag/sdk"
 )
 
 // operationExecutor adapts synchronous resource behavior to durable operations.
 type operationExecutor func(context.Context, json.RawMessage) (json.RawMessage, error)
 
+type localOperationTarget struct {
+	runtime          *Runtime
+	kind             sdk.OperationKind
+	resource         string
+	resourceRevision string
+	owner            *mountState
+	snapshot         *registrySnapshot
+}
+
+func (target localOperationTarget) submit(
+	ctx context.Context,
+	request sdk.OperationRequest,
+	execute operationExecutor,
+) (sdk.Operation, error) {
+	releaseExecutionLease, err := target.acquireExecutionLease()
+	if err != nil {
+		return sdk.Operation{}, err
+	}
+	return target.runtime.submitLocalOperation(
+		ctx,
+		target,
+		request,
+		releaseExecutionLease,
+		execute,
+	)
+}
+
+func (target localOperationTarget) acquireExecutionLease() (func(), error) {
+	if target.snapshot != nil {
+		lease, err := target.runtime.acquireRegistrySnapshot(target.snapshot)
+		if err != nil {
+			return nil, err
+		}
+		return lease.release, nil
+	}
+	if target.owner != nil {
+		lease, err := target.runtime.acquireMounts(target.owner)
+		if err != nil {
+			return nil, err
+		}
+		return lease.release, nil
+	}
+	return func() {}, nil
+}
+
+func (target localOperationTarget) identity() operationworker.Target {
+	return operationworker.Target{
+		Kind:             target.kind,
+		Resource:         target.resource,
+		ResourceRevision: target.resourceRevision,
+	}
+}
+
+func (target localOperationTarget) poll(
+	ctx context.Context,
+	id string,
+	_ uint64,
+) (sdk.Operation, error) {
+	return target.runtime.pollLocalOperation(
+		ctx,
+		target.identity(),
+		id,
+	)
+}
+
+func (target localOperationTarget) cancel(
+	ctx context.Context,
+	id string,
+) (sdk.Operation, error) {
+	return target.runtime.cancelLocalOperation(
+		ctx,
+		target.identity(),
+		id,
+	)
+}
+
 type operationRuntime struct {
 	store    sdk.OperationStore
-	context  context.Context
 	cancel   context.CancelFunc
-	mu       sync.Mutex
-	cancels  map[string]context.CancelFunc
+	inflight operationworker.Inflight
 	wait     sync.WaitGroup
 	poll     time.Duration
 	lease    time.Duration
 	workerID string
 }
 
+func (operation *operationRuntime) stop() {
+	if operation.cancel != nil {
+		operation.cancel()
+	}
+}
+
+func (operation *operationRuntime) beginWork(runtime *Runtime) (func(), bool) {
+	return runtime.beginRuntimeWork(&operation.wait)
+}
+
+func (operation *operationRuntime) waitStopped() {
+	operation.wait.Wait()
+}
+
 type syncProviderAdapter struct {
-	runtime     *Runtime
 	synchronous sdk.SyncProvider
 	spec        sdk.ProviderSpec
-	revision    string
+	target      localOperationTarget
 }
 
 func (provider syncProviderAdapter) Spec() sdk.ProviderSpec {
@@ -43,22 +130,11 @@ func (provider syncProviderAdapter) SubmitCompletion(
 	ctx context.Context,
 	request sdk.OperationRequest,
 ) (sdk.Operation, error) {
-	return provider.runtime.submitLocalOperation(
+	return provider.target.submit(
 		ctx,
-		sdk.OperationKindProvider,
-		provider.spec.Name,
-		provider.revision,
 		request,
 		func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-			var modelRequest sdk.ModelRequest
-			if err := json.Unmarshal(input, &modelRequest); err != nil {
-				return nil, err
-			}
-			response, err := provider.synchronous.Complete(ctx, modelRequest)
-			if err != nil {
-				return nil, err
-			}
-			return json.Marshal(response)
+			return pluginpolicy.InvokeProviderOperation(ctx, provider.synchronous, input)
 		},
 	)
 }
@@ -66,48 +142,43 @@ func (provider syncProviderAdapter) SubmitCompletion(
 func (provider syncProviderAdapter) PollCompletion(
 	ctx context.Context,
 	id string,
-	_ uint64,
+	revision uint64,
 ) (sdk.Operation, error) {
-	return provider.runtime.pollLocalOperation(ctx, sdk.OperationKindProvider, provider.spec.Name, id)
+	return provider.target.poll(ctx, id, revision)
 }
 
 func (provider syncProviderAdapter) CancelCompletion(
 	ctx context.Context,
 	id string,
 ) (sdk.Operation, error) {
-	return provider.runtime.cancelLocalOperation(ctx, sdk.OperationKindProvider, provider.spec.Name, id)
+	return provider.target.cancel(ctx, id)
 }
 
 type syncToolAdapter struct {
-	runtime     *Runtime
 	synchronous sdk.SyncTool
 	spec        sdk.ToolSpec
-	revision    string
+	target      localOperationTarget
 }
 
 type syncCapabilityAdapter struct {
-	runtime     *Runtime
 	synchronous sdk.SyncCapability
 	spec        sdk.CapabilitySpec
-	revision    string
+	target      localOperationTarget
 }
 
 func (capability syncCapabilityAdapter) Spec() sdk.CapabilitySpec {
-	return plugincontract.CloneCapabilitySpec(capability.spec)
+	return sdk.CloneCapabilitySpec(capability.spec)
 }
 
 func (capability syncCapabilityAdapter) SubmitInvoke(
 	ctx context.Context,
 	request sdk.OperationRequest,
 ) (sdk.Operation, error) {
-	return capability.runtime.submitLocalOperation(
+	return capability.target.submit(
 		ctx,
-		sdk.OperationKindCapability,
-		capability.spec.Name,
-		capability.revision,
 		request,
 		func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-			return capability.synchronous.Invoke(ctx, input)
+			return pluginpolicy.InvokeCapabilityOperation(ctx, capability.synchronous, input)
 		},
 	)
 }
@@ -115,42 +186,31 @@ func (capability syncCapabilityAdapter) SubmitInvoke(
 func (capability syncCapabilityAdapter) PollInvoke(
 	ctx context.Context,
 	id string,
-	_ uint64,
+	revision uint64,
 ) (sdk.Operation, error) {
-	return capability.runtime.pollLocalOperation(
-		ctx, sdk.OperationKindCapability, capability.spec.Name, id,
-	)
+	return capability.target.poll(ctx, id, revision)
 }
 
 func (capability syncCapabilityAdapter) CancelInvoke(
 	ctx context.Context,
 	id string,
 ) (sdk.Operation, error) {
-	return capability.runtime.cancelLocalOperation(
-		ctx, sdk.OperationKindCapability, capability.spec.Name, id,
-	)
+	return capability.target.cancel(ctx, id)
 }
 
 func (tool syncToolAdapter) Spec() sdk.ToolSpec {
-	return plugincontract.CloneToolSpec(tool.spec)
+	return sdk.CloneToolSpec(tool.spec)
 }
 
 func (tool syncToolAdapter) SubmitCall(
 	ctx context.Context,
 	request sdk.OperationRequest,
 ) (sdk.Operation, error) {
-	return tool.runtime.submitLocalOperation(
+	return tool.target.submit(
 		ctx,
-		sdk.OperationKindTool,
-		tool.spec.Name,
-		tool.revision,
 		request,
 		func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-			result, err := tool.synchronous.Call(ctx, input)
-			if err != nil {
-				return nil, err
-			}
-			return json.Marshal(result)
+			return pluginpolicy.InvokeToolOperation(ctx, tool.synchronous, input)
 		},
 	)
 }
@@ -158,33 +218,52 @@ func (tool syncToolAdapter) SubmitCall(
 func (tool syncToolAdapter) PollCall(
 	ctx context.Context,
 	id string,
-	_ uint64,
+	revision uint64,
 ) (sdk.Operation, error) {
-	return tool.runtime.pollLocalOperation(ctx, sdk.OperationKindTool, tool.spec.Name, id)
+	return tool.target.poll(ctx, id, revision)
 }
 
 func (tool syncToolAdapter) CancelCall(
 	ctx context.Context,
 	id string,
 ) (sdk.Operation, error) {
-	return tool.runtime.cancelLocalOperation(ctx, sdk.OperationKindTool, tool.spec.Name, id)
+	return tool.target.cancel(ctx, id)
+}
+
+func (runtime *Runtime) localOperationTarget(
+	owner *mountState,
+	kind sdk.OperationKind,
+	name string,
+	spec any,
+) localOperationTarget {
+	return localOperationTarget{
+		runtime:  runtime,
+		kind:     kind,
+		resource: name,
+		resourceRevision: sdk.NewResourceIdentity(
+			owner.manifest,
+			sdk.ResourceKind(kind),
+			name,
+			spec,
+		).Revision(),
+		owner: owner,
+	}
 }
 
 func (runtime *Runtime) adaptSynchronousResources(
 	registrar *plugincontract.AgentRegistrar,
-	manifest sdk.Manifest,
+	owner *mountState,
 ) {
 	for name, staged := range registrar.Providers {
 		if _, asynchronous := staged.Value.(sdk.AsyncProvider); asynchronous {
 			continue
 		}
 		staged.Value = syncProviderAdapter{
-			runtime:     runtime,
 			synchronous: staged.Value.(sdk.SyncProvider),
 			spec:        staged.Spec,
-			revision: sdk.ResourceRevision(
-				manifest,
-				string(sdk.OperationKindProvider),
+			target: runtime.localOperationTarget(
+				owner,
+				sdk.OperationKindProvider,
 				name,
 				staged.Spec,
 			),
@@ -196,12 +275,11 @@ func (runtime *Runtime) adaptSynchronousResources(
 			continue
 		}
 		staged.Value = syncToolAdapter{
-			runtime:     runtime,
 			synchronous: staged.Value.(sdk.SyncTool),
 			spec:        staged.Spec,
-			revision: sdk.ResourceRevision(
-				manifest,
-				string(sdk.OperationKindTool),
+			target: runtime.localOperationTarget(
+				owner,
+				sdk.OperationKindTool,
 				name,
 				staged.Spec,
 			),
@@ -213,12 +291,11 @@ func (runtime *Runtime) adaptSynchronousResources(
 			continue
 		}
 		staged.Value = syncCapabilityAdapter{
-			runtime:     runtime,
 			synchronous: staged.Value.(sdk.SyncCapability),
 			spec:        staged.Spec,
-			revision: sdk.ResourceRevision(
-				manifest,
-				string(sdk.OperationKindCapability),
+			target: runtime.localOperationTarget(
+				owner,
+				sdk.OperationKindCapability,
 				name,
 				staged.Spec,
 			),
@@ -229,150 +306,93 @@ func (runtime *Runtime) adaptSynchronousResources(
 
 func (runtime *Runtime) submitLocalOperation(
 	ctx context.Context,
-	kind sdk.OperationKind,
-	resource string,
-	resourceRevision string,
+	target localOperationTarget,
 	request sdk.OperationRequest,
+	releaseExecutionLease func(),
 	execute operationExecutor,
 ) (sdk.Operation, error) {
-	runtime.mu.Lock()
-	if runtime.closed {
-		runtime.mu.Unlock()
+	if releaseExecutionLease == nil {
+		releaseExecutionLease = func() {}
+	}
+	releaseOperationWork, ok := runtime.operation.beginWork(runtime)
+	if !ok {
+		releaseExecutionLease()
 		return sdk.Operation{}, errors.New("runtime is closed")
 	}
-	runtime.operation.wait.Add(1)
-	runtime.mu.Unlock()
-	started := false
-	defer func() {
-		if !started {
-			runtime.operation.wait.Done()
-		}
-	}()
 
-	record, _, err := runtime.operation.store.Submit(ctx, sdk.OperationRecord{
-		Operation:        sdk.Operation{IdempotencyKey: request.IdempotencyKey},
-		Kind:             kind,
-		Resource:         resource,
-		ResourceRevision: resourceRevision,
-		Input:            append(json.RawMessage(nil), request.Input...),
-		Invocation:       sdk.CloneInvocation(request.Invocation),
-	})
-	if err != nil {
-		return sdk.Operation{}, err
-	}
-	if !record.Operation.Terminal() {
-		started = runtime.startLocalOperation(
-			ctx,
-			record.Operation.ID,
-			execute,
-		)
-	}
-	return record.Operation, nil
-}
-
-func (runtime *Runtime) startLocalOperation(
-	parent context.Context,
-	id string,
-	execute operationExecutor,
-) bool {
-	runtime.operation.mu.Lock()
-	if _, running := runtime.operation.cancels[id]; running {
-		runtime.operation.mu.Unlock()
-		return false
-	}
-	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
-	stopRuntimeCancel := context.AfterFunc(runtime.operation.context, cancel)
-	runtime.operation.cancels[id] = cancel
-	runtime.operation.mu.Unlock()
-	go func() {
-		defer runtime.operation.wait.Done()
-		defer func() {
-			stopRuntimeCancel()
-			cancel()
-			runtime.operation.mu.Lock()
-			delete(runtime.operation.cancels, id)
-			runtime.operation.mu.Unlock()
-		}()
-		runtime.executeLocalOperation(ctx, id, execute)
-	}()
-	return true
-}
-
-func (runtime *Runtime) executeLocalOperation(
-	ctx context.Context,
-	id string,
-	execute operationExecutor,
-) {
-	worker := operationworker.Runner{
-		Store:  runtime.operation.store,
-		Logger: runtime.logger,
-		Owner:  runtime.operation.workerID,
-		Lease:  runtime.operation.lease,
-	}
-	worker.Run(
+	identity := target.identity()
+	operation, err := runtime.operationHost().SubmitReserved(
 		ctx,
-		id,
-		nil,
+		identity,
+		request,
 		func(
 			ctx context.Context,
 			record sdk.OperationRecord,
 		) (json.RawMessage, error) {
 			return execute(ctx, record.Input)
 		},
+		func() {
+			releaseExecutionLease()
+			releaseOperationWork()
+		},
 	)
+	if err != nil {
+		return sdk.Operation{}, err
+	}
+	return operation, nil
+}
+
+func (runtime *Runtime) operationHost() operationworker.Host {
+	return operationworker.Host{
+		Inflight: &runtime.operation.inflight,
+		Runner: operationworker.Runner{
+			Store:  runtime.operation.store,
+			Logger: runtime.logger,
+			Owner:  runtime.operation.workerID,
+			Lease:  runtime.operation.lease,
+		},
+	}
 }
 
 func (runtime *Runtime) pollLocalOperation(
 	ctx context.Context,
-	kind sdk.OperationKind,
-	resource string,
+	identity operationworker.Target,
 	id string,
 ) (sdk.Operation, error) {
-	record, err := runtime.operation.store.Get(ctx, id)
+	record, err := runtime.loadLocalOperation(ctx, identity, id)
 	if err != nil {
 		return sdk.Operation{}, err
-	}
-	if record.Kind != kind || record.Resource != resource {
-		return sdk.Operation{}, fmt.Errorf(
-			"operation %q belongs to %s %q, not %s %q",
-			id, record.Kind, record.Resource, kind, resource,
-		)
 	}
 	return record.Operation, nil
 }
 
 func (runtime *Runtime) cancelLocalOperation(
 	ctx context.Context,
-	kind sdk.OperationKind,
-	resource string,
+	identity operationworker.Target,
 	id string,
 ) (sdk.Operation, error) {
-	for {
-		record, err := runtime.operation.store.Get(ctx, id)
-		if err != nil {
-			return sdk.Operation{}, err
-		}
-		if record.Kind != kind || record.Resource != resource {
-			return sdk.Operation{}, fmt.Errorf("operation %q does not belong to %s %q", id, kind, resource)
-		}
-		if record.Operation.Terminal() {
-			return record.Operation, nil
-		}
-		cancelled, err := runtime.operation.store.Cancel(
-			ctx, id, record.Operation.Revision,
-		)
-		if errors.Is(err, sdk.ErrOperationConflict) {
-			continue
-		}
-		if err != nil {
-			return sdk.Operation{}, err
-		}
-		runtime.operation.mu.Lock()
-		cancel := runtime.operation.cancels[id]
-		runtime.operation.mu.Unlock()
-		if cancel != nil {
-			cancel()
-		}
-		return cancelled.Operation, nil
+	cancelled, err := runtime.operationHost().Cancel(
+		ctx,
+		id,
+		identity.ValidateTarget,
+	)
+	if err != nil {
+		return sdk.Operation{}, err
 	}
+	return cancelled.Operation, nil
+}
+
+func (runtime *Runtime) loadLocalOperation(
+	ctx context.Context,
+	identity operationworker.Target,
+	id string,
+) (sdk.OperationRecord, error) {
+	record, err := runtime.operation.store.Get(ctx, id)
+	if err != nil {
+		return sdk.OperationRecord{}, err
+	}
+	if err := identity.Validate(record); err != nil {
+		return sdk.OperationRecord{}, err
+	}
+	return record, nil
 }

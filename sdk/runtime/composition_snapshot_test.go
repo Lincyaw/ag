@@ -38,6 +38,23 @@ func TestBuiltinEventContractsAreIsolatedBetweenSnapshots(t *testing.T) {
 	}
 }
 
+func TestBuiltinTrajectoryEnvironmentEventScope(t *testing.T) {
+	t.Parallel()
+	tests := map[string]bool{
+		sdk.EventBeforeProvider:    true,
+		sdk.EventTrajectoryAppend:  true,
+		sdk.EventAgentEnd:          true,
+		sdk.EventPluginMounted:     false,
+		sdk.EventPluginUnmounted:   false,
+		"plugin.unknown.execution": false,
+	}
+	for name, want := range tests {
+		if got := builtinEventInTrajectoryEnvironment(name); got != want {
+			t.Fatalf("builtinEventInTrajectoryEnvironment(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestMountedSpecsAreFrozenAndCatalogIsDefensive(t *testing.T) {
 	t.Parallel()
 	valueSchema := map[string]any{"type": "string"}
@@ -99,5 +116,48 @@ func TestMountedSpecsAreFrozenAndCatalogIsDefensive(t *testing.T) {
 	secondValue := runtime.Catalog().Tools[0].Parameters["properties"].(map[string]any)["value"].(map[string]any)
 	if secondValue["type"] != "string" {
 		t.Fatalf("catalog mutation leaked into snapshot: %#v", secondValue)
+	}
+}
+
+func TestRegistrySnapshotCloneOwnsMutableSpecs(t *testing.T) {
+	t.Parallel()
+	original := initialSnapshot()
+	original.tools["tool"] = ownedResource[sdk.Tool, sdk.ToolSpec]{
+		spec: sdk.ToolSpec{
+			Name: "tool",
+			Parameters: map[string]any{
+				"properties": map[string]any{
+					"value": map[string]any{"type": "string"},
+				},
+			},
+		},
+	}
+	original.agents["agent"] = ownedAgent{
+		spec: sdk.AgentSpec{Name: "agent", Tools: []string{"tool"}},
+	}
+	original.capabilities["capability"] = ownedResource[
+		sdk.Capability,
+		sdk.CapabilitySpec,
+	]{
+		spec: sdk.CapabilitySpec{
+			Name:        "capability",
+			InputSchema: map[string]any{"type": "object"},
+		},
+	}
+
+	cloned := original.clone()
+	cloned.tools["tool"].spec.Parameters["properties"].(map[string]any)["value"].(map[string]any)["type"] = "number"
+	cloned.agents["agent"].spec.Tools[0] = "changed"
+	cloned.capabilities["capability"].spec.InputSchema["type"] = "array"
+
+	toolValue := original.tools["tool"].spec.Parameters["properties"].(map[string]any)["value"].(map[string]any)
+	if toolValue["type"] != "string" {
+		t.Fatalf("tool spec mutation leaked into original: %#v", toolValue)
+	}
+	if original.agents["agent"].spec.Tools[0] != "tool" {
+		t.Fatalf("agent spec mutation leaked into original: %#v", original.agents["agent"].spec)
+	}
+	if original.capabilities["capability"].spec.InputSchema["type"] != "object" {
+		t.Fatalf("capability spec mutation leaked into original: %#v", original.capabilities["capability"].spec)
 	}
 }

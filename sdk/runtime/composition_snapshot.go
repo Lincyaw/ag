@@ -29,6 +29,25 @@ func ownResource[Resource, Spec any](
 	}
 }
 
+func (resource ownedResource[Resource, Spec]) resourceIdentity(
+	kind sdk.ResourceKind,
+	name string,
+) sdk.ResourceIdentity {
+	return sdk.NewResourceIdentity(
+		resource.owner.manifest,
+		kind,
+		name,
+		resource.spec,
+	)
+}
+
+func (resource ownedResource[Resource, Spec]) resourceRevision(
+	kind sdk.ResourceKind,
+	name string,
+) string {
+	return resource.resourceIdentity(kind, name).Revision()
+}
+
 type ownedHook struct {
 	ownedResource[sdk.Hook, sdk.HookSpec]
 	seq uint64
@@ -44,6 +63,19 @@ type ownedAgent struct {
 	spec  sdk.AgentSpec
 }
 
+func (agent ownedAgent) resourceIdentity(name string) sdk.ResourceIdentity {
+	return sdk.NewResourceIdentity(
+		agent.owner.manifest,
+		sdk.ResourceKindAgent,
+		name,
+		agent.spec,
+	)
+}
+
+func (agent ownedAgent) resourceRevision(name string) string {
+	return agent.resourceIdentity(name).Revision()
+}
+
 type registrySnapshot struct {
 	generation   uint64
 	plugins      map[string]*mountState
@@ -54,6 +86,12 @@ type registrySnapshot struct {
 	subscribers  map[string]ownedResource[sdk.Subscriber, sdk.SubscriberSpec]
 	capabilities map[string]ownedResource[sdk.Capability, sdk.CapabilitySpec]
 	events       map[string]ownedEvent
+}
+
+func (snapshot *registrySnapshot) includePluginOwner(owner *mountState) {
+	if owner != nil {
+		snapshot.plugins[owner.manifest.Name] = owner
+	}
 }
 
 func initialSnapshot() *registrySnapshot {
@@ -68,9 +106,10 @@ func initialSnapshot() *registrySnapshot {
 		capabilities: make(map[string]ownedResource[sdk.Capability, sdk.CapabilitySpec]),
 		events:       make(map[string]ownedEvent),
 	}
-	for _, contract := range builtinEventContracts {
-		contract.MutableFields = slices.Clone(contract.MutableFields)
-		snapshot.events[contract.Name] = ownedEvent{contract: contract}
+	for _, builtin := range builtinEventContracts {
+		snapshot.events[builtin.Name] = ownedEvent{
+			contract: sdk.CloneEventContract(builtin.EventContract),
+		}
 	}
 	return snapshot
 }
@@ -80,25 +119,34 @@ func (snapshot *registrySnapshot) clone() *registrySnapshot {
 		generation:   snapshot.generation,
 		plugins:      maps.Clone(snapshot.plugins),
 		providers:    maps.Clone(snapshot.providers),
-		tools:        maps.Clone(snapshot.tools),
-		agents:       maps.Clone(snapshot.agents),
+		tools:        make(map[string]ownedResource[sdk.Tool, sdk.ToolSpec], len(snapshot.tools)),
+		agents:       make(map[string]ownedAgent, len(snapshot.agents)),
 		hooks:        make(map[string][]ownedHook, len(snapshot.hooks)),
 		subscribers:  make(map[string]ownedResource[sdk.Subscriber, sdk.SubscriberSpec], len(snapshot.subscribers)),
-		capabilities: maps.Clone(snapshot.capabilities),
+		capabilities: make(map[string]ownedResource[sdk.Capability, sdk.CapabilitySpec], len(snapshot.capabilities)),
 		events:       make(map[string]ownedEvent, len(snapshot.events)),
+	}
+	for name, tool := range snapshot.tools {
+		tool.spec = sdk.CloneToolSpec(tool.spec)
+		result.tools[name] = tool
+	}
+	for name, agent := range snapshot.agents {
+		agent.spec = sdk.CloneAgentSpec(agent.spec)
+		result.agents[name] = agent
 	}
 	for event, hooks := range snapshot.hooks {
 		result.hooks[event] = append([]ownedHook(nil), hooks...)
 	}
 	for name, subscriber := range snapshot.subscribers {
-		subscriber.spec.Events = append([]string(nil), subscriber.spec.Events...)
+		subscriber.spec = sdk.CloneSubscriberSpec(subscriber.spec)
 		result.subscribers[name] = subscriber
 	}
+	for name, capability := range snapshot.capabilities {
+		capability.spec = sdk.CloneCapabilitySpec(capability.spec)
+		result.capabilities[name] = capability
+	}
 	for name, event := range snapshot.events {
-		event.contract.MutableFields = append(
-			[]string(nil),
-			event.contract.MutableFields...,
-		)
+		event.contract = sdk.CloneEventContract(event.contract)
 		result.events[name] = event
 	}
 	return result
@@ -129,10 +177,8 @@ func (snapshot *registrySnapshot) resources() map[string]struct{} {
 	for name := range snapshot.capabilities {
 		resources[sdk.CapabilityResource(name)] = struct{}{}
 	}
-	for name, event := range snapshot.events {
-		if event.owner != nil {
-			resources[sdk.EventResource(name)] = struct{}{}
-		}
+	for name := range snapshot.events {
+		resources[sdk.EventResource(name)] = struct{}{}
 	}
 	return resources
 }
@@ -404,9 +450,7 @@ func normalizeHookSpec(
 		spec.Priority = sdk.PriorityNormal
 	}
 	if spec.FailurePolicy == "" {
-		if len(contract.MutableFields) > 0 ||
-			contract.AllowBlock ||
-			contract.AllowAction {
+		if contract.AllowsEffect() {
 			spec.FailurePolicy = sdk.FailurePolicyFailClosed
 		} else {
 			spec.FailurePolicy = sdk.FailurePolicyContinue

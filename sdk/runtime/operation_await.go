@@ -2,10 +2,12 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/lincyaw/ag/internal/lifecycle"
 	"github.com/lincyaw/ag/sdk"
 )
 
@@ -13,15 +15,55 @@ import (
 type pollOperation func(context.Context, string, uint64) (sdk.Operation, error)
 type cancelOperation func(context.Context, string) (sdk.Operation, error)
 
-func (runtime *Runtime) awaitOperation(
-	ctx context.Context,
+// operationAwait groups one accepted operation snapshot with the resource
+// lifecycle functions needed to wait, validate, and cancel it.
+type operationAwait struct {
+	expectedIdempotencyKey string
+	initial                sdk.Operation
+	poll                   pollOperation
+	cancel                 cancelOperation
+}
+
+func operationAwaitForRequest(
+	request sdk.OperationRequest,
 	initial sdk.Operation,
 	poll pollOperation,
 	cancel cancelOperation,
+) operationAwait {
+	return operationAwait{
+		expectedIdempotencyKey: request.IdempotencyKey,
+		initial:                initial,
+		poll:                   poll,
+		cancel:                 cancel,
+	}
+}
+
+func (runtime *Runtime) awaitOperation(
+	ctx context.Context,
+	await operationAwait,
 ) (sdk.Operation, error) {
-	current := initial
+	current := await.initial
 	if err := sdk.ValidateOperation(current); err != nil {
 		return sdk.Operation{}, err
+	}
+	if await.expectedIdempotencyKey == "" {
+		return sdk.Operation{}, errors.New(
+			"operation idempotency key is empty",
+		)
+	}
+	if current.IdempotencyKey != await.expectedIdempotencyKey {
+		return sdk.Operation{}, fmt.Errorf(
+			"operation %q returned idempotency key %q, expected %q",
+			current.ID,
+			current.IdempotencyKey,
+			await.expectedIdempotencyKey,
+		)
+	}
+	if await.poll == nil {
+		return sdk.Operation{}, errors.New("operation poll function is nil")
+	}
+	if await.cancel == nil {
+		return sdk.Operation{}, errors.New("operation cancel function is nil")
 	}
 	for !current.Terminal() {
 		if !waitContext(ctx, runtime.operation.poll) {
@@ -31,53 +73,20 @@ func (runtime *Runtime) awaitOperation(
 			if closed {
 				return sdk.Operation{}, ctx.Err()
 			}
-			cancelCtx, cancelFunc := context.WithTimeout(
-				context.WithoutCancel(ctx),
+			cancelCtx, cancelFunc := lifecycle.WithDetachedTimeout(
+				ctx,
 				2*time.Second,
 			)
 			defer cancelFunc()
-			_, cancelErr := cancel(cancelCtx, current.ID)
+			_, cancelErr := await.cancel(cancelCtx, current.ID)
 			return sdk.Operation{}, errors.Join(ctx.Err(), cancelErr)
 		}
-		next, err := poll(ctx, current.ID, current.Revision)
+		next, err := await.poll(ctx, current.ID, current.Revision)
 		if err != nil {
 			return sdk.Operation{}, err
 		}
-		if err := sdk.ValidateOperation(next); err != nil {
+		if err := sdk.ValidateOperationProgress(current, next); err != nil {
 			return sdk.Operation{}, err
-		}
-		if next.ID != current.ID {
-			return sdk.Operation{}, fmt.Errorf(
-				"operation poll returned ID %q, expected %q",
-				next.ID,
-				current.ID,
-			)
-		}
-		if next.IdempotencyKey != current.IdempotencyKey {
-			return sdk.Operation{}, fmt.Errorf(
-				"operation %q idempotency key changed during poll",
-				current.ID,
-			)
-		}
-		if next.Revision < current.Revision {
-			return sdk.Operation{}, fmt.Errorf(
-				"operation %q revision regressed from %d to %d",
-				current.ID,
-				current.Revision,
-				next.Revision,
-			)
-		}
-		if next.Revision == current.Revision && next.State != current.State {
-			return sdk.Operation{}, fmt.Errorf(
-				"operation %q changed state without a revision increment",
-				current.ID,
-			)
-		}
-		if current.State == sdk.OperationRunning && next.State == sdk.OperationPending {
-			return sdk.Operation{}, fmt.Errorf(
-				"operation %q regressed from running to pending",
-				current.ID,
-			)
 		}
 		current = next
 	}
@@ -93,6 +102,91 @@ func (runtime *Runtime) awaitOperation(
 	case sdk.OperationCancelled:
 		return sdk.Operation{}, fmt.Errorf("operation %q was cancelled", current.ID)
 	default:
-		panic("unreachable operation state")
+		return sdk.Operation{}, fmt.Errorf(
+			"operation %q reached unsupported terminal state %q",
+			current.ID,
+			current.State,
+		)
 	}
+}
+
+func awaitOperationJSON[T any](
+	runtime *Runtime,
+	ctx context.Context,
+	await operationAwait,
+	awaitLabel string,
+	decodeLabel string,
+) (T, error) {
+	var result T
+	operation, err := runtime.awaitOperation(ctx, await)
+	if err != nil {
+		return result, wrapOperationLabel(awaitLabel, err)
+	}
+	if err := json.Unmarshal(operation.Output, &result); err != nil {
+		return result, fmt.Errorf("decode %s: %w", decodeLabel, err)
+	}
+	return result, nil
+}
+
+func awaitOperationRequestJSON[T any](
+	runtime *Runtime,
+	ctx context.Context,
+	request sdk.OperationRequest,
+	initial sdk.Operation,
+	poll pollOperation,
+	cancel cancelOperation,
+	awaitLabel string,
+	decodeLabel string,
+) (T, error) {
+	return awaitOperationJSON[T](
+		runtime,
+		ctx,
+		operationAwaitForRequest(request, initial, poll, cancel),
+		awaitLabel,
+		decodeLabel,
+	)
+}
+
+func awaitOperationRawJSON(
+	runtime *Runtime,
+	ctx context.Context,
+	await operationAwait,
+	awaitLabel string,
+	outputLabel string,
+) (json.RawMessage, error) {
+	operation, err := runtime.awaitOperation(ctx, await)
+	if err != nil {
+		return nil, wrapOperationLabel(awaitLabel, err)
+	}
+	output := operation.Output
+	if !json.Valid(output) {
+		return nil, fmt.Errorf("%s returned invalid JSON", outputLabel)
+	}
+	return append(json.RawMessage(nil), output...), nil
+}
+
+func awaitOperationRequestRawJSON(
+	runtime *Runtime,
+	ctx context.Context,
+	request sdk.OperationRequest,
+	initial sdk.Operation,
+	poll pollOperation,
+	cancel cancelOperation,
+	awaitLabel string,
+	outputLabel string,
+) (json.RawMessage, error) {
+	return awaitOperationRawJSON(
+		runtime,
+		ctx,
+		operationAwaitForRequest(request, initial, poll, cancel),
+		awaitLabel,
+		outputLabel,
+	)
+}
+
+func wrapOperationLabel(label string, err error) error {
+	if label == "" || err == nil {
+		return err
+	}
+	return fmt.Errorf("%s: %w", label, err)
 }

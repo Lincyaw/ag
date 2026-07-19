@@ -44,12 +44,39 @@ type closeCountingBackend struct {
 	health       error
 }
 
+type contextHealthBackend struct {
+	*closeCountingBackend
+}
+
 type blockingCloseBackend struct {
 	sdk.StateBackend
 	closes  atomic.Int64
 	started chan struct{}
 	release chan struct{}
 	once    sync.Once
+}
+
+type panicRuntimeCloseBackend struct {
+	sdk.StateBackend
+	closes atomic.Int64
+}
+
+type capabilityOverrideBackend struct {
+	sdk.StateBackend
+	capabilities sdk.StorageCapabilities
+}
+
+func (backend *capabilityOverrideBackend) Capabilities() sdk.StorageCapabilities {
+	return backend.capabilities
+}
+
+type hiddenAtomicStateBackend struct {
+	*atomicTestBackend
+	capabilities sdk.StorageCapabilities
+}
+
+func (backend *hiddenAtomicStateBackend) Capabilities() sdk.StorageCapabilities {
+	return backend.capabilities
 }
 
 func (backend *closeCountingBackend) Close(ctx context.Context) error {
@@ -65,11 +92,21 @@ func (backend *closeCountingBackend) Health(ctx context.Context) error {
 	return backend.StateBackend.Health(ctx)
 }
 
+func (backend *contextHealthBackend) Health(ctx context.Context) error {
+	backend.healthChecks.Add(1)
+	return ctx.Err()
+}
+
 func (backend *blockingCloseBackend) Close(context.Context) error {
 	backend.closes.Add(1)
 	backend.once.Do(func() { close(backend.started) })
 	<-backend.release
 	return nil
+}
+
+func (backend *panicRuntimeCloseBackend) Close(context.Context) error {
+	backend.closes.Add(1)
+	panic("broken runtime storage close")
 }
 
 func (plugin *closeCountingPlugin) Manifest() sdk.Manifest { return plugin.manifest }
@@ -82,6 +119,22 @@ func (plugin *closeCountingPlugin) Close(context.Context) error {
 	plugin.closes.Add(1)
 	plugin.once.Do(func() { close(plugin.closed) })
 	return nil
+}
+
+type panicClosePlugin struct {
+	manifest sdk.Manifest
+}
+
+func (plugin *panicClosePlugin) Manifest() sdk.Manifest {
+	return plugin.manifest
+}
+
+func (plugin *panicClosePlugin) Install(context.Context, sdk.Registrar) error {
+	return nil
+}
+
+func (plugin *panicClosePlugin) Close(context.Context) error {
+	panic("broken plugin close")
 }
 
 func TestUnmountCanRetryAfterDependencyFailureAndClosesOnce(t *testing.T) {
@@ -177,6 +230,260 @@ func TestUnmountCanRetryAfterDependencyFailureAndClosesOnce(t *testing.T) {
 	}
 	if err := errors.Join(dependencyMount.Unmount(ctx), dependentMount.Unmount(ctx)); err != nil {
 		t.Fatalf("final idempotent unmount: %v", err)
+	}
+}
+
+func TestUnmountClosePanicStillCompletesMount(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{Storage: newTestStateBackend()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	plugin := &panicClosePlugin{
+		manifest: sdk.Manifest{
+			Name:        "panic-close",
+			Version:     "1.0.0",
+			Description: "panics while closing",
+			APIVersion:  sdk.APIVersion,
+		},
+	}
+	mount, err := runtime.Mount(ctx, sdk.Local(plugin))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mount.Unmount(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mount.Done():
+	case <-time.After(time.Second):
+		t.Fatal("mount close did not complete after panic")
+	}
+	err = mount.state.closeError()
+	if err == nil ||
+		!strings.Contains(err.Error(), "close plugin \"panic-close\" connection panic") ||
+		!strings.Contains(err.Error(), "broken plugin close") {
+		t.Fatalf("mount close error = %v", err)
+	}
+}
+
+func TestMountFailureClosePanicReturnsJoinedError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{Storage: newTestStateBackend()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	plugin := &panicClosePlugin{
+		manifest: sdk.Manifest{
+			Version:     "1.0.0",
+			Description: "invalid manifest that panics while cleaning up",
+			APIVersion:  sdk.APIVersion,
+		},
+	}
+	_, err = runtime.Mount(ctx, sdk.Local(plugin))
+	if err == nil ||
+		!strings.Contains(err.Error(), "validate plugin manifest") ||
+		!strings.Contains(err.Error(), "close plugin \"<unknown>\" connection panic") ||
+		!strings.Contains(err.Error(), "broken plugin close") {
+		t.Fatalf("mount error = %v", err)
+	}
+}
+
+func TestSnapshotLeaseReleaseIsIdempotent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{Storage: newTestStateBackend()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	plugin := &closeCountingPlugin{
+		manifest: sdk.Manifest{
+			Name:        "lease-idempotent",
+			Version:     "1.0.0",
+			Description: "verifies idempotent snapshot release",
+			APIVersion:  sdk.APIVersion,
+		},
+		install: func(sdk.Registrar) error { return nil },
+		closed:  make(chan struct{}),
+	}
+	mount, err := runtime.Mount(ctx, sdk.Local(plugin))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := runtime.acquireSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.release()
+	lease.release()
+	if err := mount.Unmount(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-mount.Done():
+	case <-time.After(time.Second):
+		t.Fatal("plugin connection did not close")
+	}
+	if plugin.closes.Load() != 1 {
+		t.Fatalf("plugin close count = %d, want 1", plugin.closes.Load())
+	}
+}
+
+func TestPluginCannotOverrideBuiltinEventContract(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	runtime, err := NewRuntime(RuntimeConfig{Storage: newTestStateBackend()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	}()
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "event-override",
+			Version:     "1.0.0",
+			Description: "attempts to redefine a runtime-owned event",
+			APIVersion:  sdk.APIVersion,
+			Registers:   []string{sdk.EventResource(sdk.EventTrajectoryAppend)},
+		},
+		InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+			return registrar.RegisterEvent(sdk.EventContract{
+				Name:          sdk.EventTrajectoryAppend,
+				MutableFields: []string{"trajectory_id"},
+			})
+		},
+	}
+	if _, err := runtime.Mount(ctx, sdk.Local(plugin)); err == nil ||
+		!strings.Contains(
+			err.Error(),
+			"cannot register existing resource \"event:trajectory_appended\"",
+		) {
+		t.Fatalf("mount error = %v", err)
+	}
+}
+
+func TestPluginLifecycleEventUsesCommittedGeneration(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	events := make(chan sdk.Event, 2)
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:          newTestStateBackend(),
+		StorageOwnership: StorageBorrowed,
+		EventObserver: func(_ context.Context, event sdk.Event) {
+			switch event.Name {
+			case sdk.EventPluginMounted, sdk.EventPluginUnmounted:
+				events <- event
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+
+	plugin := sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "lifecycle-subject",
+			Version:     "1.0.0",
+			Description: "verifies lifecycle event generation",
+			APIVersion:  sdk.APIVersion,
+		},
+		InstallFunc: func(context.Context, sdk.Registrar) error {
+			return nil
+		},
+	}
+	mount, err := runtime.Mount(ctx, sdk.Local(plugin))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mounted := requirePluginLifecycleEvent(
+		t,
+		events,
+		sdk.EventPluginMounted,
+		"lifecycle-subject",
+	)
+	if got := runtime.Catalog().Generation; mounted.Generation != got {
+		t.Fatalf("mounted event generation = %d, catalog generation = %d", mounted.Generation, got)
+	}
+
+	if err := mount.Unmount(ctx); err != nil {
+		t.Fatal(err)
+	}
+	unmounted := requirePluginLifecycleEvent(
+		t,
+		events,
+		sdk.EventPluginUnmounted,
+		"lifecycle-subject",
+	)
+	if got := runtime.Catalog().Generation; unmounted.Generation != got {
+		t.Fatalf("unmounted event generation = %d, catalog generation = %d", unmounted.Generation, got)
+	}
+}
+
+func requirePluginLifecycleEvent(
+	t *testing.T,
+	events <-chan sdk.Event,
+	name string,
+	plugin string,
+) sdk.Event {
+	t.Helper()
+	select {
+	case event := <-events:
+		if event.Name != name {
+			t.Fatalf("event name = %q, want %q", event.Name, name)
+		}
+		var payload sdk.PluginLifecyclePayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Name != plugin {
+			t.Fatalf("payload plugin = %q, want %q", payload.Name, plugin)
+		}
+		if payload.Generation != event.Generation {
+			t.Fatalf(
+				"payload generation = %d, event generation = %d",
+				payload.Generation,
+				event.Generation,
+			)
+		}
+		return event
+	case <-time.After(time.Second):
+		t.Fatalf("%s event was not observed", name)
+		return sdk.Event{}
 	}
 }
 
@@ -385,39 +692,6 @@ func TestHooksCannotMutateSharedEventPayload(t *testing.T) {
 	}
 }
 
-func TestCloneEffectSnapshotsMutableValues(t *testing.T) {
-	t.Parallel()
-	effect := sdk.Effect{
-		Patch: map[string]json.RawMessage{"field": json.RawMessage(`{"value":1}`)},
-		Block: &sdk.Block{Reason: "original"},
-		Action: &sdk.Action{
-			Kind:  sdk.ActionInject,
-			Cause: &sdk.Cause{Code: "original"},
-			Messages: []sdk.Message{{
-				Content: "original",
-				ToolCalls: []sdk.ToolCall{{
-					ID: "call", Arguments: json.RawMessage(`{"value":1}`),
-				}},
-			}},
-		},
-	}
-	cloned := cloneEffect(effect)
-
-	effect.Patch["field"][0] = '['
-	effect.Block.Reason = "changed"
-	effect.Action.Cause.Code = "changed"
-	effect.Action.Messages[0].Content = "changed"
-	effect.Action.Messages[0].ToolCalls[0].Arguments[0] = '['
-
-	if string(cloned.Patch["field"]) != `{"value":1}` ||
-		cloned.Block.Reason != "original" ||
-		cloned.Action.Cause.Code != "original" ||
-		cloned.Action.Messages[0].Content != "original" ||
-		string(cloned.Action.Messages[0].ToolCalls[0].Arguments) != `{"value":1}` {
-		t.Fatalf("cloned effect changed with plugin-owned value: %#v", cloned)
-	}
-}
-
 func TestRuntimeHonorsStorageOwnership(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -475,6 +749,29 @@ func TestRuntimeConstructionFailureLeavesStorageWithCaller(t *testing.T) {
 	}
 }
 
+func TestNewRuntimeContextUsesStartupContextForStorageHealth(t *testing.T) {
+	t.Parallel()
+	backend := &contextHealthBackend{
+		closeCountingBackend: &closeCountingBackend{
+			StateBackend: newTestStateBackend(),
+		},
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := NewRuntimeContext(
+		ctx,
+		RuntimeConfig{Storage: backend},
+	); !errors.Is(err, context.Canceled) {
+		t.Fatalf("NewRuntimeContext() error = %v, want context canceled", err)
+	}
+	if got := backend.healthChecks.Load(); got != 1 {
+		t.Fatalf("backend health checks = %d, want 1", got)
+	}
+	if got := backend.closes.Load(); got != 0 {
+		t.Fatalf("constructor closed caller-owned backend %d times", got)
+	}
+}
+
 func TestRuntimeValidatesConfigBeforeTouchingStorage(t *testing.T) {
 	t.Parallel()
 	backend := &closeCountingBackend{
@@ -490,6 +787,79 @@ func TestRuntimeValidatesConfigBeforeTouchingStorage(t *testing.T) {
 	}
 	if got := backend.healthChecks.Load(); got != 0 {
 		t.Fatalf("backend health checks = %d, want 0", got)
+	}
+}
+
+func TestRuntimeRejectsInconsistentStorageCapabilities(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		backend sdk.StateBackend
+		want    string
+	}{
+		{
+			name: "missing operation fencing",
+			backend: stateBackendWithCapabilities(func(
+				capabilities sdk.StorageCapabilities,
+			) sdk.StorageCapabilities {
+				capabilities.OperationFencing = false
+				return capabilities
+			}),
+			want: "state backend must advertise operation fencing",
+		},
+		{
+			name: "missing named queues",
+			backend: stateBackendWithCapabilities(func(
+				capabilities sdk.StorageCapabilities,
+			) sdk.StorageCapabilities {
+				capabilities.NamedQueues = false
+				return capabilities
+			}),
+			want: "state backend must advertise named delivery queues",
+		},
+		{
+			name: "advertises atomic without interface",
+			backend: stateBackendWithCapabilities(func(
+				capabilities sdk.StorageCapabilities,
+			) sdk.StorageCapabilities {
+				capabilities.AtomicState = true
+				return capabilities
+			}),
+			want: "state backend advertises atomic state without implementing AtomicStateBackend",
+		},
+		{
+			name:    "implements atomic without advertising",
+			backend: hiddenAtomicStateTestBackend(),
+			want:    "state backend implements AtomicStateBackend without advertising atomic state",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewRuntime(RuntimeConfig{Storage: test.backend})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("NewRuntime() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func stateBackendWithCapabilities(
+	update func(sdk.StorageCapabilities) sdk.StorageCapabilities,
+) sdk.StateBackend {
+	backend := newTestStateBackend()
+	return &capabilityOverrideBackend{
+		StateBackend: backend,
+		capabilities: update(backend.Capabilities()),
+	}
+}
+
+func hiddenAtomicStateTestBackend() sdk.StateBackend {
+	backend := newTestStateBackend()
+	capabilities := backend.Capabilities()
+	capabilities.AtomicState = false
+	return &hiddenAtomicStateBackend{
+		atomicTestBackend: &atomicTestBackend{StateBackend: backend},
+		capabilities:      capabilities,
 	}
 }
 
@@ -524,5 +894,76 @@ func TestRuntimeCloseContinuesAfterCallerTimeout(t *testing.T) {
 	}
 	if got := backend.closes.Load(); got != 1 {
 		t.Fatalf("backend close count = %d, want 1", got)
+	}
+}
+
+func TestRuntimeClosePanicCompletesShutdown(t *testing.T) {
+	t.Parallel()
+	backend := &panicRuntimeCloseBackend{
+		StateBackend: newTestStateBackend(),
+	}
+	runtime, err := NewRuntime(RuntimeConfig{Storage: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	err = runtime.Close(ctx)
+	cancel()
+	if err == nil ||
+		!strings.Contains(err.Error(), "runtime close panic") ||
+		!strings.Contains(err.Error(), "broken runtime storage close") {
+		t.Fatalf("close error = %v, want storage close panic", err)
+	}
+	if got := backend.closes.Load(); got != 1 {
+		t.Fatalf("backend close count = %d, want 1", got)
+	}
+
+	retryCtx, stop := context.WithTimeout(context.Background(), time.Second)
+	defer stop()
+	retryErr := runtime.Close(retryCtx)
+	if retryErr == nil ||
+		!strings.Contains(retryErr.Error(), "runtime close panic") ||
+		!strings.Contains(retryErr.Error(), "broken runtime storage close") {
+		t.Fatalf("retry close error = %v, want stored storage close panic", retryErr)
+	}
+	if got := backend.closes.Load(); got != 1 {
+		t.Fatalf("backend close count after retry = %d, want 1", got)
+	}
+}
+
+func TestRuntimeRequestCloseStartsShutdownWithoutWaiting(t *testing.T) {
+	t.Parallel()
+	backend := &blockingCloseBackend{
+		StateBackend: newTestStateBackend(),
+		started:      make(chan struct{}),
+		release:      make(chan struct{}),
+	}
+	runtime, err := NewRuntime(RuntimeConfig{Storage: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		runtime.RequestClose(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RequestClose waited for cleanup")
+	}
+	select {
+	case <-backend.started:
+	case <-time.After(time.Second):
+		t.Fatal("RequestClose did not start runtime cleanup")
+	}
+	close(backend.release)
+
+	ctx, stop := context.WithTimeout(context.Background(), time.Second)
+	defer stop()
+	if err := runtime.Close(ctx); err != nil {
+		t.Fatalf("wait for requested close: %v", err)
 	}
 }

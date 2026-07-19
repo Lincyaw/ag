@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"time"
 
+	"github.com/lincyaw/ag/internal/lifecycle"
+	"github.com/lincyaw/ag/internal/operationworker"
 	"github.com/lincyaw/ag/internal/plugincontract"
+	"github.com/lincyaw/ag/internal/pluginpolicy"
 	pluginv1 "github.com/lincyaw/ag/pluginrpc/v1"
 	"github.com/lincyaw/ag/sdk"
 	"google.golang.org/grpc/codes"
@@ -57,8 +61,7 @@ type server struct {
 	closed            bool
 	closeDone         chan struct{}
 	closeErr          error
-	cancelMu          sync.Mutex
-	operationCancels  map[string]context.CancelFunc
+	operationInflight operationworker.Inflight
 }
 
 func NewServer(ctx context.Context, config ServerConfig) (Server, error) {
@@ -102,7 +105,7 @@ func NewServer(ctx context.Context, config ServerConfig) (Server, error) {
 			"subscriber timeout must be shorter than the inbox lease",
 		)
 	}
-	manifest := plugincontract.CloneManifest(config.Plugin.Manifest())
+	manifest := sdk.CloneManifest(config.Plugin.Manifest())
 	if err := manifest.Validate(); err != nil {
 		return nil, fmt.Errorf("validate plugin manifest: %w", err)
 	}
@@ -133,7 +136,7 @@ func NewServer(ctx context.Context, config ServerConfig) (Server, error) {
 		context:           serverContext,
 		cancel:            cancel,
 		closeDone:         make(chan struct{}),
-		operationCancels:  make(map[string]context.CancelFunc),
+		operationInflight: operationworker.NewInflight(serverContext),
 	}
 	server.pluginCloser, _ = config.Plugin.(interface {
 		Close(context.Context) error
@@ -152,6 +155,9 @@ func NewServer(ctx context.Context, config ServerConfig) (Server, error) {
 }
 
 func (server *server) Close(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	server.lifecycleMu.Lock()
 	if !server.closed {
 		server.closed = true
@@ -159,11 +165,11 @@ func (server *server) Close(ctx context.Context) error {
 		go func() {
 			server.wait.Wait()
 			if server.pluginCloser != nil {
-				closeCtx, cancel := context.WithTimeout(
-					context.Background(),
+				closeCtx, cancel := lifecycle.WithDetachedTimeout(
+					ctx,
 					10*time.Second,
 				)
-				server.closeErr = server.pluginCloser.Close(closeCtx)
+				server.closeErr = server.closePlugin(closeCtx)
 				cancel()
 			}
 			close(server.closeDone)
@@ -182,6 +188,20 @@ func (server *server) Close(ctx context.Context) error {
 	case <-done:
 		return server.closeErr
 	}
+}
+
+func (server *server) closePlugin(ctx context.Context) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf(
+				"close plugin %q panic: %v\n%s",
+				server.manifest.Name,
+				recovered,
+				debug.Stack(),
+			)
+		}
+	}()
+	return server.pluginCloser.Close(ctx)
 }
 
 func (server *server) beginRPC() error {
@@ -429,7 +449,7 @@ func (server *server) HandleHook(
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	effect, err := hook.Value.Handle(ctx, event)
+	effect, err := pluginpolicy.HandleHook(ctx, hook.Value, hook.Spec, event)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -452,36 +472,15 @@ func (server *server) Deliver(
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if delivery.Plugin != server.manifest.Name {
-		return nil, status.Errorf(codes.InvalidArgument, "delivery targets plugin %q", delivery.Plugin)
-	}
-	subscriber, exists := server.registrar.Subscribers[delivery.Subscription]
-	if !exists {
-		return nil, status.Errorf(codes.NotFound, "subscriber %q not found", delivery.Subscription)
-	}
-	expectedRevision := sdk.ResourceRevision(
-		server.manifest,
-		"subscriber",
-		delivery.Subscription,
-		subscriber.Spec,
-	)
-	if delivery.PluginVersion != "" &&
-		delivery.PluginVersion != server.manifest.Version {
-		return nil, status.Errorf(
-			codes.FailedPrecondition,
-			"delivery targets plugin version %q, current version is %q",
-			delivery.PluginVersion,
-			server.manifest.Version,
-		)
-	}
-	if delivery.ResourceRevision != "" &&
-		delivery.ResourceRevision != expectedRevision {
-		return nil, status.Errorf(
-			codes.FailedPrecondition,
-			"delivery resource revision %q does not match current revision %q",
-			delivery.ResourceRevision,
-			expectedRevision,
-		)
+	target := server.resolveDeliveryTarget(delivery)
+	switch target.state {
+	case serverDeliveryTargetReady:
+	case serverDeliveryTargetWrongPlugin:
+		return nil, status.Error(codes.InvalidArgument, target.cause.Error())
+	case serverDeliveryTargetMissing:
+		return nil, status.Error(codes.NotFound, target.cause.Error())
+	case serverDeliveryTargetStale:
+		return nil, status.Error(codes.FailedPrecondition, target.cause.Error())
 	}
 	if err := server.inbox.Enqueue(ctx, delivery); err != nil {
 		return nil, rpcError(err)

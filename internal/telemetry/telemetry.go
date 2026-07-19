@@ -8,7 +8,9 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/lincyaw/ag/internal/lifecycle"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
@@ -110,7 +112,12 @@ func Setup(ctx context.Context, config Config) (*Runtime, error) {
 
 	runtime := &Runtime{}
 	cleanupOnError := func(cause error) (*Runtime, error) {
-		return nil, errors.Join(cause, runtime.Shutdown(context.Background()))
+		cleanupCtx, cancel := lifecycle.WithDetachedTimeout(
+			ctx,
+			5*time.Second,
+		)
+		defer cancel()
+		return nil, errors.Join(cause, runtime.Shutdown(cleanupCtx))
 	}
 	var installGlobals []func()
 

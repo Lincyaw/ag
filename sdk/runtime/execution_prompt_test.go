@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,11 +50,19 @@ func (observerProvider) Complete(
 func TestEventObserverDoesNotAffectExecution(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	observed := 0
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	var observed atomic.Int64
+	var first atomic.Bool
 	runtime, err := NewRuntime(RuntimeConfig{
 		Storage: newTestStateBackend(),
 		EventObserver: func(context.Context, sdk.Event) {
-			observed++
+			observed.Add(1)
+			if first.CompareAndSwap(false, true) {
+				close(entered)
+			}
+			<-release
 			panic("observer failure")
 		},
 	})
@@ -88,12 +98,79 @@ func TestEventObserverDoesNotAffectExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := session.Prompt(ctx, "run despite observer panic")
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("event observer was not called")
+	}
+	resultC := make(chan Result, 1)
+	errC := make(chan error, 1)
+	go func() {
+		result, err := session.Prompt(ctx, "run despite observer panic")
+		if err != nil {
+			errC <- err
+			return
+		}
+		resultC <- result
+	}()
+	var result Result
+	select {
+	case err := <-errC:
+		t.Fatal(err)
+	case result = <-resultC:
+	case <-time.After(time.Second):
+		t.Fatal("prompt waited for event observer")
+	}
+	if result.Output != "observer result" || observed.Load() == 0 {
+		t.Fatalf("result = %#v observed = %d", result, observed.Load())
+	}
+}
+
+func TestRuntimeCloseCancelsEventObserverContext(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	entered := make(chan struct{})
+	cancelled := make(chan struct{})
+	var enterOnce sync.Once
+	var cancelOnce sync.Once
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage: newTestStateBackend(),
+		EventObserver: func(ctx context.Context, _ sdk.Event) {
+			enterOnce.Do(func() { close(entered) })
+			<-ctx.Done()
+			cancelOnce.Do(func() { close(cancelled) })
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Output != "observer result" || observed == 0 {
-		t.Fatalf("result = %#v observed = %d", result, observed)
+	if _, err := runtime.Mount(ctx, sdk.Local(sdk.PluginFunc{
+		PluginManifest: sdk.Manifest{
+			Name:        "observer-close-plugin",
+			Version:     "1.0.0",
+			Description: "triggers observer close cancellation",
+			APIVersion:  sdk.APIVersion,
+		},
+		InstallFunc: func(context.Context, sdk.Registrar) error {
+			return nil
+		},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("event observer was not called")
+	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := runtime.Close(closeCtx); err != nil {
+		t.Fatalf("close runtime: %v", err)
+	}
+	select {
+	case <-cancelled:
+	default:
+		t.Fatal("runtime close returned before cancelling event observer context")
 	}
 }
 
