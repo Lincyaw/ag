@@ -57,8 +57,26 @@ func (application *app) trajectoryCommand() *cobra.Command {
 				if branchErr != nil {
 					return branchErr
 				}
+				checkpoint, found, checkpointErr := store.FindLatest(
+					command.Context(),
+					args[0],
+					branchHead,
+					sdk.TrajectoryKindCheckpoint,
+				)
+				if checkpointErr != nil {
+					return checkpointErr
+				}
+				checkpointID := ""
+				if found {
+					checkpointID = checkpoint.ID
+				}
 				return application.writeTrajectory(
-					trajectoryFromMetadata(metadata, branchHead, branch),
+					trajectoryFromMetadata(
+						metadata,
+						branchHead,
+						checkpointID,
+						branch,
+					),
 				)
 			}
 			trajectory, err := store.Load(command.Context(), args[0])
@@ -167,6 +185,7 @@ func trajectoryHasCheckpoint(trajectory sdk.Trajectory, checkpointID string) boo
 func trajectoryFromMetadata(
 	metadata sdk.TrajectoryMetadata,
 	head string,
+	checkpoint string,
 	entries []sdk.TrajectoryEntry,
 ) sdk.Trajectory {
 	return sdk.Trajectory{
@@ -177,7 +196,7 @@ func trajectoryFromMetadata(
 		CreatedAt:     metadata.CreatedAt,
 		UpdatedAt:     metadata.UpdatedAt,
 		Head:          head,
-		Checkpoint:    metadata.Checkpoint,
+		Checkpoint:    checkpoint,
 		Execution:     sdk.CloneTrajectoryExecution(metadata.Execution),
 		Environment:   sdk.CloneTrajectoryEnvironment(metadata.Environment),
 		Entries:       sdk.CloneTrajectoryEntries(entries),

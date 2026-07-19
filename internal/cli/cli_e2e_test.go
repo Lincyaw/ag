@@ -72,6 +72,16 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 	if len(checkpoints) != 2 {
 		t.Fatalf("checkpoint IDs = %v", checkpoints)
 	}
+	firstCheckpoint := executeCLI(t,
+		"--state-dir", state,
+		"trajectory", "show", "cli-e2e", "--head", checkpoints[0], "-o", "json",
+	)
+	var checkpointBranch sdk.Trajectory
+	decodeJSON(t, firstCheckpoint.stdout, &checkpointBranch)
+	if checkpointBranch.Head != checkpoints[0] ||
+		checkpointBranch.Checkpoint != checkpoints[0] {
+		t.Fatalf("checkpoint branch = %#v", checkpointBranch)
+	}
 
 	preview := executeCLI(t,
 		"--state-dir", state,
