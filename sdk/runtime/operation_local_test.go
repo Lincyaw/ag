@@ -783,7 +783,7 @@ func TestInvokeCapabilityLeaseIsScopedToOwnerMount(t *testing.T) {
 	}
 }
 
-func TestLocalOperationRejectsSubmissionAfterRuntimeClose(t *testing.T) {
+func TestLocalOperationRejectsControlAfterRuntimeClose(t *testing.T) {
 	t.Parallel()
 	runtime, err := NewRuntime(RuntimeConfig{
 		Storage:          newTestStateBackend(),
@@ -817,6 +817,21 @@ func TestLocalOperationRejectsSubmissionAfterRuntimeClose(t *testing.T) {
 	})
 	if !errors.Is(err, ErrRuntimeClosed) {
 		t.Fatalf("submit error = %v, want runtime is closed", err)
+	}
+	_, err = adapter.PollCall(
+		context.Background(),
+		"closed-runtime",
+		0,
+	)
+	if !errors.Is(err, ErrRuntimeClosed) {
+		t.Fatalf("poll error = %v, want runtime is closed", err)
+	}
+	_, err = adapter.CancelCall(
+		context.Background(),
+		"closed-runtime",
+	)
+	if !errors.Is(err, ErrRuntimeClosed) {
+		t.Fatalf("cancel error = %v, want runtime is closed", err)
 	}
 	records, err := runtime.operation.store.List(context.Background())
 	if err != nil {

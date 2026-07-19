@@ -326,10 +326,10 @@ func (runtime *Runtime) submitLocalOperation(
 	if releaseExecutionLease == nil {
 		releaseExecutionLease = func() {}
 	}
-	releaseOperationWork, ok := runtime.operation.beginWork(runtime)
-	if !ok {
+	releaseOperationWork, err := runtime.beginOperationWork()
+	if err != nil {
 		releaseExecutionLease()
-		return sdk.Operation{}, ErrRuntimeClosed
+		return sdk.Operation{}, err
 	}
 
 	identity := target.identity()
@@ -371,6 +371,11 @@ func (runtime *Runtime) pollLocalOperation(
 	identity operationworker.Target,
 	id string,
 ) (sdk.Operation, error) {
+	releaseWork, err := runtime.beginOperationWork()
+	if err != nil {
+		return sdk.Operation{}, err
+	}
+	defer releaseWork()
 	record, err := runtime.loadLocalOperation(ctx, identity, id)
 	if err != nil {
 		return sdk.Operation{}, err
@@ -383,6 +388,11 @@ func (runtime *Runtime) cancelLocalOperation(
 	identity operationworker.Target,
 	id string,
 ) (sdk.Operation, error) {
+	releaseWork, err := runtime.beginOperationWork()
+	if err != nil {
+		return sdk.Operation{}, err
+	}
+	defer releaseWork()
 	cancelled, err := runtime.operationHost().Cancel(
 		ctx,
 		id,

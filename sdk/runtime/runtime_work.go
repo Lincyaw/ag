@@ -33,6 +33,14 @@ func (runtime *Runtime) beginTrajectoryWork() (func(), error) {
 	return release, nil
 }
 
+func (runtime *Runtime) beginOperationWork() (func(), error) {
+	release, ok := runtime.operation.beginWork(runtime)
+	if !ok {
+		return nil, ErrRuntimeClosed
+	}
+	return release, nil
+}
+
 func (runtime *Runtime) shouldLeaveExecutionRecoverable() bool {
 	runtime.mu.Lock()
 	closed := runtime.closed
