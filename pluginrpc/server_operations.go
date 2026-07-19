@@ -20,7 +20,8 @@ func (server *server) submitStored(
 	resource string,
 	request sdk.OperationRequest,
 ) (sdk.Operation, error) {
-	if !server.reserveOperation() {
+	releaseOperation, ok := server.beginOperationWork()
+	if !ok {
 		return sdk.Operation{}, errors.New("RPC server is closed")
 	}
 	target := server.operationTarget(kind, resource)
@@ -29,7 +30,7 @@ func (server *server) submitStored(
 		target,
 		request,
 		server.executeLocal,
-		server.wait.Done,
+		releaseOperation,
 	)
 	if err != nil {
 		return sdk.Operation{}, err
@@ -81,8 +82,8 @@ func (server *server) recoverOperations(ctx context.Context) error {
 	}
 	for _, candidate := range candidates {
 		if candidate.Delay > 0 {
-			if server.reserveOperation() {
-				server.startReservedRecovery(ctx, candidate)
+			if releaseOperation, ok := server.beginOperationWork(); ok {
+				server.startReservedRecovery(ctx, candidate, releaseOperation)
 			}
 			continue
 		}
@@ -113,8 +114,8 @@ func (server *server) recoverOperation(
 		return nil
 	}
 	if candidate.Delay > 0 {
-		if server.reserveOperation() {
-			server.startReservedRecovery(ctx, candidate)
+		if releaseOperation, ok := server.beginOperationWork(); ok {
+			server.startReservedRecovery(ctx, candidate, releaseOperation)
 		}
 		return nil
 	}
@@ -134,8 +135,8 @@ func (server *server) recoverOperation(
 	if record.Operation.Terminal() || failed {
 		return nil
 	}
-	if server.reserveOperation() {
-		server.startReservedOperation(ctx, operationID)
+	if releaseOperation, ok := server.beginOperationWork(); ok {
+		server.startReservedOperation(ctx, operationID, releaseOperation)
 	}
 	return nil
 }
@@ -143,9 +144,10 @@ func (server *server) recoverOperation(
 func (server *server) startReservedRecovery(
 	parent context.Context,
 	candidate operationworker.RecoveryCandidate,
+	releaseOperation func(),
 ) {
 	go func() {
-		defer server.wait.Done()
+		defer releaseOperation()
 		defer server.recoverReservedRecoveryPanic(
 			lifecycle.Detached(parent),
 			candidate.OperationID,
@@ -195,23 +197,29 @@ func (server *server) recoverReservedRecoveryPanic(
 	}
 }
 
-func (server *server) reserveOperation() bool {
+// beginOperationWork enters the server close gate for one operation or delayed
+// recovery task. The returned release function must be called exactly once.
+func (server *server) beginOperationWork() (func(), bool) {
 	server.lifecycleMu.Lock()
 	defer server.lifecycleMu.Unlock()
 	if server.closed {
-		return false
+		return nil, false
 	}
 	server.wait.Add(1)
-	return true
+	return server.wait.Done, true
 }
 
-func (server *server) startReservedOperation(parent context.Context, id string) {
+func (server *server) startReservedOperation(
+	parent context.Context,
+	id string,
+	releaseOperation func(),
+) {
 	server.operationHost().StartReservedAsync(
 		parent,
 		id,
 		server.validateOperationRevision,
 		server.executeLocal,
-		server.wait.Done,
+		releaseOperation,
 	)
 }
 

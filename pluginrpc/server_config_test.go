@@ -190,12 +190,14 @@ func TestDelayedRecoveryPanicCompletesServerWait(t *testing.T) {
 		OperationStore: server.operations,
 		entered:        entered,
 	}
-	if !server.reserveOperation() {
+	releaseOperation, ok := server.beginOperationWork()
+	if !ok {
 		t.Fatal("reserve operation rejected before server close")
 	}
 	server.startReservedRecovery(
 		context.Background(),
 		operationworker.RecoveryCandidate{OperationID: "panic-recovery"},
+		releaseOperation,
 	)
 	select {
 	case <-entered:
