@@ -65,6 +65,9 @@ type server struct {
 }
 
 func NewServer(ctx context.Context, config ServerConfig) (Server, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if config.Plugin == nil {
 		return nil, errors.New("plugin is nil")
 	}
@@ -119,7 +122,7 @@ func NewServer(ctx context.Context, config ServerConfig) (Server, error) {
 	if err := validateRPCContributions(registrar); err != nil {
 		return nil, err
 	}
-	serverContext, cancel := context.WithCancel(context.Background())
+	serverContext, cancel := context.WithCancel(lifecycle.Detached(ctx))
 	server := &server{
 		manifest:          manifest,
 		registrar:         registrar,

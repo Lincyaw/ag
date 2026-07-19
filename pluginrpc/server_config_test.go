@@ -37,6 +37,8 @@ type panicGetOperationStore struct {
 	entered chan<- struct{}
 }
 
+type serverContextValueKey struct{}
+
 func (store panicGetOperationStore) Get(
 	context.Context,
 	string,
@@ -685,6 +687,78 @@ func TestServerDelayedRecoveryIgnoresStartupContextCancellation(
 			t.Fatalf("operation did not recover: %#v", recovered.Operation)
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestServerInboxWorkerPreservesStartupContextValues(t *testing.T) {
+	t.Parallel()
+	received := make(chan any, 1)
+	startupCtx, cancelStartup := context.WithCancel(context.WithValue(
+		context.Background(),
+		serverContextValueKey{},
+		"startup-value",
+	))
+	inbox := sdkstorage.NewMemoryDeliveryStore()
+	service, err := NewServer(startupCtx, ServerConfig{
+		Plugin: sdk.PluginFunc{
+			PluginManifest: sdk.Manifest{
+				Name:        "context-values",
+				Version:     "1.0.0",
+				Description: "checks server-owned worker context values",
+				APIVersion:  sdk.APIVersion,
+				Registers:   []string{sdk.SubscriberResource("observer")},
+			},
+			InstallFunc: func(_ context.Context, registrar sdk.Registrar) error {
+				return registrar.RegisterSubscriber(sdk.SubscriberFunc{
+					SubscriberSpec: sdk.SubscriberSpec{
+						Name:    "observer",
+						Events:  []string{"context.event"},
+						Timeout: time.Second,
+					},
+					ReceiveFunc: func(ctx context.Context, _ sdk.Delivery) error {
+						received <- ctx.Value(serverContextValueKey{})
+						return nil
+					},
+				})
+			},
+		},
+		Operations:        sdkstorage.NewMemoryOperationStore(),
+		Inbox:             inbox,
+		InboxPoll:         time.Millisecond,
+		InboxLease:        time.Second,
+		SubscriberTimeout: 100 * time.Millisecond,
+		InboxMaxAttempts:  1,
+		OperationLease:    time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelStartup()
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	})
+	server := service.(*server)
+	delivery := server.subscriberDeliveryTarget("observer").Record(
+		sdk.Event{
+			ID:      "context-event",
+			Name:    "context.event",
+			Payload: json.RawMessage(`{}`),
+		},
+		time.Now().UTC(),
+	)
+	if err := inbox.Enqueue(context.Background(), delivery); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case value := <-received:
+		if value != "startup-value" {
+			t.Fatalf("subscriber context value = %#v", value)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscriber did not receive delivery")
 	}
 }
 
