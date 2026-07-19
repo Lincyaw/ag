@@ -552,8 +552,7 @@ func (session *Session) failExecution(
 	if err != nil {
 		return err
 	}
-	state := session.executionFailureState(cause)
-	restored, err := durability.HeadRestoresAnchor(
+	headRestoresBase, err := durability.HeadRestoresAnchor(
 		ctx,
 		session.runtime.trajectories,
 		metadata.ID,
@@ -563,15 +562,14 @@ func (session *Session) failExecution(
 	if err != nil {
 		return err
 	}
-	restoreHead := !restored || state != sdk.TrajectoryExecutionPending
+	outcome := session.runtime.executionFailureOutcome(cause, headRestoresBase)
 	plan, err := session.prepareExecutionFailurePlan(
 		ctx,
 		metadata,
 		base,
-		state,
+		outcome,
 		cause,
 		result,
-		restoreHead,
 	)
 	if err != nil {
 		return err
@@ -597,6 +595,12 @@ type executionFailurePlan struct {
 	events retainedPostCommitEventBundle
 }
 
+type executionFailureOutcome struct {
+	state          sdk.TrajectoryExecutionState
+	recordTerminal bool
+	restoreHead    bool
+}
+
 func (plan *executionFailurePlan) release() {
 	if plan == nil {
 		return
@@ -608,10 +612,9 @@ func (session *Session) prepareExecutionFailurePlan(
 	ctx context.Context,
 	metadata sdk.TrajectoryMetadata,
 	base durability.ExecutionCompletionBase,
-	state sdk.TrajectoryExecutionState,
+	outcome executionFailureOutcome,
 	cause error,
 	result Result,
-	restoreHead bool,
 ) (executionFailurePlan, error) {
 	executionID, token := session.activeExecution()
 	plan := executionFailurePlan{
@@ -620,7 +623,7 @@ func (session *Session) prepareExecutionFailurePlan(
 			ExecutionID:  executionID,
 			LeaseToken:   token,
 			ExpectedHead: metadata.Head,
-			State:        state,
+			State:        outcome.state,
 		},
 	}
 	if cause != nil {
@@ -635,7 +638,7 @@ func (session *Session) prepareExecutionFailurePlan(
 		}
 	}()
 	now := time.Now().UTC()
-	if state != sdk.TrajectoryExecutionPending {
+	if outcome.recordTerminal {
 		lease, err := session.acquireSnapshot()
 		if err != nil {
 			return executionFailurePlan{}, err
@@ -646,7 +649,7 @@ func (session *Session) prepareExecutionFailurePlan(
 			result,
 			base.Messages,
 			cause,
-			state,
+			outcome.state,
 		)
 		completion, err := newExecutionCompletionEntries(
 			executionCompletionEntrySpec{
@@ -656,7 +659,7 @@ func (session *Session) prepareExecutionFailurePlan(
 				Generation:  snapshotGeneration(eventLease.snapshot),
 				At:          now,
 				End:         &end,
-				RestoreHead: restoreHead,
+				RestoreHead: outcome.restoreHead,
 			},
 		)
 		if err != nil {
@@ -683,9 +686,7 @@ func (session *Session) prepareExecutionFailurePlan(
 		eventLease = nil
 		return plan, nil
 	}
-	if !restoreHead {
-		plan.events.lease = eventLease
-		eventLease = nil
+	if !outcome.restoreHead {
 		return plan, nil
 	}
 	completion, err := newExecutionCompletionEntries(
@@ -707,17 +708,29 @@ func (session *Session) prepareExecutionFailurePlan(
 	return plan, nil
 }
 
-func (session *Session) executionFailureState(
+func (runtime *Runtime) executionFailureOutcome(
 	cause error,
-) sdk.TrajectoryExecutionState {
-	if session.runtime.shouldLeaveExecutionRecoverable() {
-		return sdk.TrajectoryExecutionPending
+	headRestoresBase bool,
+) executionFailureOutcome {
+	if runtime.executionRecoveryHandoffActive() {
+		return executionFailureOutcome{
+			state:       sdk.TrajectoryExecutionPending,
+			restoreHead: !headRestoresBase,
+		}
 	}
 	if errors.Is(cause, context.Canceled) ||
 		errors.Is(cause, context.DeadlineExceeded) {
-		return sdk.TrajectoryExecutionCancelled
+		return executionFailureOutcome{
+			state:          sdk.TrajectoryExecutionCancelled,
+			recordTerminal: true,
+			restoreHead:    true,
+		}
 	}
-	return sdk.TrajectoryExecutionFailed
+	return executionFailureOutcome{
+		state:          sdk.TrajectoryExecutionFailed,
+		recordTerminal: true,
+		restoreHead:    true,
+	}
 }
 
 func agentEndTrajectoryEntry(

@@ -41,7 +41,11 @@ func (runtime *Runtime) beginOperationWork() (func(), error) {
 	return release, nil
 }
 
-func (runtime *Runtime) shouldLeaveExecutionRecoverable() bool {
+// executionRecoveryHandoffActive reports whether active execution unwind should
+// return durable ownership to recovery instead of writing a terminal outcome.
+// Runtime close cancels live prompt contexts to release local host resources;
+// the trajectory execution itself remains pending for another runtime to claim.
+func (runtime *Runtime) executionRecoveryHandoffActive() bool {
 	runtime.mu.Lock()
 	closed := runtime.closed
 	runtime.mu.Unlock()
