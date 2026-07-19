@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -40,6 +41,11 @@ type SubscriberSpec struct {
 	Name    string        `json:"name"`
 	Events  []string      `json:"events"`
 	Timeout time.Duration `json:"timeout"`
+}
+
+func CloneSubscriberSpec(spec SubscriberSpec) SubscriberSpec {
+	spec.Events = slices.Clone(spec.Events)
+	return spec
 }
 
 type Subscriber interface {
@@ -110,6 +116,19 @@ type EventContract struct {
 	AllowAction   bool     `json:"allow_action,omitempty"`
 }
 
+func CloneEventContract(contract EventContract) EventContract {
+	contract.MutableFields = slices.Clone(contract.MutableFields)
+	return contract
+}
+
+// AllowsEffect reports whether hooks for this event may change runtime-visible
+// execution state by patching payload fields, blocking, or proposing actions.
+func (contract EventContract) AllowsEffect() bool {
+	return len(contract.MutableFields) != 0 ||
+		contract.AllowBlock ||
+		contract.AllowAction
+}
+
 type Event struct {
 	ID         string          `json:"id"`
 	Name       string          `json:"name"`
@@ -128,6 +147,16 @@ type Cause struct {
 	Detail string `json:"detail,omitempty"`
 	Final  bool   `json:"final,omitempty"`
 }
+
+const (
+	CausePromptBlocked  = "prompt_blocked"
+	CauseModelEnd       = "model_end"
+	CauseMaxTurns       = "max_turns"
+	CauseProviderError  = "provider_error"
+	CauseHookError      = "hook_error"
+	CauseExecutionError = "execution_error"
+	CauseCancelled      = "cancelled"
+)
 
 type ActionKind string
 
@@ -177,7 +206,59 @@ func Inject(messages ...Message) Effect {
 	return Effect{
 		Action: &Action{
 			Kind:     ActionInject,
-			Messages: append([]Message(nil), messages...),
+			Messages: CloneMessages(messages),
 		},
 	}
+}
+
+func CloneToolCalls(calls []ToolCall) []ToolCall {
+	if calls == nil {
+		return nil
+	}
+	result := make([]ToolCall, len(calls))
+	for index, call := range calls {
+		result[index] = call
+		result[index].Arguments = append(json.RawMessage(nil), call.Arguments...)
+	}
+	return result
+}
+
+func CloneMessages(messages []Message) []Message {
+	if messages == nil {
+		return nil
+	}
+	result := make([]Message, len(messages))
+	for index, message := range messages {
+		result[index] = message
+		result[index].ToolCalls = CloneToolCalls(message.ToolCalls)
+	}
+	return result
+}
+
+func CloneAction(action Action) Action {
+	if action.Cause != nil {
+		cause := *action.Cause
+		action.Cause = &cause
+	}
+	action.Messages = CloneMessages(action.Messages)
+	return action
+}
+
+func CloneEffect(effect Effect) Effect {
+	if effect.Patch != nil {
+		patch := make(map[string]json.RawMessage, len(effect.Patch))
+		for field, value := range effect.Patch {
+			patch[field] = append(json.RawMessage(nil), value...)
+		}
+		effect.Patch = patch
+	}
+	if effect.Block != nil {
+		block := *effect.Block
+		effect.Block = &block
+	}
+	if effect.Action != nil {
+		action := CloneAction(*effect.Action)
+		effect.Action = &action
+	}
+	return effect
 }

@@ -41,6 +41,12 @@ type OperationRequest struct {
 	Invocation     Invocation      `json:"invocation,omitempty"`
 }
 
+func CloneOperationRequest(request OperationRequest) OperationRequest {
+	request.Input = append(json.RawMessage(nil), request.Input...)
+	request.Invocation = CloneInvocation(request.Invocation)
+	return request
+}
+
 type Operation struct {
 	ID             string          `json:"id"`
 	IdempotencyKey string          `json:"idempotency_key"`
@@ -59,6 +65,41 @@ func (operation Operation) Terminal() bool {
 	default:
 		return false
 	}
+}
+
+func CloneOperation(operation Operation) Operation {
+	operation.Output = append(json.RawMessage(nil), operation.Output...)
+	return operation
+}
+
+// ValidateOperationTransition validates one aggregate state transition.
+func ValidateOperationTransition(current, next OperationState) error {
+	switch current {
+	case OperationPending:
+		switch next {
+		case OperationRunning,
+			OperationSucceeded,
+			OperationFailed,
+			OperationCancelled:
+			return nil
+		}
+	case OperationRunning:
+		switch next {
+		case OperationRunning,
+			OperationSucceeded,
+			OperationFailed,
+			OperationCancelled:
+			return nil
+		}
+	case OperationSucceeded,
+		OperationFailed,
+		OperationCancelled:
+		return fmt.Errorf(
+			"terminal operation in state %q cannot transition",
+			current,
+		)
+	}
+	return fmt.Errorf("invalid operation transition %q -> %q", current, next)
 }
 
 func ValidateOperation(operation Operation) error {
@@ -104,6 +145,17 @@ type OperationRecord struct {
 	Execution        *OperationLease `json:"execution,omitempty"`
 }
 
+func CloneOperationRecord(record OperationRecord) OperationRecord {
+	record.Operation = CloneOperation(record.Operation)
+	record.Input = append(json.RawMessage(nil), record.Input...)
+	record.Invocation = CloneInvocation(record.Invocation)
+	if record.Execution != nil {
+		execution := *record.Execution
+		record.Execution = &execution
+	}
+	return record
+}
+
 type OperationLease struct {
 	Owner     string    `json:"owner"`
 	Token     string    `json:"token"`
@@ -120,14 +172,10 @@ type OperationPage struct {
 type OperationStore interface {
 	Submit(context.Context, OperationRecord) (OperationRecord, bool, error)
 	Get(context.Context, string) (OperationRecord, error)
-	Transition(
-		context.Context,
-		string,
-		uint64,
-		OperationState,
-		json.RawMessage,
-		string,
-	) (OperationRecord, error)
+	// Cancel requests cancellation without owning the execution lease.
+	Cancel(context.Context, string, uint64) (OperationRecord, error)
+	// Fail records a non-lease failure, such as a stale resource revision.
+	Fail(context.Context, string, uint64, string) (OperationRecord, error)
 	Claim(
 		context.Context,
 		string,
@@ -152,6 +200,9 @@ type OperationStore interface {
 	) (OperationRecord, error)
 	Release(context.Context, string, string) (OperationRecord, error)
 	List(context.Context) ([]OperationRecord, error)
+	ListByInvocationRoot(context.Context, string) ([]OperationRecord, error)
+	ListNonTerminal(context.Context) ([]OperationRecord, error)
+	ListRecoverable(context.Context, time.Time) ([]OperationRecord, error)
 	ListPage(context.Context, PageRequest) (OperationPage, error)
 	PurgeTerminal(context.Context, time.Time) (int, error)
 }

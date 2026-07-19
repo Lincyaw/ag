@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/lincyaw/ag/sdk"
 )
@@ -40,26 +41,25 @@ func TestFileOperationStorePreservesIdempotencyAndCASAcrossRestart(t *testing.T)
 	if err != nil || wasCreated || existing.Operation.ID != created.Operation.ID {
 		t.Fatalf("idempotent replay: record=%#v created=%v err=%v", existing, wasCreated, err)
 	}
-	running, err := second.Transition(
+	running, err := second.Claim(
 		ctx,
 		created.Operation.ID,
-		1,
-		sdk.OperationRunning,
-		nil,
-		"",
+		"file-worker",
+		time.Now().UTC(),
+		time.Minute,
 	)
 	if err != nil || running.Operation.Revision != 2 {
-		t.Fatalf("transition running: %#v, %v", running, err)
+		t.Fatalf("claim running: %#v, %v", running, err)
 	}
 
 	third, err := NewFileOperationStore(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	completed, err := third.Transition(
+	completed, err := third.Complete(
 		ctx,
 		created.Operation.ID,
-		2,
+		running.Execution.Token,
 		sdk.OperationSucceeded,
 		[]byte(`{"ok":true}`),
 		"",
@@ -67,15 +67,13 @@ func TestFileOperationStorePreservesIdempotencyAndCASAcrossRestart(t *testing.T)
 	if err != nil || completed.Operation.Revision != 3 {
 		t.Fatalf("complete after restart: %#v, %v", completed, err)
 	}
-	if _, err := first.Transition(
+	if _, err := first.Fail(
 		ctx,
 		created.Operation.ID,
 		2,
-		sdk.OperationFailed,
-		nil,
 		"stale worker",
 	); !errors.Is(err, sdk.ErrOperationConflict) {
-		t.Fatalf("stale transition = %v, want ErrOperationConflict", err)
+		t.Fatalf("stale failure = %v, want ErrOperationConflict", err)
 	}
 	loaded, err := first.Get(ctx, created.Operation.ID)
 	if err != nil {

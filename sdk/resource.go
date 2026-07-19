@@ -5,6 +5,8 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"maps"
+	"slices"
 )
 
 type Role string
@@ -74,6 +76,11 @@ type ToolSpec struct {
 	Parameters  map[string]any `json:"parameters"`
 }
 
+func CloneToolSpec(spec ToolSpec) ToolSpec {
+	spec.Parameters = cloneJSONMap(spec.Parameters)
+	return spec
+}
+
 type ToolResult struct {
 	Content string `json:"content"`
 	IsError bool   `json:"is_error"`
@@ -102,6 +109,12 @@ type CapabilitySpec struct {
 	OutputSchema map[string]any `json:"output_schema"`
 }
 
+func CloneCapabilitySpec(spec CapabilitySpec) CapabilitySpec {
+	spec.InputSchema = cloneJSONMap(spec.InputSchema)
+	spec.OutputSchema = cloneJSONMap(spec.OutputSchema)
+	return spec
+}
+
 type Capability interface {
 	Spec() CapabilitySpec
 }
@@ -116,4 +129,38 @@ type AsyncCapability interface {
 	SubmitInvoke(context.Context, OperationRequest) (Operation, error)
 	PollInvoke(context.Context, string, uint64) (Operation, error)
 	CancelInvoke(context.Context, string) (Operation, error)
+}
+
+func cloneJSONMap(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	result := make(map[string]any, len(source))
+	for name, value := range source {
+		result[name] = cloneJSONValue(value)
+	}
+	return result
+}
+
+func cloneJSONValue(value any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		return cloneJSONMap(value)
+	case map[string]string:
+		return maps.Clone(value)
+	case []any:
+		result := make([]any, len(value))
+		for index := range value {
+			result[index] = cloneJSONValue(value[index])
+		}
+		return result
+	case []string:
+		return slices.Clone(value)
+	case json.RawMessage:
+		return slices.Clone(value)
+	case []byte:
+		return slices.Clone(value)
+	default:
+		return value
+	}
 }

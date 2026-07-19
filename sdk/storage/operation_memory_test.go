@@ -11,7 +11,7 @@ import (
 	"github.com/lincyaw/ag/sdk"
 )
 
-func TestMemoryOperationStoreConcurrentIdempotentSubmitAndCAS(t *testing.T) {
+func TestMemoryOperationStoreConcurrentIdempotentSubmitAndCancel(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := NewMemoryOperationStore()
@@ -57,55 +57,44 @@ func TestMemoryOperationStoreConcurrentIdempotentSubmitAndCAS(t *testing.T) {
 		}
 	}
 
-	var transitioned atomic.Int64
+	var cancelled atomic.Int64
 	for range workers {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			_, err := store.Transition(
+			_, err := store.Cancel(
 				ctx,
 				operationID,
 				1,
-				sdk.OperationRunning,
-				nil,
-				"",
 			)
 			switch {
 			case err == nil:
-				transitioned.Add(1)
+				cancelled.Add(1)
 			case errors.Is(err, sdk.ErrOperationConflict):
 			default:
-				t.Errorf("transition: %v", err)
+				t.Errorf("cancel: %v", err)
 			}
 		}()
 	}
 	wait.Wait()
-	if got := transitioned.Load(); got != 1 {
-		t.Fatalf("successful CAS transitions = %d, want 1", got)
+	if got := cancelled.Load(); got != 1 {
+		t.Fatalf("successful CAS cancellations = %d, want 1", got)
 	}
-	completed, err := store.Transition(
-		ctx,
-		operationID,
-		2,
-		sdk.OperationSucceeded,
-		[]byte(`{"content":"ok"}`),
-		"",
-	)
+	cancelledRecord, err := store.Get(ctx, operationID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if completed.Operation.Revision != 3 || completed.Operation.State != sdk.OperationSucceeded {
-		t.Fatalf("completed operation = %#v", completed)
+	if cancelledRecord.Operation.Revision != 2 ||
+		cancelledRecord.Operation.State != sdk.OperationCancelled {
+		t.Fatalf("cancelled operation = %#v", cancelledRecord)
 	}
-	if _, err := store.Transition(
+	if _, err := store.Fail(
 		ctx,
 		operationID,
-		3,
-		sdk.OperationRunning,
-		nil,
-		"",
+		2,
+		"terminal operation should not fail again",
 	); err == nil {
-		t.Fatal("terminal operation transitioned back to running")
+		t.Fatal("terminal operation accepted another failure")
 	}
 }
 
@@ -178,6 +167,117 @@ func TestOperationLeaseFencesExpiredWorker(t *testing.T) {
 	}
 	if string(completed.Operation.Output) != `{"winner":"b"}` {
 		t.Fatalf("completed output = %s", completed.Operation.Output)
+	}
+}
+
+func TestMemoryOperationStoreListsRecoverableOperations(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := NewMemoryOperationStore()
+	now := time.Now().UTC()
+	pending, _, err := store.Submit(ctx, sdk.OperationRecord{
+		Operation: sdk.Operation{IdempotencyKey: "pending"},
+		Kind:      sdk.OperationKindTool,
+		Resource:  "writer",
+		Input:     []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, _, err := store.Submit(ctx, sdk.OperationRecord{
+		Operation: sdk.Operation{IdempotencyKey: "active"},
+		Kind:      sdk.OperationKindTool,
+		Resource:  "writer",
+		Input:     []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(
+		ctx,
+		active.Operation.ID,
+		"worker",
+		now,
+		time.Hour,
+	); err != nil {
+		t.Fatal(err)
+	}
+	expired, _, err := store.Submit(ctx, sdk.OperationRecord{
+		Operation: sdk.Operation{IdempotencyKey: "expired"},
+		Kind:      sdk.OperationKindTool,
+		Resource:  "writer",
+		Input:     []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(
+		ctx,
+		expired.Operation.ID,
+		"worker",
+		now.Add(-2*time.Hour),
+		time.Hour,
+	); err != nil {
+		t.Fatal(err)
+	}
+	done, _, err := store.Submit(ctx, sdk.OperationRecord{
+		Operation: sdk.Operation{IdempotencyKey: "done"},
+		Kind:      sdk.OperationKindTool,
+		Resource:  "writer",
+		Input:     []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, err = store.Claim(
+		ctx,
+		done.Operation.ID,
+		"worker",
+		now,
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Complete(
+		ctx,
+		done.Operation.ID,
+		done.Execution.Token,
+		sdk.OperationSucceeded,
+		[]byte(`{}`),
+		"",
+	); err != nil {
+		t.Fatal(err)
+	}
+	nonTerminal, err := store.ListNonTerminal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := make(map[string]bool, len(nonTerminal))
+	for _, record := range nonTerminal {
+		open[record.Operation.ID] = true
+	}
+	if !open[pending.Operation.ID] ||
+		!open[active.Operation.ID] ||
+		!open[expired.Operation.ID] {
+		t.Fatalf("non-terminal operations = %#v", open)
+	}
+	if open[done.Operation.ID] {
+		t.Fatalf("terminal operation was non-terminal: %#v", open)
+	}
+	recoverable, err := store.ListRecoverable(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]bool, len(recoverable))
+	for _, record := range recoverable {
+		got[record.Operation.ID] = true
+	}
+	if !got[pending.Operation.ID] || !got[expired.Operation.ID] {
+		t.Fatalf("recoverable operations = %#v", got)
+	}
+	if got[active.Operation.ID] || got[done.Operation.ID] {
+		t.Fatalf("active or terminal operation was recoverable: %#v", got)
 	}
 }
 

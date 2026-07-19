@@ -60,6 +60,80 @@ type TrajectoryEntryFields struct {
 	ActionKind    ActionKind `json:"action_kind,omitempty"`
 }
 
+type HookAuditOutcome string
+
+const (
+	HookAuditNoEffect HookAuditOutcome = "no_effect"
+	HookAuditPatched  HookAuditOutcome = "patched"
+	HookAuditBlocked  HookAuditOutcome = "blocked"
+	HookAuditAction   HookAuditOutcome = "action"
+	HookAuditError    HookAuditOutcome = "error"
+	HookAuditSkipped  HookAuditOutcome = "skipped"
+)
+
+type EffectResolutionOutcome string
+
+const (
+	EffectResolutionNoEffect EffectResolutionOutcome = "no_effect"
+	EffectResolutionPatched  EffectResolutionOutcome = "patched"
+	EffectResolutionBlocked  EffectResolutionOutcome = "blocked"
+	EffectResolutionAction   EffectResolutionOutcome = "action"
+	EffectResolutionError    EffectResolutionOutcome = "error"
+)
+
+type BlockSummary struct {
+	Reason string `json:"reason,omitempty"`
+	Kind   string `json:"kind,omitempty"`
+}
+
+type ActionSummary struct {
+	Kind         ActionKind `json:"kind,omitempty"`
+	CauseCode    string     `json:"cause_code,omitempty"`
+	CauseFinal   bool       `json:"cause_final,omitempty"`
+	MessageCount int        `json:"message_count,omitempty"`
+}
+
+type EffectResolution struct {
+	Outcome     EffectResolutionOutcome `json:"outcome,omitempty"`
+	Block       *BlockSummary           `json:"block,omitempty"`
+	BlockStep   *int                    `json:"block_step,omitempty"`
+	Action      *ActionSummary          `json:"action,omitempty"`
+	ActionSteps []int                   `json:"action_steps,omitempty"`
+	ActionRule  string                  `json:"action_rule,omitempty"`
+	PatchFields []string                `json:"patch_fields,omitempty"`
+	Error       string                  `json:"error,omitempty"`
+}
+
+type HookAuditStep struct {
+	Index         int               `json:"index"`
+	Plugin        string            `json:"plugin,omitempty"`
+	PluginVersion string            `json:"plugin_version,omitempty"`
+	Hook          string            `json:"hook,omitempty"`
+	Priority      Priority          `json:"priority,omitempty"`
+	Sequence      uint64            `json:"sequence,omitempty"`
+	FailurePolicy FailurePolicy     `json:"failure_policy,omitempty"`
+	Duration      time.Duration     `json:"duration,omitempty"`
+	InputHash     string            `json:"input_hash,omitempty"`
+	OutputHash    string            `json:"output_hash,omitempty"`
+	PatchFields   []string          `json:"patch_fields,omitempty"`
+	Overwrites    []string          `json:"overwrites,omitempty"`
+	Block         *BlockSummary     `json:"block,omitempty"`
+	Action        *ActionSummary    `json:"action,omitempty"`
+	Error         string            `json:"error,omitempty"`
+	Outcome       HookAuditOutcome  `json:"outcome,omitempty"`
+	Attributes    map[string]string `json:"attributes,omitempty"`
+}
+
+type EventAudit struct {
+	EventID    string           `json:"event_id,omitempty"`
+	EventName  string           `json:"event_name,omitempty"`
+	Generation uint64           `json:"generation,omitempty"`
+	InputHash  string           `json:"input_hash,omitempty"`
+	OutputHash string           `json:"output_hash,omitempty"`
+	Steps      []HookAuditStep  `json:"steps,omitempty"`
+	Resolution EffectResolution `json:"resolution,omitempty"`
+}
+
 type TrajectoryEntry struct {
 	ID             string                `json:"id"`
 	TrajectoryID   string                `json:"trajectory_id"`
@@ -70,9 +144,36 @@ type TrajectoryEntry struct {
 	Timestamp      time.Time             `json:"timestamp"`
 	Generation     uint64                `json:"generation,omitempty"`
 	Fields         TrajectoryEntryFields `json:"fields"`
+	Audit          []EventAudit          `json:"audit,omitempty"`
 	PayloadVersion uint32                `json:"payload_version"`
 	Payload        json.RawMessage       `json:"payload"`
 	Attributes     map[string]string     `json:"attributes,omitempty"`
+}
+
+func CloneTrajectoryEntry(entry TrajectoryEntry) TrajectoryEntry {
+	if entry.Fields.Turn != nil {
+		turn := *entry.Fields.Turn
+		entry.Fields.Turn = &turn
+	}
+	if entry.Fields.IsError != nil {
+		isError := *entry.Fields.IsError
+		entry.Fields.IsError = &isError
+	}
+	entry.Payload = append(json.RawMessage(nil), entry.Payload...)
+	entry.Audit = CloneEventAudits(entry.Audit)
+	entry.Attributes = maps.Clone(entry.Attributes)
+	return entry
+}
+
+func CloneTrajectoryEntries(entries []TrajectoryEntry) []TrajectoryEntry {
+	if entries == nil {
+		return nil
+	}
+	result := make([]TrajectoryEntry, len(entries))
+	for index, entry := range entries {
+		result[index] = CloneTrajectoryEntry(entry)
+	}
+	return result
 }
 
 type TrajectoryExecutionState string
@@ -113,6 +214,27 @@ func (execution TrajectoryExecution) Terminal() bool {
 	}
 }
 
+func (execution TrajectoryExecution) RecoveryDelay(
+	now time.Time,
+) time.Duration {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	if execution.State == TrajectoryExecutionRunning &&
+		execution.LeaseExpiresAt.After(now) {
+		return execution.LeaseExpiresAt.Sub(now)
+	}
+	return 0
+}
+
+func (execution TrajectoryExecution) RecoverableAt(
+	now time.Time,
+) bool {
+	return !execution.Terminal() && execution.RecoveryDelay(now) <= 0
+}
+
 type TrajectoryExecutionStart struct {
 	ID       string `json:"id"`
 	Provider string `json:"provider,omitempty"`
@@ -130,10 +252,29 @@ type TrajectoryExecutionCommit struct {
 	Error        string                   `json:"error,omitempty"`
 }
 
+type TrajectoryExecutionCancelCommit struct {
+	TrajectoryID string            `json:"trajectory_id"`
+	ExecutionID  string            `json:"execution_id"`
+	ExpectedHead string            `json:"expected_head,omitempty"`
+	Reason       string            `json:"reason,omitempty"`
+	At           time.Time         `json:"at,omitempty"`
+	Entries      []TrajectoryEntry `json:"entries,omitempty"`
+}
+
+type TrajectoryExecutionCancelResult struct {
+	Trajectory TrajectoryMetadata `json:"trajectory"`
+	Changed    bool               `json:"changed"`
+}
+
 type TrajectoryPlugin struct {
 	Name      string   `json:"name"`
 	Version   string   `json:"version"`
 	Registers []string `json:"registers,omitempty"`
+}
+
+func CloneTrajectoryPlugin(plugin TrajectoryPlugin) TrajectoryPlugin {
+	plugin.Registers = slices.Clone(plugin.Registers)
+	return plugin
 }
 
 type TrajectoryEnvironment struct {
@@ -158,6 +299,18 @@ type TrajectoryEnvironment struct {
 	Events                 []EventContract    `json:"events,omitempty"`
 }
 
+func CloneTrajectoryEnvironment(environment TrajectoryEnvironment) TrajectoryEnvironment {
+	environment.Plugins = cloneTrajectoryPlugins(environment.Plugins)
+	environment.Providers = slices.Clone(environment.Providers)
+	environment.Tools = cloneToolSpecs(environment.Tools)
+	environment.Agents = cloneAgentSpecs(environment.Agents)
+	environment.Hooks = slices.Clone(environment.Hooks)
+	environment.Subscribers = cloneSubscriberSpecs(environment.Subscribers)
+	environment.Capabilities = cloneCapabilitySpecs(environment.Capabilities)
+	environment.Events = cloneEventContracts(environment.Events)
+	return environment
+}
+
 type Trajectory struct {
 	SchemaVersion uint32                `json:"schema_version"`
 	ID            string                `json:"id"`
@@ -170,6 +323,19 @@ type Trajectory struct {
 	Execution     *TrajectoryExecution  `json:"execution,omitempty"`
 	Environment   TrajectoryEnvironment `json:"environment,omitempty"`
 	Entries       []TrajectoryEntry     `json:"entries"`
+}
+
+func CloneTrajectory(trajectory Trajectory) Trajectory {
+	trajectory.Execution = CloneTrajectoryExecution(trajectory.Execution)
+	trajectory.Environment = CloneTrajectoryEnvironment(trajectory.Environment)
+	if trajectory.Entries != nil {
+		entries := make([]TrajectoryEntry, len(trajectory.Entries))
+		for index, entry := range trajectory.Entries {
+			entries[index] = CloneTrajectoryEntry(entry)
+		}
+		trajectory.Entries = entries
+	}
+	return trajectory
 }
 
 type TrajectoryMetadata struct {
@@ -185,6 +351,14 @@ type TrajectoryMetadata struct {
 	Environment     TrajectoryEnvironment `json:"environment,omitempty"`
 	EntryCount      int                   `json:"entry_count"`
 	OwnedEntryCount int                   `json:"owned_entry_count"`
+}
+
+func CloneTrajectoryExecution(execution *TrajectoryExecution) *TrajectoryExecution {
+	if execution == nil {
+		return nil
+	}
+	result := *execution
+	return &result
 }
 
 type TrajectorySummary struct {
@@ -264,11 +438,8 @@ type TrajectoryStore interface {
 	) (TrajectoryMetadata, error)
 	CancelExecution(
 		context.Context,
-		string,
-		string,
-		string,
-		time.Time,
-	) (TrajectoryMetadata, error)
+		TrajectoryExecutionCancelCommit,
+	) (TrajectoryExecutionCancelResult, error)
 	ListRecoverable(
 		context.Context,
 		time.Time,
@@ -343,4 +514,124 @@ func (trajectory Trajectory) Branch(head string) ([]TrajectoryEntry, error) {
 	}
 	slices.Reverse(result)
 	return result, nil
+}
+
+func CloneEventAudits(audits []EventAudit) []EventAudit {
+	if audits == nil {
+		return nil
+	}
+	result := make([]EventAudit, len(audits))
+	for index, audit := range audits {
+		result[index] = CloneEventAudit(audit)
+	}
+	return result
+}
+
+func CloneEventAudit(audit EventAudit) EventAudit {
+	steps := audit.Steps
+	audit.Steps = make([]HookAuditStep, len(steps))
+	for index, step := range steps {
+		audit.Steps[index] = cloneHookAuditStep(step)
+	}
+	audit.Resolution = cloneEffectResolution(audit.Resolution)
+	return audit
+}
+
+func cloneHookAuditStep(step HookAuditStep) HookAuditStep {
+	step.PatchFields = slices.Clone(step.PatchFields)
+	step.Overwrites = slices.Clone(step.Overwrites)
+	step.Attributes = maps.Clone(step.Attributes)
+	if step.Block != nil {
+		block := *step.Block
+		step.Block = &block
+	}
+	if step.Action != nil {
+		action := *step.Action
+		step.Action = &action
+	}
+	return step
+}
+
+func cloneEffectResolution(resolution EffectResolution) EffectResolution {
+	resolution.PatchFields = slices.Clone(resolution.PatchFields)
+	resolution.ActionSteps = slices.Clone(resolution.ActionSteps)
+	if resolution.Block != nil {
+		block := *resolution.Block
+		resolution.Block = &block
+	}
+	if resolution.BlockStep != nil {
+		step := *resolution.BlockStep
+		resolution.BlockStep = &step
+	}
+	if resolution.Action != nil {
+		action := *resolution.Action
+		resolution.Action = &action
+	}
+	return resolution
+}
+
+func cloneTrajectoryPlugins(plugins []TrajectoryPlugin) []TrajectoryPlugin {
+	if plugins == nil {
+		return nil
+	}
+	result := make([]TrajectoryPlugin, len(plugins))
+	for index, plugin := range plugins {
+		result[index] = CloneTrajectoryPlugin(plugin)
+	}
+	return result
+}
+
+func cloneToolSpecs(specs []ToolSpec) []ToolSpec {
+	if specs == nil {
+		return nil
+	}
+	result := make([]ToolSpec, len(specs))
+	for index, spec := range specs {
+		result[index] = CloneToolSpec(spec)
+	}
+	return result
+}
+
+func cloneAgentSpecs(specs []AgentSpec) []AgentSpec {
+	if specs == nil {
+		return nil
+	}
+	result := make([]AgentSpec, len(specs))
+	for index, spec := range specs {
+		result[index] = CloneAgentSpec(spec)
+	}
+	return result
+}
+
+func cloneSubscriberSpecs(specs []SubscriberSpec) []SubscriberSpec {
+	if specs == nil {
+		return nil
+	}
+	result := make([]SubscriberSpec, len(specs))
+	for index, spec := range specs {
+		result[index] = CloneSubscriberSpec(spec)
+	}
+	return result
+}
+
+func cloneCapabilitySpecs(specs []CapabilitySpec) []CapabilitySpec {
+	if specs == nil {
+		return nil
+	}
+	result := make([]CapabilitySpec, len(specs))
+	for index, spec := range specs {
+		result[index] = CloneCapabilitySpec(spec)
+	}
+	return result
+}
+
+func cloneEventContracts(contracts []EventContract) []EventContract {
+	if contracts == nil {
+		return nil
+	}
+	result := make([]EventContract, len(contracts))
+	for index, contract := range contracts {
+		result[index] = CloneEventContract(contract)
+	}
+	return result
 }

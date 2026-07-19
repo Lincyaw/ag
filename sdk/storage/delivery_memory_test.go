@@ -102,8 +102,22 @@ func TestMemoryDeliveryStoreLeaseRecoveryAndConcurrentDeduplication(t *testing.T
 	if third.Attempt != 3 {
 		t.Fatalf("retry attempt = %d, want 3", third.Attempt)
 	}
+	open, err := store.ListNonTerminal(ctx)
+	if err != nil {
+		t.Fatalf("list non-terminal: %v", err)
+	}
+	if len(open) != 1 || open[0].ID != third.ID {
+		t.Fatalf("non-terminal deliveries before ack = %#v", open)
+	}
 	if err := store.Ack(ctx, third.ID, third.LeaseToken, base.Add(3*time.Minute)); err != nil {
 		t.Fatalf("ack retry: %v", err)
+	}
+	open, err = store.ListNonTerminal(ctx)
+	if err != nil {
+		t.Fatalf("list non-terminal after ack: %v", err)
+	}
+	if len(open) != 0 {
+		t.Fatalf("non-terminal deliveries after ack = %#v", open)
 	}
 
 	listed, err := store.List(ctx)
@@ -162,6 +176,25 @@ func TestMemoryDeliveryStoreAtomicBatchAndCancellation(t *testing.T) {
 	}
 	if got, _ := store.List(context.Background()); len(got) != 1 {
 		t.Fatalf("conflict changed outbox: %s", fmt.Sprint(got))
+	}
+
+	eventConflict := valid("event-conflict")
+	if err := store.Enqueue(context.Background(), eventConflict); err != nil {
+		t.Fatal(err)
+	}
+	eventConflict.Event.Payload = []byte(`{"changed":true}`)
+	if err := store.Enqueue(context.Background(), eventConflict); err == nil {
+		t.Fatal("conflicting delivery event payload unexpectedly accepted")
+	}
+	listed, err = store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, delivery := range listed {
+		if delivery.ID == eventConflict.ID &&
+			string(delivery.Event.Payload) != `{}` {
+			t.Fatalf("event conflict changed outbox delivery: %#v", delivery)
+		}
 	}
 }
 

@@ -358,8 +358,8 @@ func (runtime *Runtime) cancelLocalOperation(
 		if record.Operation.Terminal() {
 			return record.Operation, nil
 		}
-		cancelled, err := runtime.operation.store.Transition(
-			ctx, id, record.Operation.Revision, sdk.OperationCancelled, nil, "",
+		cancelled, err := runtime.operation.store.Cancel(
+			ctx, id, record.Operation.Revision,
 		)
 		if errors.Is(err, sdk.ErrOperationConflict) {
 			continue

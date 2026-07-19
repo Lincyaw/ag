@@ -82,13 +82,10 @@ func (server *server) cancelStored(
 		if record.Operation.Terminal() {
 			return record.Operation, nil
 		}
-		cancelled, err := server.operations.Transition(
+		cancelled, err := server.operations.Cancel(
 			ctx,
 			id,
 			record.Operation.Revision,
-			sdk.OperationCancelled,
-			nil,
-			"",
 		)
 		if errors.Is(err, sdk.ErrOperationConflict) {
 			continue
@@ -116,12 +113,10 @@ func (server *server) recoverOperations(ctx context.Context) error {
 			continue
 		}
 		if revisionErr := server.validateResourceRevision(record); revisionErr != nil {
-			_, err := server.operations.Transition(
+			_, err := server.operations.Fail(
 				ctx,
 				record.Operation.ID,
 				record.Operation.Revision,
-				sdk.OperationFailed,
-				nil,
 				revisionErr.Error(),
 			)
 			if errors.Is(err, sdk.ErrOperationConflict) {

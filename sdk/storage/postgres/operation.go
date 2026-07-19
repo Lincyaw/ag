@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -102,19 +101,8 @@ func scanPostgresOperation(scanner interface {
 			ExpiresAt: leaseExpiresAt.Time.UTC(),
 		}
 	}
-	if err := validateNewOperationRecord(record); err != nil {
+	if err := validateLoadedOperationRecord(record); err != nil {
 		return sdk.OperationRecord{}, err
-	}
-	if err := sdk.ValidateOperation(record.Operation); err != nil {
-		return sdk.OperationRecord{}, err
-	}
-	if record.Execution != nil &&
-		(record.Operation.State != sdk.OperationRunning ||
-			strings.TrimSpace(record.Execution.Owner) == "" ||
-			record.Execution.Token == "") {
-		return sdk.OperationRecord{}, errors.New(
-			"PostgreSQL operation has an invalid lease",
-		)
 	}
 	return record, nil
 }
@@ -126,25 +114,10 @@ func (store *OperationStore) Submit(
 	if err := ctx.Err(); err != nil {
 		return sdk.OperationRecord{}, false, err
 	}
-	if record.Operation.ID == "" {
-		record.Operation.ID = sdk.NewID()
-	}
-	if err := validateNewOperationRecord(record); err != nil {
+	record, err := prepareNewOperationRecord(record, time.Now().UTC())
+	if err != nil {
 		return sdk.OperationRecord{}, false, err
 	}
-	now := time.Now().UTC()
-	if record.Operation.SubmittedAt.IsZero() {
-		record.Operation.SubmittedAt = now
-	} else {
-		record.Operation.SubmittedAt =
-			record.Operation.SubmittedAt.UTC()
-	}
-	record.Operation.UpdatedAt = record.Operation.SubmittedAt
-	record.Operation.State = sdk.OperationPending
-	record.Operation.Revision = 1
-	record.Operation.Output = nil
-	record.Operation.Error = ""
-	record.Execution = nil
 	invocationJSON, err := json.Marshal(record.Invocation)
 	if err != nil {
 		return sdk.OperationRecord{}, false, fmt.Errorf(
@@ -291,63 +264,42 @@ func (store *OperationStore) load(
 	)
 }
 
-func (store *OperationStore) Transition(
+func (store *OperationStore) Cancel(
 	ctx context.Context,
 	id string,
 	expectedRevision uint64,
-	state sdk.OperationState,
-	output json.RawMessage,
+) (sdk.OperationRecord, error) {
+	return store.mutate(
+		ctx,
+		id,
+		func(record sdk.OperationRecord) (sdk.OperationRecord, error) {
+			return cancelOperation(
+				record,
+				expectedRevision,
+				time.Now().UTC(),
+			)
+		},
+	)
+}
+
+func (store *OperationStore) Fail(
+	ctx context.Context,
+	id string,
+	expectedRevision uint64,
 	operationError string,
 ) (sdk.OperationRecord, error) {
-	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return sdk.OperationRecord{}, err
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	record, err := store.load(ctx, tx, id, true)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return sdk.OperationRecord{}, fmt.Errorf(
-			"%w: %s",
-			sdk.ErrOperationNotFound,
-			id,
-		)
-	}
-	if err != nil {
-		return sdk.OperationRecord{}, err
-	}
-	if record.Operation.Revision != expectedRevision {
-		return sdk.OperationRecord{}, fmt.Errorf(
-			"%w: operation %s has revision %d, expected %d",
-			sdk.ErrOperationConflict,
-			id,
-			record.Operation.Revision,
-			expectedRevision,
-		)
-	}
-	if err := validateOperationTransition(
-		record.Operation.State,
-		state,
-	); err != nil {
-		return sdk.OperationRecord{}, err
-	}
-	record.Operation.State = state
-	record.Operation.Revision++
-	record.Operation.Output = append(json.RawMessage(nil), output...)
-	record.Operation.Error = operationError
-	record.Operation.UpdatedAt = time.Now().UTC()
-	if state != sdk.OperationRunning {
-		record.Execution = nil
-	}
-	if err := sdk.ValidateOperation(record.Operation); err != nil {
-		return sdk.OperationRecord{}, err
-	}
-	if err := store.replace(ctx, tx, record); err != nil {
-		return sdk.OperationRecord{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return sdk.OperationRecord{}, err
-	}
-	return cloneOperationRecord(record), nil
+	return store.mutate(
+		ctx,
+		id,
+		func(record sdk.OperationRecord) (sdk.OperationRecord, error) {
+			return failOperation(
+				record,
+				expectedRevision,
+				operationError,
+				time.Now().UTC(),
+			)
+		},
+	)
 }
 
 func (store *OperationStore) Claim(
@@ -357,48 +309,15 @@ func (store *OperationStore) Claim(
 	now time.Time,
 	ttl time.Duration,
 ) (sdk.OperationRecord, error) {
-	if strings.TrimSpace(owner) == "" {
-		return sdk.OperationRecord{}, errors.New(
-			"operation lease owner is empty",
-		)
+	if err := validateOperationClaim(owner, ttl); err != nil {
+		return sdk.OperationRecord{}, err
 	}
-	if ttl <= 0 {
-		return sdk.OperationRecord{}, errors.New(
-			"operation lease TTL must be positive",
-		)
-	}
-	now = normalizedMutationTime(now)
+	now = normalizeOperationMutationTime(now)
 	return store.mutate(
 		ctx,
 		id,
 		func(record sdk.OperationRecord) (sdk.OperationRecord, error) {
-			if record.Operation.Terminal() {
-				return sdk.OperationRecord{}, fmt.Errorf(
-					"terminal operation %q cannot be claimed",
-					id,
-				)
-			}
-			if record.Execution != nil &&
-				record.Execution.ExpiresAt.After(now) {
-				return sdk.OperationRecord{}, fmt.Errorf(
-					"%w: operation %s is owned by %s until %s",
-					sdk.ErrOperationClaimed,
-					id,
-					record.Execution.Owner,
-					record.Execution.ExpiresAt.Format(
-						time.RFC3339Nano,
-					),
-				)
-			}
-			record.Operation.State = sdk.OperationRunning
-			record.Operation.Revision++
-			record.Operation.UpdatedAt = now
-			record.Execution = &sdk.OperationLease{
-				Owner:     owner,
-				Token:     sdk.NewID(),
-				ExpiresAt: now.Add(ttl),
-			}
-			return record, nil
+			return claimOperation(record, owner, now, ttl)
 		},
 	)
 }
@@ -410,30 +329,15 @@ func (store *OperationStore) Renew(
 	now time.Time,
 	ttl time.Duration,
 ) (sdk.OperationRecord, error) {
-	if ttl <= 0 {
-		return sdk.OperationRecord{}, errors.New(
-			"operation lease TTL must be positive",
-		)
+	if err := validateOperationLeaseDuration(ttl); err != nil {
+		return sdk.OperationRecord{}, err
 	}
-	now = normalizedMutationTime(now)
+	now = normalizeOperationMutationTime(now)
 	return store.mutate(
 		ctx,
 		id,
 		func(record sdk.OperationRecord) (sdk.OperationRecord, error) {
-			if record.Operation.State != sdk.OperationRunning ||
-				record.Execution == nil ||
-				record.Execution.Token != token ||
-				!record.Execution.ExpiresAt.After(now) {
-				return sdk.OperationRecord{}, fmt.Errorf(
-					"%w: operation %s token is stale or expired",
-					sdk.ErrOperationFence,
-					id,
-				)
-			}
-			record.Execution.ExpiresAt = now.Add(ttl)
-			record.Operation.Revision++
-			record.Operation.UpdatedAt = now
-			return record, nil
+			return renewOperation(record, token, now, ttl)
 		},
 	)
 }
@@ -446,6 +350,9 @@ func (store *OperationStore) Complete(
 	output json.RawMessage,
 	operationError string,
 ) (sdk.OperationRecord, error) {
+	if err := validateOperationCompletion(state); err != nil {
+		return sdk.OperationRecord{}, err
+	}
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return sdk.OperationRecord{}, err
@@ -480,12 +387,6 @@ func (store *OperationStore) completeInTx(
 	operationError string,
 	now time.Time,
 ) (sdk.OperationRecord, error) {
-	if state != sdk.OperationSucceeded && state != sdk.OperationFailed {
-		return sdk.OperationRecord{}, fmt.Errorf(
-			"claimed operation cannot complete as %q",
-			state,
-		)
-	}
 	record, err := store.load(ctx, tx, id, true)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return sdk.OperationRecord{}, fmt.Errorf(
@@ -497,23 +398,15 @@ func (store *OperationStore) completeInTx(
 	if err != nil {
 		return sdk.OperationRecord{}, err
 	}
-	if record.Operation.State != sdk.OperationRunning ||
-		record.Execution == nil ||
-		record.Execution.Token != token ||
-		!record.Execution.ExpiresAt.After(now) {
-		return sdk.OperationRecord{}, fmt.Errorf(
-			"%w: operation %s token is stale or expired",
-			sdk.ErrOperationFence,
-			id,
-		)
-	}
-	record.Operation.State = state
-	record.Operation.Revision++
-	record.Operation.Output = append(json.RawMessage(nil), output...)
-	record.Operation.Error = operationError
-	record.Operation.UpdatedAt = now
-	record.Execution = nil
-	if err := sdk.ValidateOperation(record.Operation); err != nil {
+	record, err = completeOperation(
+		record,
+		token,
+		state,
+		output,
+		operationError,
+		now,
+	)
+	if err != nil {
 		return sdk.OperationRecord{}, err
 	}
 	if err := store.replace(ctx, tx, record); err != nil {
@@ -531,19 +424,7 @@ func (store *OperationStore) Release(
 		ctx,
 		id,
 		func(record sdk.OperationRecord) (sdk.OperationRecord, error) {
-			if record.Operation.State != sdk.OperationRunning ||
-				record.Execution == nil ||
-				record.Execution.Token != token {
-				return sdk.OperationRecord{}, fmt.Errorf(
-					"%w: operation %s token is stale",
-					sdk.ErrOperationFence,
-					id,
-				)
-			}
-			record.Execution = nil
-			record.Operation.Revision++
-			record.Operation.UpdatedAt = time.Now().UTC()
-			return record, nil
+			return releaseOperation(record, token, time.Now().UTC())
 		},
 	)
 }
@@ -667,6 +548,9 @@ func (store *OperationStore) ListByInvocationRoot(
 	ctx context.Context,
 	rootID string,
 ) ([]sdk.OperationRecord, error) {
+	if err := sdk.ValidateResourceName("invocation root", rootID); err != nil {
+		return nil, err
+	}
 	rows, err := store.pool.Query(
 		ctx,
 		`SELECT `+operationColumns+`
@@ -676,6 +560,79 @@ func (store *OperationStore) ListByInvocationRoot(
 		 ORDER BY submitted_at, id`,
 		store.namespace,
 		rootID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]sdk.OperationRecord, 0)
+	for rows.Next() {
+		record, scanErr := scanPostgresOperation(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result = append(result, cloneOperationRecord(record))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (store *OperationStore) ListNonTerminal(
+	ctx context.Context,
+) ([]sdk.OperationRecord, error) {
+	rows, err := store.pool.Query(
+		ctx,
+		`SELECT `+operationColumns+`
+		 FROM ag_operations
+		 WHERE namespace = $1
+		   AND state NOT IN ($2, $3, $4)
+		 ORDER BY submitted_at, id`,
+		store.namespace,
+		string(sdk.OperationSucceeded),
+		string(sdk.OperationFailed),
+		string(sdk.OperationCancelled),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]sdk.OperationRecord, 0)
+	for rows.Next() {
+		record, scanErr := scanPostgresOperation(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result = append(result, cloneOperationRecord(record))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (store *OperationStore) ListRecoverable(
+	ctx context.Context,
+	now time.Time,
+) ([]sdk.OperationRecord, error) {
+	now = normalizeOperationMutationTime(now)
+	rows, err := store.pool.Query(
+		ctx,
+		`SELECT `+operationColumns+`
+		 FROM ag_operations
+		 WHERE namespace = $1
+		   AND state NOT IN ($2, $3, $4)
+		   AND (
+		     lease_expires_at IS NULL
+		     OR lease_expires_at <= $5
+		   )
+		 ORDER BY submitted_at, id`,
+		store.namespace,
+		string(sdk.OperationSucceeded),
+		string(sdk.OperationFailed),
+		string(sdk.OperationCancelled),
+		now,
 	)
 	if err != nil {
 		return nil, err

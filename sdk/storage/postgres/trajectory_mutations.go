@@ -289,6 +289,38 @@ func (store *TrajectoryStore) BeginExecution(
 	start sdk.TrajectoryExecutionStart,
 	input sdk.TrajectoryEntry,
 ) (sdk.TrajectoryMetadata, error) {
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	metadata, err := store.beginExecutionInTx(
+		ctx,
+		tx,
+		id,
+		expectedHead,
+		start,
+		input,
+		time.Now().UTC(),
+	)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	return metadata, nil
+}
+
+func (store *TrajectoryStore) beginExecutionInTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	id string,
+	expectedHead string,
+	start sdk.TrajectoryExecutionStart,
+	input sdk.TrajectoryEntry,
+	now time.Time,
+) (sdk.TrajectoryMetadata, error) {
 	if err := sdk.ValidateResourceName("trajectory", id); err != nil {
 		return sdk.TrajectoryMetadata{}, err
 	}
@@ -297,7 +329,6 @@ func (store *TrajectoryStore) BeginExecution(
 			"trajectory execution input must be a user_message entry",
 		)
 	}
-	now := time.Now().UTC()
 	execution, err := prepareTrajectoryExecutionStart(
 		start,
 		expectedHead,
@@ -314,11 +345,6 @@ func (store *TrajectoryStore) BeginExecution(
 	if err != nil {
 		return sdk.TrajectoryMetadata{}, err
 	}
-	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return sdk.TrajectoryMetadata{}, err
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
 	trajectory, _, ownedCount, err := store.loadStoredTrajectory(
 		ctx,
 		tx,
@@ -349,14 +375,7 @@ func (store *TrajectoryStore) BeginExecution(
 	if err := store.replaceExecution(ctx, tx, id, execution); err != nil {
 		return sdk.TrajectoryMetadata{}, err
 	}
-	metadata, err := store.metadataInTx(ctx, tx, id)
-	if err != nil {
-		return sdk.TrajectoryMetadata{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return sdk.TrajectoryMetadata{}, err
-	}
-	return metadata, nil
+	return store.metadataInTx(ctx, tx, id)
 }
 
 func (store *TrajectoryStore) ClaimExecution(
@@ -587,77 +606,131 @@ func (store *TrajectoryStore) commitExecutionInTx(
 
 func (store *TrajectoryStore) CancelExecution(
 	ctx context.Context,
-	trajectoryID string,
-	executionID string,
-	reason string,
-	now time.Time,
-) (sdk.TrajectoryMetadata, error) {
+	commit sdk.TrajectoryExecutionCancelCommit,
+) (sdk.TrajectoryExecutionCancelResult, error) {
 	if err := sdk.ValidateResourceName(
 		"trajectory",
-		trajectoryID,
+		commit.TrajectoryID,
 	); err != nil {
-		return sdk.TrajectoryMetadata{}, err
+		return sdk.TrajectoryExecutionCancelResult{}, err
 	}
-	now = normalizedMutationTime(now)
+	now := normalizedMutationTime(commit.At)
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return sdk.TrajectoryMetadata{}, err
+		return sdk.TrajectoryExecutionCancelResult{}, err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	trajectory, _, _, err := store.loadStoredTrajectory(
+	metadata, changed, err := store.cancelExecutionInTx(
 		ctx,
 		tx,
-		trajectoryID,
+		commit,
+		now,
+	)
+	if err != nil {
+		return sdk.TrajectoryExecutionCancelResult{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return sdk.TrajectoryExecutionCancelResult{}, err
+	}
+	return sdk.TrajectoryExecutionCancelResult{
+		Trajectory: metadata,
+		Changed:    changed,
+	}, nil
+}
+
+func (store *TrajectoryStore) cancelExecutionInTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	commit sdk.TrajectoryExecutionCancelCommit,
+	now time.Time,
+) (sdk.TrajectoryMetadata, bool, error) {
+	if err := sdk.ValidateResourceName(
+		"trajectory",
+		commit.TrajectoryID,
+	); err != nil {
+		return sdk.TrajectoryMetadata{}, false, err
+	}
+	entries, err := bindTrajectoryExecutionEntries(
+		commit.ExecutionID,
+		commit.Entries,
+	)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, false, err
+	}
+	trajectory, _, ownedCount, err := store.loadStoredTrajectory(
+		ctx,
+		tx,
+		commit.TrajectoryID,
 		true,
 	)
 	if err != nil {
-		return sdk.TrajectoryMetadata{}, err
+		return sdk.TrajectoryMetadata{}, false, err
 	}
 	if trajectory.Execution == nil {
-		return sdk.TrajectoryMetadata{}, fmt.Errorf(
+		return sdk.TrajectoryMetadata{}, false, fmt.Errorf(
 			"%w: trajectory %s has no execution",
 			sdk.ErrTrajectoryExecution,
-			trajectoryID,
+			commit.TrajectoryID,
 		)
 	}
 	execution, changed, err := cancelTrajectoryExecution(
 		*trajectory.Execution,
-		executionID,
-		reason,
+		commit.ExecutionID,
+		commit.Reason,
 		now,
 	)
 	if err != nil {
-		return sdk.TrajectoryMetadata{}, err
+		return sdk.TrajectoryMetadata{}, false, err
 	}
 	if changed {
+		if len(entries) > 0 && trajectory.Head != commit.ExpectedHead {
+			return sdk.TrajectoryMetadata{}, false, fmt.Errorf(
+				"%w: trajectory %s has head %q, expected %q",
+				sdk.ErrTrajectoryConflict,
+				commit.TrajectoryID,
+				trajectory.Head,
+				commit.ExpectedHead,
+			)
+		}
+		if len(entries) > 0 {
+			if _, err := store.appendEntries(
+				ctx,
+				tx,
+				trajectory,
+				ownedCount,
+				commit.ExpectedHead,
+				entries,
+			); err != nil {
+				return sdk.TrajectoryMetadata{}, false, err
+			}
+		}
 		if err := store.replaceExecution(
 			ctx,
 			tx,
-			trajectoryID,
+			commit.TrajectoryID,
 			execution,
 		); err != nil {
-			return sdk.TrajectoryMetadata{}, err
+			return sdk.TrajectoryMetadata{}, false, err
 		}
-		if _, err := tx.Exec(
-			ctx,
-			`UPDATE ag_trajectories
-			 SET updated_at = $1
-			 WHERE namespace = $2 AND id = $3`,
-			now,
-			store.namespace,
-			trajectoryID,
-		); err != nil {
-			return sdk.TrajectoryMetadata{}, err
+		if len(entries) == 0 {
+			if _, err := tx.Exec(
+				ctx,
+				`UPDATE ag_trajectories
+				 SET updated_at = $1
+				 WHERE namespace = $2 AND id = $3`,
+				now,
+				store.namespace,
+				commit.TrajectoryID,
+			); err != nil {
+				return sdk.TrajectoryMetadata{}, false, err
+			}
 		}
 	}
-	metadata, err := store.metadataInTx(ctx, tx, trajectoryID)
+	metadata, err := store.metadataInTx(ctx, tx, commit.TrajectoryID)
 	if err != nil {
-		return sdk.TrajectoryMetadata{}, err
+		return sdk.TrajectoryMetadata{}, false, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return sdk.TrajectoryMetadata{}, err
-	}
-	return metadata, nil
+	return metadata, changed, nil
 }
 
 func (store *TrajectoryStore) ListRecoverable(
@@ -790,9 +863,9 @@ func (store *TrajectoryStore) AnalyzeEntries(
 	return result, rows.Err()
 }
 
-func validateExecutionStepQueue(name string) error {
+func validateAtomicDeliveryQueue(name string) error {
 	if strings.TrimSpace(name) == "" {
-		return errors.New("execution-step delivery queue is empty")
+		return errors.New("atomic delivery queue is empty")
 	}
 	return sdk.ValidateResourceName("delivery queue", name)
 }

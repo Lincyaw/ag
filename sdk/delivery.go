@@ -40,6 +40,15 @@ type Delivery struct {
 	UpdatedAt        time.Time     `json:"updated_at"`
 }
 
+func (delivery Delivery) Terminal() bool {
+	switch delivery.State {
+	case DeliveryDelivered, DeliveryDeadLetter:
+		return true
+	default:
+		return false
+	}
+}
+
 type DeliveryPage struct {
 	Items []Delivery `json:"items"`
 	Next  string     `json:"next,omitempty"`
@@ -54,6 +63,8 @@ type DeliveryStore interface {
 	Retry(context.Context, string, string, time.Time, string) error
 	DeadLetter(context.Context, string, string, time.Time, string) error
 	List(context.Context) ([]Delivery, error)
+	// ListNonTerminal returns deliveries that still require lease, retry, or ack work.
+	ListNonTerminal(context.Context) ([]Delivery, error)
 	ListPage(context.Context, PageRequest) (DeliveryPage, error)
 	PurgeTerminal(context.Context, time.Time) (int, error)
 }
@@ -66,4 +77,15 @@ func CloneEvent(event Event) Event {
 func CloneDelivery(delivery Delivery) Delivery {
 	delivery.Event = CloneEvent(delivery.Event)
 	return delivery
+}
+
+func CloneDeliveries(deliveries []Delivery) []Delivery {
+	if len(deliveries) == 0 {
+		return nil
+	}
+	result := make([]Delivery, len(deliveries))
+	for index, delivery := range deliveries {
+		result[index] = CloneDelivery(delivery)
+	}
+	return result
 }

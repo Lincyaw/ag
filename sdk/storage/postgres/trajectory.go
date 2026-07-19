@@ -142,38 +142,19 @@ func (store *TrajectoryStore) Append(
 	expectedHead string,
 	entries ...sdk.TrajectoryEntry,
 ) (string, error) {
-	if err := sdk.ValidateResourceName("trajectory", id); err != nil {
-		return "", err
-	}
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	trajectory, _, ownedCount, err := store.loadStoredTrajectory(
+	metadata, err := store.appendTrajectoryInTx(
 		ctx,
 		tx,
-		id,
-		true,
-	)
-	if err != nil {
-		return "", err
-	}
-	if trajectory.Execution != nil && !trajectory.Execution.Terminal() {
-		return "", fmt.Errorf(
-			"%w: trajectory %s has active execution %s",
-			sdk.ErrTrajectoryExecution,
-			id,
-			trajectory.Execution.ID,
-		)
-	}
-	head, err := store.appendEntries(
-		ctx,
-		tx,
-		trajectory,
-		ownedCount,
-		expectedHead,
-		entries,
+		sdk.TrajectoryAppendCommit{
+			TrajectoryID: id,
+			ExpectedHead: expectedHead,
+			Entries:      entries,
+		},
 	)
 	if err != nil {
 		return "", err
@@ -181,7 +162,48 @@ func (store *TrajectoryStore) Append(
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
-	return head, nil
+	return metadata.Head, nil
+}
+
+func (store *TrajectoryStore) appendTrajectoryInTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	commit sdk.TrajectoryAppendCommit,
+) (sdk.TrajectoryMetadata, error) {
+	if err := sdk.ValidateResourceName(
+		"trajectory",
+		commit.TrajectoryID,
+	); err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	trajectory, _, ownedCount, err := store.loadStoredTrajectory(
+		ctx,
+		tx,
+		commit.TrajectoryID,
+		true,
+	)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	if trajectory.Execution != nil && !trajectory.Execution.Terminal() {
+		return sdk.TrajectoryMetadata{}, fmt.Errorf(
+			"%w: trajectory %s has active execution %s",
+			sdk.ErrTrajectoryExecution,
+			commit.TrajectoryID,
+			trajectory.Execution.ID,
+		)
+	}
+	if _, err := store.appendEntries(
+		ctx,
+		tx,
+		trajectory,
+		ownedCount,
+		commit.ExpectedHead,
+		commit.Entries,
+	); err != nil {
+		return sdk.TrajectoryMetadata{}, err
+	}
+	return store.metadataInTx(ctx, tx, commit.TrajectoryID)
 }
 
 func (store *TrajectoryStore) LoadMetadata(

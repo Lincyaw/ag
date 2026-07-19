@@ -52,33 +52,38 @@ func testTrajectoryExecutionCancellation(
 	}
 	cancelled, err := store.CancelExecution(
 		ctx,
-		"cancel-session",
-		claimed.ID,
-		"user interrupted the tool",
-		time.Now().UTC(),
+		sdk.TrajectoryExecutionCancelCommit{
+			TrajectoryID: "cancel-session",
+			ExecutionID:  claimed.ID,
+			Reason:       "user interrupted the tool",
+			At:           time.Now().UTC(),
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cancelled.Execution == nil ||
-		cancelled.Execution.State != sdk.TrajectoryExecutionCancelled ||
-		cancelled.Execution.LeaseToken != "" ||
-		cancelled.Execution.LastError != "user interrupted the tool" {
-		t.Fatalf("cancelled metadata = %#v", cancelled.Execution)
+	if cancelled.Trajectory.Execution == nil ||
+		cancelled.Trajectory.Execution.State != sdk.TrajectoryExecutionCancelled ||
+		cancelled.Trajectory.Execution.LeaseToken != "" ||
+		cancelled.Trajectory.Execution.LastError != "user interrupted the tool" {
+		t.Fatalf("cancelled metadata = %#v", cancelled.Trajectory.Execution)
 	}
-	revision := cancelled.Execution.Revision
+	revision := cancelled.Trajectory.Execution.Revision
 	retried, err := store.CancelExecution(
 		ctx,
-		"cancel-session",
-		claimed.ID,
-		"duplicate request",
-		time.Now().UTC(),
+		sdk.TrajectoryExecutionCancelCommit{
+			TrajectoryID: "cancel-session",
+			ExecutionID:  claimed.ID,
+			Reason:       "duplicate request",
+			At:           time.Now().UTC(),
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if retried.Execution == nil || retried.Execution.Revision != revision {
-		t.Fatalf("idempotent cancellation = %#v", retried.Execution)
+	if retried.Trajectory.Execution == nil ||
+		retried.Trajectory.Execution.Revision != revision {
+		t.Fatalf("idempotent cancellation = %#v", retried.Trajectory.Execution)
 	}
 	if _, err := store.RenewExecution(
 		ctx,

@@ -84,40 +84,25 @@ func (store *fileOperationStore) Get(
 	return result, err
 }
 
-func (store *fileOperationStore) Transition(
+func (store *fileOperationStore) Cancel(
 	ctx context.Context,
 	id string,
 	expectedRevision uint64,
-	state sdk.OperationState,
-	output json.RawMessage,
+) (sdk.OperationRecord, error) {
+	return store.mutate(ctx, func(memory *memoryOperationStore) (sdk.OperationRecord, error) {
+		return memory.Cancel(ctx, id, expectedRevision)
+	})
+}
+
+func (store *fileOperationStore) Fail(
+	ctx context.Context,
+	id string,
+	expectedRevision uint64,
 	operationError string,
 ) (sdk.OperationRecord, error) {
-	if err := ctx.Err(); err != nil {
-		return sdk.OperationRecord{}, err
-	}
-	var result sdk.OperationRecord
-	err := filestate.WithExclusiveLock(store.lockPath, func() error {
-		memory, readErr := store.readLocked()
-		if readErr != nil {
-			return readErr
-		}
-		result, readErr = memory.Transition(
-			ctx,
-			id,
-			expectedRevision,
-			state,
-			output,
-			operationError,
-		)
-		if readErr != nil {
-			return readErr
-		}
-		return store.writeLocked(ctx, memory)
+	return store.mutate(ctx, func(memory *memoryOperationStore) (sdk.OperationRecord, error) {
+		return memory.Fail(ctx, id, expectedRevision, operationError)
 	})
-	if err != nil {
-		return sdk.OperationRecord{}, err
-	}
-	return result, nil
 }
 
 func (store *fileOperationStore) Claim(
@@ -212,6 +197,62 @@ func (store *fileOperationStore) List(
 			return readErr
 		}
 		result, readErr = memory.List(ctx)
+		return readErr
+	})
+	return result, err
+}
+
+func (store *fileOperationStore) ListByInvocationRoot(
+	ctx context.Context,
+	rootID string,
+) ([]sdk.OperationRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var result []sdk.OperationRecord
+	err := filestate.WithSharedLock(store.lockPath, func() error {
+		memory, readErr := store.readLocked()
+		if readErr != nil {
+			return readErr
+		}
+		result, readErr = memory.ListByInvocationRoot(ctx, rootID)
+		return readErr
+	})
+	return result, err
+}
+
+func (store *fileOperationStore) ListNonTerminal(
+	ctx context.Context,
+) ([]sdk.OperationRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var result []sdk.OperationRecord
+	err := filestate.WithSharedLock(store.lockPath, func() error {
+		memory, readErr := store.readLocked()
+		if readErr != nil {
+			return readErr
+		}
+		result, readErr = memory.ListNonTerminal(ctx)
+		return readErr
+	})
+	return result, err
+}
+
+func (store *fileOperationStore) ListRecoverable(
+	ctx context.Context,
+	now time.Time,
+) ([]sdk.OperationRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var result []sdk.OperationRecord
+	err := filestate.WithSharedLock(store.lockPath, func() error {
+		memory, readErr := store.readLocked()
+		if readErr != nil {
+			return readErr
+		}
+		result, readErr = memory.ListRecoverable(ctx, now)
 		return readErr
 	})
 	return result, err

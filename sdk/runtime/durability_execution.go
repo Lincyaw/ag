@@ -251,9 +251,9 @@ func (runtime *Runtime) commitTrajectoryExecution(
 	commit sdk.TrajectoryExecutionCommit,
 ) (sdk.TrajectoryMetadata, error) {
 	if runtime.atomicState != nil {
-		result, err := runtime.atomicState.CommitExecutionStep(
+		result, err := runtime.atomicState.CommitExecution(
 			ctx,
-			sdk.ExecutionStepCommit{Trajectory: commit},
+			sdk.ExecutionMutationCommit{Trajectory: commit},
 		)
 		return result.Trajectory, err
 	}

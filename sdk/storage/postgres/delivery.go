@@ -124,39 +124,7 @@ func scanPostgresDelivery(scanner interface {
 func prepareDeliveries(
 	deliveries []sdk.Delivery,
 ) ([]sdk.Delivery, error) {
-	prepared := make([]sdk.Delivery, len(deliveries))
-	byID := make(map[string]sdk.Delivery, len(deliveries))
-	for index, delivery := range deliveries {
-		if err := validateNewDelivery(delivery); err != nil {
-			return nil, err
-		}
-		now := delivery.CreatedAt.UTC()
-		if now.IsZero() {
-			now = time.Now().UTC()
-		}
-		delivery.State = sdk.DeliveryPending
-		delivery.Attempt = 0
-		delivery.AvailableAt = delivery.AvailableAt.UTC()
-		if delivery.AvailableAt.IsZero() {
-			delivery.AvailableAt = now
-		}
-		delivery.LeaseToken = ""
-		delivery.LeaseExpiresAt = time.Time{}
-		delivery.CreatedAt = now
-		delivery.UpdatedAt = now
-		delivery.Partition = deliveryPartition(delivery)
-		delivery.Event = sdk.CloneEvent(delivery.Event)
-		if existing, duplicate := byID[delivery.ID]; duplicate &&
-			!sameDeliveryIdentity(existing, delivery) {
-			return nil, fmt.Errorf(
-				"delivery %q appears more than once with different identity",
-				delivery.ID,
-			)
-		}
-		byID[delivery.ID] = delivery
-		prepared[index] = delivery
-	}
-	return prepared, nil
+	return prepareNewDeliveries(deliveries, time.Now().UTC())
 }
 
 func (store *DeliveryStore) Enqueue(
@@ -280,14 +248,17 @@ func (store *DeliveryStore) Lease(
 	now time.Time,
 	duration time.Duration,
 ) (sdk.Delivery, error) {
-	if duration <= 0 {
-		return sdk.Delivery{}, errors.New(
-			"delivery lease duration must be positive",
-		)
+	if err := validateDeliveryLeaseDuration(duration); err != nil {
+		return sdk.Delivery{}, err
 	}
-	now = normalizedMutationTime(now)
+	now = normalizeDeliveryMutationTime(now)
 	token := sdk.NewID()
-	delivery, err := scanPostgresDelivery(store.pool.QueryRow(
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return sdk.Delivery{}, err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	delivery, err := scanPostgresDelivery(tx.QueryRow(
 		ctx,
 		`WITH heads AS MATERIALIZED (
 			SELECT DISTINCT ON (partition_key)
@@ -321,17 +292,12 @@ func (store *DeliveryStore) Lease(
 			LIMIT 1
 			FOR UPDATE OF delivery SKIP LOCKED
 		)
-		UPDATE ag_deliveries delivery
-		SET state = $6,
-		    attempt = delivery.attempt + 1,
-		    lease_token = $8,
-		    lease_expires_at = $9,
-		    updated_at = $7
-		FROM candidate
+		SELECT `+qualifiedDeliveryColumns+`
+		FROM ag_deliveries delivery
+		JOIN candidate ON candidate.id = delivery.id
 		WHERE delivery.namespace = $1
 		  AND delivery.queue = $2
-		  AND delivery.id = candidate.id
-		RETURNING `+qualifiedDeliveryColumns,
+		  AND delivery.id = candidate.id`,
 		store.namespace,
 		store.queue,
 		string(sdk.DeliveryDelivered),
@@ -339,13 +305,47 @@ func (store *DeliveryStore) Lease(
 		string(sdk.DeliveryPending),
 		string(sdk.DeliveryLeased),
 		now,
-		token,
-		now.Add(duration),
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return sdk.Delivery{}, sdk.ErrNoDelivery
 	}
-	return delivery, err
+	if err != nil {
+		return sdk.Delivery{}, err
+	}
+	delivery, err = leaseDelivery(delivery, token, now, duration)
+	if err != nil {
+		return sdk.Delivery{}, err
+	}
+	tag, err := tx.Exec(
+		ctx,
+		`UPDATE ag_deliveries
+		 SET state = $1,
+		     attempt = $2,
+		     lease_token = $3,
+		     lease_expires_at = $4,
+		     updated_at = $5
+		 WHERE namespace = $6
+		   AND queue = $7
+		   AND id = $8`,
+		string(delivery.State),
+		delivery.Attempt,
+		delivery.LeaseToken,
+		delivery.LeaseExpiresAt.UTC(),
+		delivery.UpdatedAt.UTC(),
+		store.namespace,
+		store.queue,
+		delivery.ID,
+	)
+	if err != nil {
+		return sdk.Delivery{}, err
+	}
+	if tag.RowsAffected() != 1 {
+		return sdk.Delivery{}, sdk.ErrNoDelivery
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return sdk.Delivery{}, err
+	}
+	return delivery, nil
 }
 
 func (store *DeliveryStore) Ack(
@@ -364,7 +364,7 @@ func (store *DeliveryStore) Ack(
 		tx,
 		id,
 		token,
-		normalizedMutationTime(now),
+		normalizeDeliveryMutationTime(now),
 	); err != nil {
 		return err
 	}
@@ -419,7 +419,7 @@ func (store *DeliveryStore) DeadLetter(
 		ctx,
 		id,
 		token,
-		normalizedMutationTime(now),
+		normalizeDeliveryMutationTime(now),
 		sdk.DeliveryDeadLetter,
 		time.Time{},
 		lastError,
@@ -465,6 +465,24 @@ func (store *DeliveryStore) transitionInTx(
 	availableAt time.Time,
 	lastError string,
 ) error {
+	delivery, err := store.load(ctx, tx, id, true)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: %s", sdk.ErrDeliveryLease, id)
+	}
+	if err != nil {
+		return err
+	}
+	delivery, err = finishDeliveryLease(
+		delivery,
+		token,
+		now,
+		state,
+		availableAt,
+		lastError,
+	)
+	if err != nil {
+		return err
+	}
 	tag, err := tx.Exec(
 		ctx,
 		`UPDATE ag_deliveries
@@ -472,26 +490,18 @@ func (store *DeliveryStore) transitionInTx(
 		     available_at = $2,
 		     lease_token = '',
 		     lease_expires_at = NULL,
-		     last_error = CASE
-		       WHEN $1 <> $3 OR $4 <> '' THEN $4
-		       ELSE last_error
-		     END,
-		     updated_at = $5
-		 WHERE namespace = $6
-		   AND queue = $7
-		   AND id = $8
-		   AND state = $9
-		   AND lease_token = $10`,
-		string(state),
-		nullableTime(availableAt),
-		string(sdk.DeliveryDelivered),
-		lastError,
-		now.UTC(),
+		     last_error = $3,
+		     updated_at = $4
+		 WHERE namespace = $5
+		   AND queue = $6
+		   AND id = $7`,
+		string(delivery.State),
+		nullableTime(delivery.AvailableAt),
+		delivery.LastError,
+		delivery.UpdatedAt.UTC(),
 		store.namespace,
 		store.queue,
-		id,
-		string(sdk.DeliveryLeased),
-		token,
+		delivery.ID,
 	)
 	if err != nil {
 		return err
@@ -523,6 +533,37 @@ func (store *DeliveryStore) List(
 		delivery, err := scanPostgresDelivery(rows)
 		if err != nil {
 			return nil, err
+		}
+		result = append(result, delivery)
+	}
+	return result, rows.Err()
+}
+
+func (store *DeliveryStore) ListNonTerminal(
+	ctx context.Context,
+) ([]sdk.Delivery, error) {
+	rows, err := store.pool.Query(
+		ctx,
+		`SELECT `+deliveryColumns+`
+		 FROM ag_deliveries
+		 WHERE namespace = $1
+		   AND queue = $2
+		   AND state NOT IN ($3, $4)
+		 ORDER BY sequence`,
+		store.namespace,
+		store.queue,
+		string(sdk.DeliveryDelivered),
+		string(sdk.DeliveryDeadLetter),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]sdk.Delivery, 0)
+	for rows.Next() {
+		delivery, scanErr := scanPostgresDelivery(rows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
 		result = append(result, delivery)
 	}

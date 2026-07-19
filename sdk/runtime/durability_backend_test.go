@@ -61,16 +61,70 @@ func (backend *atomicTestBackend) Capabilities() sdk.StorageCapabilities {
 	return capabilities
 }
 
-func (backend *atomicTestBackend) CommitExecutionStep(
+func (backend *atomicTestBackend) AppendTrajectory(
 	ctx context.Context,
-	commit sdk.ExecutionStepCommit,
-) (sdk.ExecutionStepResult, error) {
+	commit sdk.TrajectoryAppendCommit,
+) (sdk.TrajectoryAppendResult, error) {
+	head, err := backend.Trajectories().Append(
+		ctx,
+		commit.TrajectoryID,
+		commit.ExpectedHead,
+		commit.Entries...,
+	)
+	if err != nil {
+		return sdk.TrajectoryAppendResult{}, err
+	}
+	metadata, err := backend.Trajectories().LoadMetadata(
+		ctx,
+		commit.TrajectoryID,
+	)
+	if err != nil {
+		return sdk.TrajectoryAppendResult{}, err
+	}
+	if metadata.Head != head {
+		return sdk.TrajectoryAppendResult{}, sdk.ErrTrajectoryConflict
+	}
+	return sdk.TrajectoryAppendResult{Trajectory: metadata}, nil
+}
+
+func (backend *atomicTestBackend) StartExecution(
+	ctx context.Context,
+	commit sdk.ExecutionStartCommit,
+) (sdk.ExecutionMutationResult, error) {
+	metadata, err := backend.Trajectories().BeginExecution(
+		ctx,
+		commit.TrajectoryID,
+		commit.ExpectedHead,
+		commit.Start,
+		commit.Input,
+	)
+	return sdk.ExecutionMutationResult{Trajectory: metadata}, err
+}
+
+func (backend *atomicTestBackend) CommitExecution(
+	ctx context.Context,
+	commit sdk.ExecutionMutationCommit,
+) (sdk.ExecutionMutationResult, error) {
 	backend.commits++
 	metadata, err := backend.Trajectories().CommitExecution(
 		ctx,
 		commit.Trajectory,
 	)
-	return sdk.ExecutionStepResult{Trajectory: metadata}, err
+	return sdk.ExecutionMutationResult{Trajectory: metadata}, err
+}
+
+func (backend *atomicTestBackend) CancelExecution(
+	ctx context.Context,
+	commit sdk.ExecutionCancelCommit,
+) (sdk.ExecutionCancelResult, error) {
+	result, err := backend.Trajectories().CancelExecution(
+		ctx,
+		commit.TrajectoryCommit(),
+	)
+	return sdk.ExecutionCancelResult{
+		Trajectory: result.Trajectory,
+		Changed:    result.Changed,
+	}, err
 }
 
 func TestRuntimeRoutesExecutionCommitThroughAtomicBackend(t *testing.T) {

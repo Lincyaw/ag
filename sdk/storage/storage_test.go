@@ -191,12 +191,10 @@ func TestPrunePreservesOperationsWhileTrajectoryExecutionIsActive(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backend.Operations().Transition(
+	if _, err := backend.Operations().Fail(
 		ctx,
 		operation.Operation.ID,
 		operation.Operation.Revision,
-		sdk.OperationFailed,
-		nil,
 		"finished failure",
 	); err != nil {
 		t.Fatal(err)

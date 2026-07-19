@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"strings"
 	"time"
 
@@ -12,6 +11,11 @@ import (
 )
 
 type EntryLookup func(string) (sdk.TrajectoryEntry, bool, error)
+
+type PreparedNewTrajectory struct {
+	Trajectory          sdk.Trajectory
+	InheritedEntryCount uint64
+}
 
 func ValidateNewTrajectory(trajectory sdk.Trajectory) error {
 	if trajectory.SchemaVersion > sdk.TrajectorySchemaVersion {
@@ -34,6 +38,59 @@ func ValidateNewTrajectory(trajectory sdk.Trajectory) error {
 		)
 	}
 	return ValidateTrajectoryParent(trajectory)
+}
+
+func PrepareNewTrajectory(
+	trajectory sdk.Trajectory,
+	now time.Time,
+) (PreparedNewTrajectory, error) {
+	NormalizeTrajectory(&trajectory)
+	if err := ValidateNewTrajectory(trajectory); err != nil {
+		return PreparedNewTrajectory{}, err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	if trajectory.CreatedAt.IsZero() {
+		trajectory.CreatedAt = now
+	} else {
+		trajectory.CreatedAt = trajectory.CreatedAt.UTC()
+	}
+	if trajectory.UpdatedAt.IsZero() {
+		trajectory.UpdatedAt = trajectory.CreatedAt
+	} else {
+		trajectory.UpdatedAt = trajectory.UpdatedAt.UTC()
+	}
+	trajectory.Entries = []sdk.TrajectoryEntry{}
+	return PreparedNewTrajectory{Trajectory: trajectory}, nil
+}
+
+func PrepareNewTrajectoryFork(
+	prepared PreparedNewTrajectory,
+	inheritedBranch []sdk.TrajectoryEntry,
+) (PreparedNewTrajectory, error) {
+	trajectory := prepared.Trajectory
+	if trajectory.ParentID == "" {
+		return prepared, nil
+	}
+	if len(inheritedBranch) == 0 {
+		return PreparedNewTrajectory{}, fmt.Errorf(
+			"trajectory %q fork branch is empty",
+			trajectory.ID,
+		)
+	}
+	prepared.InheritedEntryCount = uint64(len(inheritedBranch))
+	trajectory.Head = trajectory.ParentEntryID
+	if checkpoint, found := FindLatestInBranch(
+		inheritedBranch,
+		sdk.TrajectoryKindCheckpoint,
+	); found {
+		trajectory.Checkpoint = checkpoint.ID
+	}
+	prepared.Trajectory = trajectory
+	return prepared, nil
 }
 
 func ValidateTrajectoryParent(trajectory sdk.Trajectory) error {
@@ -311,14 +368,7 @@ func LatestCheckpointAfterAppend(
 }
 
 func CloneTrajectory(source sdk.Trajectory) sdk.Trajectory {
-	result := source
-	result.Execution = CloneTrajectoryExecution(source.Execution)
-	result.Environment = CloneTrajectoryEnvironment(source.Environment)
-	result.Entries = make([]sdk.TrajectoryEntry, len(source.Entries))
-	for index, entry := range source.Entries {
-		result.Entries[index] = CloneTrajectoryEntry(entry)
-	}
-	return result
+	return sdk.CloneTrajectory(source)
 }
 
 func NormalizeTrajectory(trajectory *sdk.Trajectory) {
@@ -426,68 +476,17 @@ func ValidateLoadedTrajectory(trajectory *sdk.Trajectory) error {
 }
 
 func CloneTrajectoryEnvironment(source sdk.TrajectoryEnvironment) sdk.TrajectoryEnvironment {
-	result := source
-	result.Plugins = make([]sdk.TrajectoryPlugin, len(source.Plugins))
-	for index, plugin := range source.Plugins {
-		result.Plugins[index] = plugin
-		result.Plugins[index].Registers = append([]string(nil), plugin.Registers...)
-	}
-	result.Providers = append([]sdk.ProviderSpec(nil), source.Providers...)
-	result.Tools = make([]sdk.ToolSpec, len(source.Tools))
-	for index, spec := range source.Tools {
-		result.Tools[index] = spec
-		result.Tools[index].Parameters = maps.Clone(spec.Parameters)
-	}
-	result.Agents = make([]sdk.AgentSpec, len(source.Agents))
-	for index, spec := range source.Agents {
-		result.Agents[index] = sdk.CloneAgentSpec(spec)
-	}
-	result.Hooks = append([]sdk.HookSpec(nil), source.Hooks...)
-	result.Subscribers = make([]sdk.SubscriberSpec, len(source.Subscribers))
-	for index, spec := range source.Subscribers {
-		result.Subscribers[index] = spec
-		result.Subscribers[index].Events = append([]string(nil), spec.Events...)
-	}
-	result.Capabilities = make([]sdk.CapabilitySpec, len(source.Capabilities))
-	for index, spec := range source.Capabilities {
-		result.Capabilities[index] = spec
-		result.Capabilities[index].InputSchema = maps.Clone(spec.InputSchema)
-		result.Capabilities[index].OutputSchema = maps.Clone(spec.OutputSchema)
-	}
-	result.Events = make([]sdk.EventContract, len(source.Events))
-	for index, contract := range source.Events {
-		result.Events[index] = contract
-		result.Events[index].MutableFields = append(
-			[]string(nil),
-			contract.MutableFields...,
-		)
-	}
-	return result
+	return sdk.CloneTrajectoryEnvironment(source)
 }
 
 func CloneTrajectoryEntry(source sdk.TrajectoryEntry) sdk.TrajectoryEntry {
-	result := source
-	if source.Fields.Turn != nil {
-		turn := *source.Fields.Turn
-		result.Fields.Turn = &turn
-	}
-	if source.Fields.IsError != nil {
-		isError := *source.Fields.IsError
-		result.Fields.IsError = &isError
-	}
-	result.Payload = append(json.RawMessage(nil), source.Payload...)
-	result.Attributes = maps.Clone(source.Attributes)
-	return result
+	return sdk.CloneTrajectoryEntry(source)
 }
 
 func CloneTrajectoryExecution(
 	source *sdk.TrajectoryExecution,
 ) *sdk.TrajectoryExecution {
-	if source == nil {
-		return nil
-	}
-	result := *source
-	return &result
+	return sdk.CloneTrajectoryExecution(source)
 }
 
 func BindTrajectoryExecutionEntries(
@@ -639,8 +638,7 @@ func ClaimTrajectoryExecution(
 			execution.ID,
 		)
 	}
-	if execution.State == sdk.TrajectoryExecutionRunning &&
-		execution.LeaseExpiresAt.After(now) {
+	if execution.RecoveryDelay(now) > 0 {
 		return sdk.TrajectoryExecution{}, fmt.Errorf(
 			"%w: execution %s is owned by %s until %s",
 			sdk.ErrTrajectoryClaimed,

@@ -293,16 +293,19 @@ func (backend *runtimeExecutionBackend) Cancel(
 		return Execution{}, err
 	}
 	defer state.Close(context.Background())
-	metadata, err := state.Trajectories().CancelExecution(
+	cancelled, err := state.Trajectories().CancelExecution(
 		ctx,
-		session.ID,
-		executionID,
-		"user requested cancellation",
-		time.Now().UTC(),
+		sdk.TrajectoryExecutionCancelCommit{
+			TrajectoryID: session.ID,
+			ExecutionID:  executionID,
+			Reason:       "user requested cancellation",
+			At:           time.Now().UTC(),
+		},
 	)
 	if err != nil {
 		return Execution{}, err
 	}
+	metadata := cancelled.Trajectory
 	if metadata.Execution == nil {
 		return Execution{}, ErrExecutionNotFound
 	}

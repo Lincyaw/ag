@@ -126,6 +126,24 @@ func (store *fileDeliveryStore) List(
 	return result, err
 }
 
+func (store *fileDeliveryStore) ListNonTerminal(
+	ctx context.Context,
+) ([]sdk.Delivery, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var result []sdk.Delivery
+	err := filestate.WithSharedLock(store.lockPath, func() error {
+		memory, readErr := store.readLocked()
+		if readErr != nil {
+			return readErr
+		}
+		result, readErr = memory.ListNonTerminal(ctx)
+		return readErr
+	})
+	return result, err
+}
+
 func (store *fileDeliveryStore) ListPage(
 	ctx context.Context,
 	request sdk.PageRequest,

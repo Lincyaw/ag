@@ -176,7 +176,7 @@ func TestBackendSharesDurableStateAcrossIndependentPools(t *testing.T) {
 	}
 }
 
-func TestCommitExecutionStepRollsBackEveryStoreOnConflict(
+func TestCommitExecutionRollsBackTrajectoryAndOutboxOnConflict(
 	t *testing.T,
 ) {
 	namespace := "atomic-" + sdk.NewID()
@@ -216,48 +216,6 @@ func TestCommitExecutionStepRollsBackEveryStoreOnConflict(
 	if err != nil {
 		t.Fatal(err)
 	}
-	operation, _, err := backend.Operations().Submit(
-		ctx,
-		sdk.OperationRecord{
-			Operation: sdk.Operation{
-				IdempotencyKey: "atomic-operation-key",
-			},
-			Kind:     sdk.OperationKindTool,
-			Resource: "atomic-tool",
-			Input:    json.RawMessage(`{"input":1}`),
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	operation, err = backend.Operations().Claim(
-		ctx,
-		operation.Operation.ID,
-		"atomic-worker",
-		time.Now().UTC(),
-		time.Minute,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inbox, err := backend.Deliveries(sdk.PluginInboxQueue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := inbox.Enqueue(
-		ctx,
-		testDelivery("atomic-inbox", "atomic-inbox-event"),
-	); err != nil {
-		t.Fatal(err)
-	}
-	inboxLease, err := inbox.Lease(
-		ctx,
-		time.Now().UTC(),
-		time.Minute,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	outbox, err := backend.Deliveries(sdk.HostOutboxQueue)
 	if err != nil {
 		t.Fatal(err)
@@ -273,7 +231,7 @@ func TestCommitExecutionStepRollsBackEveryStoreOnConflict(
 		"atomic-input",
 		sdk.TrajectoryKindCheckpoint,
 	)
-	step := sdk.ExecutionStepCommit{
+	mutation := sdk.ExecutionMutationCommit{
 		Trajectory: sdk.TrajectoryExecutionCommit{
 			TrajectoryID: trajectoryID,
 			ExecutionID:  execution.ID,
@@ -281,18 +239,7 @@ func TestCommitExecutionStepRollsBackEveryStoreOnConflict(
 			ExpectedHead: "atomic-input",
 			Entries:      []sdk.TrajectoryEntry{checkpoint},
 		},
-		Operation: &sdk.ExecutionStepOperation{
-			ID:         operation.Operation.ID,
-			LeaseToken: operation.Execution.Token,
-			State:      sdk.OperationSucceeded,
-			Output:     json.RawMessage(`{"result":"ok"}`),
-		},
-		InboxAck: &sdk.ExecutionStepDeliveryAck{
-			Queue:      sdk.PluginInboxQueue,
-			ID:         inboxLease.ID,
-			LeaseToken: inboxLease.LeaseToken,
-		},
-		Outbox: []sdk.ExecutionStepDeliveries{{
+		Outbox: []sdk.StateMutationDeliveries{{
 			Queue: sdk.HostOutboxQueue,
 			Deliveries: []sdk.Delivery{
 				testDelivery(
@@ -302,7 +249,7 @@ func TestCommitExecutionStepRollsBackEveryStoreOnConflict(
 			},
 		}},
 	}
-	if _, err := backend.CommitExecutionStep(ctx, step); err == nil {
+	if _, err := backend.CommitExecution(ctx, mutation); err == nil {
 		t.Fatal("conflicting outbox delivery unexpectedly committed")
 	}
 	metadata, err := backend.Trajectories().LoadMetadata(
@@ -315,50 +262,28 @@ func TestCommitExecutionStepRollsBackEveryStoreOnConflict(
 	if metadata.Head != "atomic-input" {
 		t.Fatalf("trajectory head after rollback = %q", metadata.Head)
 	}
-	persistedOperation, err := backend.Operations().Get(
-		ctx,
-		operation.Operation.ID,
-	)
+	outboxItems, err := outbox.List(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if persistedOperation.Operation.State != sdk.OperationRunning ||
-		persistedOperation.Execution == nil {
-		t.Fatalf(
-			"operation after rollback = %#v",
-			persistedOperation,
-		)
-	}
-	inboxItems, err := inbox.List(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(inboxItems) != 1 ||
-		inboxItems[0].State != sdk.DeliveryLeased {
-		t.Fatalf("inbox after rollback = %#v", inboxItems)
+	if len(outboxItems) != 1 ||
+		outboxItems[0].ID != "atomic-conflict" ||
+		outboxItems[0].Event.ID != "original-event" {
+		t.Fatalf("outbox after rollback = %#v", outboxItems)
 	}
 
-	step.Outbox[0].Deliveries[0] = testDelivery(
+	mutation.Outbox[0].Deliveries[0] = testDelivery(
 		"atomic-result",
 		"atomic-result-event",
 	)
-	result, err := backend.CommitExecutionStep(ctx, step)
+	result, err := backend.CommitExecution(ctx, mutation)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Trajectory.Head != "atomic-checkpoint" ||
-		result.Operation == nil ||
-		result.Operation.Operation.State != sdk.OperationSucceeded {
+	if result.Trajectory.Head != "atomic-checkpoint" {
 		t.Fatalf("atomic result = %#v", result)
 	}
-	inboxItems, err = inbox.List(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inboxItems[0].State != sdk.DeliveryDelivered {
-		t.Fatalf("committed inbox = %#v", inboxItems)
-	}
-	outboxItems, err := outbox.List(ctx)
+	outboxItems, err = outbox.List(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

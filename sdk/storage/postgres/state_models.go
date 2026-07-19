@@ -6,13 +6,26 @@ import (
 )
 
 var (
-	validateNewOperationRecord  = operationmodel.ValidateNewRecord
-	validateOperationTransition = operationmodel.ValidateTransition
-	cloneOperationRecord        = operationmodel.CloneRecord
-	sameOperationSubmission     = operationmodel.SameSubmission
+	prepareNewOperationRecord      = operationmodel.PrepareNewRecord
+	validateOperationClaim         = operationmodel.ValidateClaim
+	validateOperationLeaseDuration = operationmodel.ValidateLeaseDuration
+	validateOperationCompletion    = operationmodel.ValidateCompletionState
+	normalizeOperationMutationTime = operationmodel.NormalizeMutationTime
+	cancelOperation                = operationmodel.Cancel
+	failOperation                  = operationmodel.Fail
+	claimOperation                 = operationmodel.Claim
+	renewOperation                 = operationmodel.Renew
+	completeOperation              = operationmodel.Complete
+	releaseOperation               = operationmodel.Release
+	cloneOperationRecord           = operationmodel.CloneRecord
+	sameOperationSubmission        = operationmodel.SameSubmission
+	validateLoadedOperationRecord  = operationmodel.ValidateLoadedRecord
 
-	validateNewDelivery    = deliverymodel.ValidateNew
-	sameDeliveryIdentity   = deliverymodel.SameIdentity
-	deliveryPartition      = deliverymodel.Partition
-	validateLoadedDelivery = deliverymodel.ValidateLoaded
+	prepareNewDeliveries          = deliverymodel.PrepareNewBatch
+	sameDeliveryIdentity          = deliverymodel.SameIdentity
+	leaseDelivery                 = deliverymodel.Lease
+	finishDeliveryLease           = deliverymodel.FinishLease
+	validateDeliveryLeaseDuration = deliverymodel.ValidateLeaseDuration
+	normalizeDeliveryMutationTime = deliverymodel.NormalizeMutationTime
+	validateLoadedDelivery        = deliverymodel.ValidateLoaded
 )
