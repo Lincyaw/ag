@@ -12,6 +12,7 @@ import (
 	"time"
 
 	appconfig "github.com/lincyaw/ag/internal/config"
+	"github.com/lincyaw/ag/internal/lifecycle"
 	"github.com/lincyaw/ag/internal/logging"
 	"github.com/lincyaw/ag/internal/telemetry"
 	"github.com/lincyaw/ag/pluginrpc"
@@ -59,7 +60,7 @@ func StartRuntime(
 	}
 	logger = logging.WithHandler(logger, observability.LogHandler)
 	cleanupTelemetry := func(cause error) (*RunningRuntime, error) {
-		closeCtx, cancel := closeContext()
+		closeCtx, cancel := closeContext(ctx)
 		defer cancel()
 		return nil, errors.Join(
 			cause,
@@ -71,7 +72,7 @@ func StartRuntime(
 	if err != nil {
 		return cleanupTelemetry(fmt.Errorf("configure state backend: %w", err))
 	}
-	runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{
+	runtime, err := agentruntime.NewRuntimeContext(ctx, agentruntime.RuntimeConfig{
 		RuntimeVersion: version,
 		Logger:         logger,
 		Tracer:         observability.Tracer,
@@ -80,7 +81,7 @@ func StartRuntime(
 		EventObserver:  eventObserver(eventSink),
 	})
 	if err != nil {
-		closeCtx, cancel := closeContext()
+		closeCtx, cancel := closeContext(ctx)
 		closeErr := storage.Close(closeCtx)
 		cancel()
 		return cleanupTelemetry(errors.Join(err, closeErr))
@@ -195,7 +196,7 @@ func RollbackTrajectory(
 		return err
 	}
 	defer logFile.Close()
-	runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{
+	runtime, err := agentruntime.NewRuntimeContext(ctx, agentruntime.RuntimeConfig{
 		Logger:           logger,
 		Storage:          backend,
 		StorageOwnership: agentruntime.StorageBorrowed,
@@ -203,12 +204,18 @@ func RollbackTrajectory(
 	if err != nil {
 		return err
 	}
-	defer func() {
-		closeCtx, cancel := closeContext()
-		defer cancel()
-		_ = runtime.Close(closeCtx)
-	}()
-	return runtime.RollbackTrajectory(ctx, trajectoryID, checkpointID)
+	host := agentruntime.ExecutionHost{Runtime: runtime}
+	closeHost := func(cause error) error {
+		return errors.Join(cause, host.CloseDetached(ctx))
+	}
+	plan, err := BuildPluginPlan(ctx, config, logger, nil, nil)
+	if err != nil {
+		return closeHost(err)
+	}
+	if err := plan.Mount(ctx, runtime); err != nil {
+		return closeHost(err)
+	}
+	return closeHost(runtime.RollbackTrajectory(ctx, trajectoryID, checkpointID))
 }
 
 func (running *RunningRuntime) Close() {
@@ -217,15 +224,11 @@ func (running *RunningRuntime) Close() {
 	}
 	var err error
 	if running.Runtime != nil {
-		ctx, cancel := closeContext()
-		err = errors.Join(err, running.Runtime.DrainDeliveries(ctx))
-		cancel()
-		ctx, cancel = closeContext()
-		err = errors.Join(err, running.Runtime.Close(ctx))
-		cancel()
+		host := agentruntime.ExecutionHost{Runtime: running.Runtime}
+		err = errors.Join(err, host.CloseDetached(context.Background()))
 	}
 	if running.telemetry != nil {
-		ctx, cancel := closeContext()
+		ctx, cancel := closeContext(context.Background())
 		err = errors.Join(err, running.telemetry.Shutdown(ctx))
 		cancel()
 	}
@@ -237,8 +240,8 @@ func (running *RunningRuntime) Close() {
 	}
 }
 
-func closeContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 5*time.Second)
+func closeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return lifecycle.WithDetachedTimeout(ctx, 5*time.Second)
 }
 
 func BuildPluginPlan(
@@ -281,7 +284,9 @@ func BuildPluginPlan(
 	var directory registry.Directory
 	defer func() {
 		if directory != nil {
-			_ = directory.Close(context.Background())
+			closeCtx, cancel := closeContext(ctx)
+			_ = directory.Close(closeCtx)
+			cancel()
 		}
 	}()
 	for _, raw := range config.Plugins.Remote {

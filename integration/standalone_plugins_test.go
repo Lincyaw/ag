@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"os"
@@ -21,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -227,45 +230,38 @@ func startPluginProcessEnv(
 	arguments ...string,
 ) *childProcess {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	command := exec.CommandContext(ctx, binary, arguments...)
+	command := exec.Command(binary, arguments...)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if len(environment) > 0 {
 		command.Env = append(os.Environ(), environment...)
 	}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
-		cancel()
 		t.Fatal(err)
 	}
 	stderr := &safeBuffer{}
 	command.Stderr = stderr
 	if err := command.Start(); err != nil {
-		cancel()
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		cancel()
 		if command.ProcessState == nil {
-			_ = command.Process.Kill()
+			killProcessGroup(command, syscall.SIGKILL)
 			_ = command.Wait()
 		}
 	})
-	scanner := bufio.NewScanner(stdout)
-	if !scanner.Scan() {
-		cancel()
+	ready, err := waitPluginReady(stdout, 15*time.Second)
+	if err != nil {
+		killProcessGroup(command, syscall.SIGKILL)
 		_ = command.Wait()
-		t.Fatalf("plugin exited before ready: %v\nstderr:\n%s", scanner.Err(), stderr.String())
-	}
-	var ready pluginhost.Ready
-	if err := json.Unmarshal(scanner.Bytes(), &ready); err != nil {
-		t.Fatalf("decode plugin ready %q: %v", scanner.Text(), err)
+		t.Fatalf("%v\nstderr:\n%s", err, stderr.String())
 	}
 	return &childProcess{command: command, ready: ready, stderr: stderr}
 }
 
 func (process *childProcess) stop(t *testing.T) {
 	t.Helper()
-	if err := process.command.Process.Signal(os.Interrupt); err != nil {
+	if err := signalProcessGroup(process.command, syscall.SIGINT); err != nil {
 		t.Fatalf("interrupt plugin: %v", err)
 	}
 	done := make(chan error, 1)
@@ -276,8 +272,70 @@ func (process *childProcess) stop(t *testing.T) {
 			t.Fatalf("plugin exit: %v\nstderr:\n%s", err, process.stderr.String())
 		}
 	case <-time.After(5 * time.Second):
-		_ = process.command.Process.Kill()
+		killProcessGroup(process.command, syscall.SIGKILL)
 		t.Fatalf("plugin did not stop\nstderr:\n%s", process.stderr.String())
+	}
+}
+
+func waitPluginReady(
+	stdout io.Reader,
+	timeout time.Duration,
+) (pluginhost.Ready, error) {
+	type readyResult struct {
+		ready pluginhost.Ready
+		err   error
+	}
+	ready := make(chan readyResult, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		if !scanner.Scan() {
+			ready <- readyResult{
+				err: fmt.Errorf(
+					"plugin exited before ready: %v",
+					scanner.Err(),
+				),
+			}
+			return
+		}
+		var parsed pluginhost.Ready
+		if err := json.Unmarshal(scanner.Bytes(), &parsed); err != nil {
+			ready <- readyResult{
+				err: fmt.Errorf(
+					"decode plugin ready %q: %w",
+					scanner.Text(),
+					err,
+				),
+			}
+			return
+		}
+		ready <- readyResult{ready: parsed}
+	}()
+	select {
+	case result := <-ready:
+		return result.ready, result.err
+	case <-time.After(timeout):
+		return pluginhost.Ready{}, errors.New("plugin did not become ready")
+	}
+}
+
+func signalProcessGroup(command *exec.Cmd, signal syscall.Signal) error {
+	if command == nil || command.Process == nil {
+		return errors.New("plugin process is not started")
+	}
+	if err := syscall.Kill(-command.Process.Pid, signal); err == nil ||
+		!errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	return command.Process.Signal(signal)
+}
+
+func killProcessGroup(command *exec.Cmd, signal syscall.Signal) {
+	if command == nil || command.Process == nil {
+		return
+	}
+	if err := syscall.Kill(-command.Process.Pid, signal); err != nil &&
+		!errors.Is(err, syscall.ESRCH) {
+		_ = command.Process.Signal(signal)
 	}
 }
 

@@ -52,7 +52,7 @@ func StartRegistry(
 		config.Registry.BackendURI,
 	)
 	if err != nil {
-		closeCtx, cancel := closeContext()
+		closeCtx, cancel := closeContext(ctx)
 		defer cancel()
 		return nil, errors.Join(
 			fmt.Errorf("open registry backend: %w", err),

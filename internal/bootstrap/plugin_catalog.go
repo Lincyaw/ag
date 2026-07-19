@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	appconfig "github.com/lincyaw/ag/internal/config"
-	"github.com/lincyaw/ag/internal/plugincontract"
 	"github.com/lincyaw/ag/registry"
 	"github.com/lincyaw/ag/sdk"
 )
@@ -91,8 +90,10 @@ func (catalog *PluginCatalog) Manifest(
 	if err != nil {
 		return sdk.Manifest{}, err
 	}
-	manifest := plugincontract.CloneManifest(connection.Manifest())
-	return manifest, connection.Close(context.Background())
+	manifest := sdk.CloneManifest(connection.Manifest())
+	closeCtx, cancel := closeContext(ctx)
+	defer cancel()
+	return manifest, connection.Close(closeCtx)
 }
 
 func ResolvePluginSelection(
@@ -121,7 +122,9 @@ func ResolvePluginSelection(
 		config.RegistryNamespace,
 		nameOrURI,
 	)
-	closeErr := directory.Close(context.Background())
+	closeCtx, cancel := closeContext(ctx)
+	closeErr := directory.Close(closeCtx)
+	cancel()
 	if selectErr != nil || closeErr != nil {
 		return nil, errors.Join(selectErr, closeErr)
 	}
@@ -151,9 +154,11 @@ func DiscoverPluginInstances(
 	if listErr == nil && query.InstanceID != "" {
 		instances = filterPluginInstances(instances, query.InstanceID)
 	}
+	closeCtx, cancel := closeContext(ctx)
+	defer cancel()
 	return instances, errors.Join(
 		listErr,
-		directory.Close(context.Background()),
+		directory.Close(closeCtx),
 	)
 }
 
