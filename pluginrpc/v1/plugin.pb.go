@@ -446,12 +446,13 @@ func (x *ProviderSpec) GetModel() string {
 }
 
 type ToolSpec struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Description   string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
-	Parameters    *structpb.Struct       `protobuf:"bytes,3,opt,name=parameters,proto3" json:"parameters,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Name              string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Description       string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	Parameters        *structpb.Struct       `protobuf:"bytes,3,opt,name=parameters,proto3" json:"parameters,omitempty"`
+	InterruptBehavior string                 `protobuf:"bytes,4,opt,name=interrupt_behavior,json=interruptBehavior,proto3" json:"interrupt_behavior,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ToolSpec) Reset() {
@@ -503,6 +504,13 @@ func (x *ToolSpec) GetParameters() *structpb.Struct {
 		return x.Parameters
 	}
 	return nil
+}
+
+func (x *ToolSpec) GetInterruptBehavior() string {
+	if x != nil {
+		return x.InterruptBehavior
+	}
+	return ""
 }
 
 type HookSpec struct {
@@ -3535,13 +3543,14 @@ const file_pluginrpc_v1_plugin_proto_rawDesc = "" +
 	"\x0fmax_api_version\x18\t \x01(\rR\rmaxApiVersion\"8\n" +
 	"\fProviderSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
-	"\x05model\x18\x02 \x01(\tR\x05model\"y\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\"\xa8\x01\n" +
 	"\bToolSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x127\n" +
 	"\n" +
 	"parameters\x18\x03 \x01(\v2\x17.google.protobuf.StructR\n" +
-	"parameters\"\xbb\x01\n" +
+	"parameters\x12-\n" +
+	"\x12interrupt_behavior\x18\x04 \x01(\tR\x11interruptBehavior\"\xbb\x01\n" +
 	"\bHookSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05event\x18\x02 \x01(\tR\x05event\x12\x1a\n" +

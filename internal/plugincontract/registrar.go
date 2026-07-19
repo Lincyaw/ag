@@ -324,6 +324,13 @@ func ValidateToolSpec(spec sdk.ToolSpec) error {
 	if spec.Parameters == nil {
 		return fmt.Errorf("tool %q parameters schema is nil", spec.Name)
 	}
+	if !spec.InterruptBehavior.Valid() {
+		return fmt.Errorf(
+			"tool %q interrupt behavior %q is unsupported",
+			spec.Name,
+			spec.InterruptBehavior,
+		)
+	}
 	return nil
 }
 

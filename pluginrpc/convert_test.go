@@ -19,7 +19,9 @@ func TestSchemaConversionNormalizesGoJSONValues(t *testing.T) {
 		},
 	}
 	converted, err := toProtoToolSpec(sdk.ToolSpec{
-		Name: "list_files", Parameters: parameters,
+		Name:              "list_files",
+		Parameters:        parameters,
+		InterruptBehavior: sdk.ToolInterruptCancel,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -35,6 +37,9 @@ func TestSchemaConversionNormalizesGoJSONValues(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Parameters, want) {
 		t.Fatalf("parameters = %#v, want %#v", got.Parameters, want)
+	}
+	if got.InterruptBehavior != sdk.ToolInterruptCancel {
+		t.Fatalf("interrupt behavior = %q", got.InterruptBehavior)
 	}
 
 	capability, err := toProtoCapabilitySpec(sdk.CapabilitySpec{

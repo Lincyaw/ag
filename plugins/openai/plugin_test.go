@@ -135,8 +135,9 @@ func TestProviderUsesOfficialSDKForTools(t *testing.T) {
 			Content: "read the README",
 		}},
 		Tools: []agentsdk.ToolSpec{{
-			Name:        "read_file",
-			Description: "Read one file.",
+			Name:              "read_file",
+			Description:       "Read one file.",
+			InterruptBehavior: agentsdk.ToolInterruptCancel,
 			Parameters: map[string]any{
 				"type": "object",
 			},
@@ -153,6 +154,10 @@ func TestProviderUsesOfficialSDKForTools(t *testing.T) {
 	tools, ok := body["tools"].([]any)
 	if !ok || len(tools) != 1 {
 		t.Fatalf("tools = %#v", body["tools"])
+	}
+	function := tools[0].(map[string]any)["function"].(map[string]any)
+	if _, exists := function["interrupt_behavior"]; exists {
+		t.Fatalf("tool interrupt behavior leaked into OpenAI function: %#v", function)
 	}
 	if len(response.ToolCalls) != 1 {
 		t.Fatalf("tool calls = %#v", response.ToolCalls)

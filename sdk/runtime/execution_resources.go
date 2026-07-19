@@ -108,12 +108,17 @@ func snapshotToolSpecs(snapshot *registrySnapshot) []sdk.ToolSpec {
 	return specs
 }
 
+type advertisedTool struct {
+	value sdk.Tool
+	spec  sdk.ToolSpec
+}
+
 func resolveAdvertisedTools(
 	snapshot *registrySnapshot,
 	specs []sdk.ToolSpec,
-) ([]sdk.ToolSpec, map[string]sdk.Tool, error) {
+) ([]sdk.ToolSpec, map[string]advertisedTool, error) {
 	result := make([]sdk.ToolSpec, 0, len(specs))
-	index := make(map[string]sdk.Tool, len(specs))
+	index := make(map[string]advertisedTool, len(specs))
 	for _, spec := range specs {
 		if err := plugincontract.ValidateToolSpec(spec); err != nil {
 			return nil, nil, err
@@ -131,8 +136,13 @@ func resolveAdvertisedTools(
 				spec.Name,
 			)
 		}
-		index[spec.Name] = owned.value
-		result = append(result, spec)
+		advertised := sdk.CloneToolSpec(spec)
+		advertised.InterruptBehavior = owned.spec.InterruptBehavior
+		index[spec.Name] = advertisedTool{
+			value: owned.value,
+			spec:  sdk.CloneToolSpec(owned.spec),
+		}
+		result = append(result, advertised)
 	}
 	return result, index, nil
 }
@@ -145,6 +155,7 @@ type preparedToolCall struct {
 	failureKind   string
 	failureReason string
 	forkAnchor    trajectoryForkAnchor
+	interrupt     sdk.ToolInterruptBehavior
 }
 
 type toolCallOutcome struct {
@@ -166,7 +177,7 @@ func (session *Session) prepareToolCall(
 	turn int,
 	index int,
 	rawCall sdk.ToolCall,
-	toolIndex map[string]sdk.Tool,
+	toolIndex map[string]advertisedTool,
 	providerInvocationID string,
 ) (preparedToolCall, error) {
 	payload, before, err := dispatchMutableExecutionEvent(
@@ -192,6 +203,7 @@ func (session *Session) prepareToolCall(
 	prepared := preparedToolCall{
 		call:       call,
 		invocation: invocation,
+		interrupt:  sdk.ToolInterruptBlock,
 	}
 	if err := session.appendTrajectoryWithAudit(
 		ctx,
@@ -225,7 +237,8 @@ func (session *Session) prepareToolCall(
 		)
 		return prepared, nil
 	}
-	asynchronous, ok := tool.(sdk.AsyncTool)
+	prepared.interrupt = tool.spec.EffectiveInterruptBehavior()
+	asynchronous, ok := tool.value.(sdk.AsyncTool)
 	if !ok {
 		prepared.failureKind = "execution_failed"
 		prepared.failureReason = fmt.Sprintf(
@@ -236,6 +249,19 @@ func (session *Session) prepareToolCall(
 	}
 	prepared.asynchronous = asynchronous
 	return prepared, nil
+}
+
+func (call preparedToolCall) cancelsOnContextInjection() bool {
+	return call.interrupt == sdk.ToolInterruptCancel
+}
+
+func toolCallsCancelOnContextInjection(calls []preparedToolCall) bool {
+	for _, call := range calls {
+		if call.cancelsOnContextInjection() {
+			return true
+		}
+	}
+	return false
 }
 
 func (session *Session) submitToolCall(
@@ -281,6 +307,7 @@ func (session *Session) submitToolCall(
 
 func (session *Session) submitToolCalls(
 	ctx context.Context,
+	interruptCtx context.Context,
 	snapshot *registrySnapshot,
 	providerName string,
 	calls []preparedToolCall,
@@ -289,9 +316,13 @@ func (session *Session) submitToolCalls(
 		ctx,
 		len(calls),
 		parallelIndexedOptions{},
-		func(ctx context.Context, index int) error {
+		func(_ context.Context, index int) error {
+			callCtx := ctx
+			if calls[index].cancelsOnContextInjection() {
+				callCtx = interruptCtx
+			}
 			session.submitToolCall(
-				ctx,
+				callCtx,
 				snapshot,
 				providerName,
 				&calls[index],
@@ -314,6 +345,7 @@ func (session *Session) submitToolCalls(
 
 func (session *Session) awaitToolCalls(
 	ctx context.Context,
+	interruptCtx context.Context,
 	calls []preparedToolCall,
 ) []toolCallOutcome {
 	outcomes := make([]toolCallOutcome, len(calls))
@@ -321,7 +353,7 @@ func (session *Session) awaitToolCalls(
 		ctx,
 		len(calls),
 		parallelIndexedOptions{},
-		func(ctx context.Context, index int) error {
+		func(_ context.Context, index int) error {
 			if calls[index].failureKind != "" {
 				outcomes[index].result = sdk.ToolResult{
 					Content: calls[index].failureReason,
@@ -330,9 +362,13 @@ func (session *Session) awaitToolCalls(
 				return nil
 			}
 			call := calls[index]
+			callCtx := ctx
+			if call.cancelsOnContextInjection() {
+				callCtx = interruptCtx
+			}
 			result, err := awaitOperationRequestJSON[sdk.ToolResult](
 				session.runtime,
-				ctx,
+				callCtx,
 				call.operationRequest(),
 				call.initial,
 				call.asynchronous.PollCall,
@@ -342,7 +378,7 @@ func (session *Session) awaitToolCalls(
 			)
 			if err != nil {
 				if errors.Is(
-					context.Cause(ctx),
+					context.Cause(callCtx),
 					errContextInjectionInterrupt,
 				) {
 					err = errContextInjectionInterrupt

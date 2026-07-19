@@ -187,7 +187,7 @@ type providerCall struct {
 	provider   sdk.Provider
 	invocation sdk.Invocation
 	request    sdk.ModelRequest
-	tools      map[string]sdk.Tool
+	tools      map[string]advertisedTool
 }
 
 func (execution *promptExecution) executeTurn(
@@ -409,7 +409,7 @@ func (execution *promptExecution) executeTools(
 	snapshot *registrySnapshot,
 	turn int,
 	calls []sdk.ToolCall,
-	tools map[string]sdk.Tool,
+	tools map[string]advertisedTool,
 	providerInvocationID string,
 	providerName string,
 ) ([]sdk.ToolResult, bool, error) {
@@ -442,15 +442,19 @@ func (execution *promptExecution) executeTools(
 		)
 	}
 	toolCtx, stopToolInterrupt := execution.session.
-		contextInjectionInterruptContext(ctx)
+		contextInjectionInterruptContext(
+			ctx,
+			toolCallsCancelOnContextInjection(prepared),
+		)
 	defer stopToolInterrupt()
 	execution.session.submitToolCalls(
+		ctx,
 		toolCtx,
 		snapshot,
 		providerName,
 		prepared,
 	)
-	outcomes := execution.session.awaitToolCalls(toolCtx, prepared)
+	outcomes := execution.session.awaitToolCalls(ctx, toolCtx, prepared)
 	results := make([]sdk.ToolResult, len(prepared))
 	dependencies := make([]string, len(prepared))
 	interrupted := errors.Is(

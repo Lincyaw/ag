@@ -133,13 +133,15 @@ type hostedContextInjectionTool struct {
 	cancelled  chan struct{}
 	once       sync.Once
 	cancelOnce sync.Once
+	interrupt  sdk.ToolInterruptBehavior
 }
 
 func (tool *hostedContextInjectionTool) Spec() sdk.ToolSpec {
 	return sdk.ToolSpec{
-		Name:        "wait_for_context",
-		Description: "blocks until the test injects hosted context",
-		Parameters:  map[string]any{"type": "object"},
+		Name:              "wait_for_context",
+		Description:       "blocks until the test injects hosted context",
+		Parameters:        map[string]any{"type": "object"},
+		InterruptBehavior: tool.interrupt,
 	}
 }
 
@@ -740,6 +742,114 @@ func TestRuntimeEnqueuesContextIntoHostedExecution(t *testing.T) {
 	}
 }
 
+func TestNowContextInjectionBlocksDefaultToolUntilCompletion(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	trajectories := sdkstorage.NewMemoryTrajectoryStore()
+	runtime, err := NewRuntime(RuntimeConfig{
+		Storage:       testStateBackendWithStores(trajectories, nil),
+		OperationPoll: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	provider := &hostedContextInjectionProvider{}
+	tool := &hostedContextInjectionTool{
+		entered:   make(chan struct{}),
+		release:   make(chan struct{}),
+		cancelled: make(chan struct{}),
+	}
+	mountHostedContextPlugin(
+		t,
+		ctx,
+		runtime,
+		"now-context-block-plugin",
+		"keeps default-block tool running across now context",
+		provider,
+		tool,
+	)
+	session, err := runtime.NewSession(ctx, SessionConfig{
+		ID:       "now-context-block-session",
+		Provider: "hosted-context",
+		MaxTurns: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultC := make(chan Result, 1)
+	errC := make(chan error, 1)
+	go func() {
+		result, promptErr := session.Prompt(ctx, "base prompt")
+		if promptErr != nil {
+			errC <- promptErr
+			return
+		}
+		resultC <- result
+	}()
+	select {
+	case <-tool.entered:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	metadata, err := trajectories.LoadMetadata(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Execution == nil {
+		t.Fatalf("running execution metadata = %#v", metadata.Execution)
+	}
+	if err := runtime.EnqueueContextInjection(
+		ctx,
+		session.ID(),
+		metadata.Execution.ID,
+		sdk.ContextInjection{
+			Priority: sdk.ContextInjectionNow,
+			Mode:     sdk.ContextInjectionPrompt,
+			Origin:   "test",
+			Messages: []sdk.Message{{
+				Role:    sdk.RoleUser,
+				Content: "blocked context",
+			}},
+		},
+	); err != nil {
+		t.Fatalf("enqueue now context: %v", err)
+	}
+	close(tool.release)
+	var result Result
+	select {
+	case err := <-errC:
+		t.Fatal(err)
+	case result = <-resultC:
+	case <-time.After(time.Second):
+		t.Fatal("prompt did not complete")
+	}
+	select {
+	case <-tool.cancelled:
+		t.Fatal("default-block tool was cancelled")
+	default:
+	}
+	if result.Output != "hosted context accepted" {
+		t.Fatalf("result output = %q", result.Output)
+	}
+	requests := provider.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %#v", requests)
+	}
+	second := requests[1].Messages
+	if len(second) < 4 ||
+		second[len(second)-2].Content != "tool done" ||
+		second[len(second)-1].Content != "blocked context" {
+		t.Fatalf("second provider messages = %#v", second)
+	}
+}
+
 func TestNowContextInjectionInterruptsToolAndContinues(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -762,6 +872,7 @@ func TestNowContextInjectionInterruptsToolAndContinues(t *testing.T) {
 	tool := &hostedContextInjectionTool{
 		entered:   make(chan struct{}),
 		cancelled: make(chan struct{}),
+		interrupt: sdk.ToolInterruptCancel,
 	}
 	mountHostedContextPlugin(
 		t,

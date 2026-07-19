@@ -300,7 +300,11 @@ func (queue *contextInjectionQueue) discardExecution(executionID string) {
 
 func (session *Session) contextInjectionInterruptContext(
 	ctx context.Context,
+	enabled bool,
 ) (context.Context, func()) {
+	if !enabled {
+		return ctx, func() {}
+	}
 	executionID, _ := session.activeExecution()
 	if executionID == "" {
 		return ctx, func() {}

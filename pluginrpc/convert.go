@@ -60,9 +60,10 @@ func toProtoToolSpec(spec sdk.ToolSpec) (*pluginv1.ToolSpec, error) {
 		return nil, fmt.Errorf("encode tool %q parameters: %w", spec.Name, err)
 	}
 	return &pluginv1.ToolSpec{
-		Name:        spec.Name,
-		Description: spec.Description,
-		Parameters:  parameters,
+		Name:              spec.Name,
+		Description:       spec.Description,
+		Parameters:        parameters,
+		InterruptBehavior: string(spec.InterruptBehavior),
 	}, nil
 }
 
@@ -72,9 +73,10 @@ func fromProtoToolSpec(spec *pluginv1.ToolSpec) sdk.ToolSpec {
 		parameters = spec.GetParameters().AsMap()
 	}
 	return sdk.ToolSpec{
-		Name:        spec.GetName(),
-		Description: spec.GetDescription(),
-		Parameters:  parameters,
+		Name:              spec.GetName(),
+		Description:       spec.GetDescription(),
+		Parameters:        parameters,
+		InterruptBehavior: sdk.ToolInterruptBehavior(spec.GetInterruptBehavior()),
 	}
 }
 

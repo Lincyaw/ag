@@ -70,15 +70,39 @@ type AsyncProvider interface {
 	CancelCompletion(context.Context, string) (Operation, error)
 }
 
+type ToolInterruptBehavior string
+
+const (
+	ToolInterruptBlock  ToolInterruptBehavior = "block"
+	ToolInterruptCancel ToolInterruptBehavior = "cancel"
+)
+
 type ToolSpec struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Parameters  map[string]any `json:"parameters"`
+	Name              string                `json:"name"`
+	Description       string                `json:"description"`
+	Parameters        map[string]any        `json:"parameters"`
+	InterruptBehavior ToolInterruptBehavior `json:"interrupt_behavior,omitempty"`
 }
 
 func CloneToolSpec(spec ToolSpec) ToolSpec {
 	spec.Parameters = cloneJSONMap(spec.Parameters)
 	return spec
+}
+
+func (spec ToolSpec) EffectiveInterruptBehavior() ToolInterruptBehavior {
+	if spec.InterruptBehavior == "" {
+		return ToolInterruptBlock
+	}
+	return spec.InterruptBehavior
+}
+
+func (behavior ToolInterruptBehavior) Valid() bool {
+	switch behavior {
+	case "", ToolInterruptBlock, ToolInterruptCancel:
+		return true
+	default:
+		return false
+	}
 }
 
 type ToolResult struct {
