@@ -23,6 +23,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+const defaultDuckDBStateFile = "agent-state.duckdb"
+
 type RunningRuntime struct {
 	Runtime   *agentruntime.Runtime
 	telemetry *telemetry.Runtime
@@ -132,7 +134,7 @@ func OpenStateBackend(
 		if err != nil {
 			return nil, fmt.Errorf("resolve state directory: %w", err)
 		}
-		rawURI = (&url.URL{Scheme: "file", Path: directory}).String()
+		rawURI = defaultStateBackendURI(directory)
 	}
 	if namespace != "" {
 		parsed, err := url.Parse(rawURI)
@@ -153,6 +155,31 @@ func OpenStateBackend(
 		rawURI = parsed.String()
 	}
 	return sdkstorage.NewDefaultStorageRegistry().Open(ctx, rawURI)
+}
+
+func defaultStateBackendURI(directory string) string {
+	scheme := "duckdb"
+	path := filepath.Join(directory, defaultDuckDBStateFile)
+	if legacyFileStateExists(directory) {
+		scheme = "file"
+		path = directory
+	}
+	return (&url.URL{Scheme: scheme, Path: path}).String()
+}
+
+func legacyFileStateExists(directory string) bool {
+	patterns := []string{
+		filepath.Join(directory, "trajectories", "*.json"),
+		filepath.Join(directory, "operations", "operations.json"),
+		filepath.Join(directory, "deliveries", "*", "deliveries.json"),
+	}
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err == nil && len(matches) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func RollbackTrajectory(

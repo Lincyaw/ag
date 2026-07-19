@@ -135,7 +135,9 @@ replacement, restrictive permissions, namespace partitions, pagination, and
 retention cleanup. It still rewrites whole JSON state files and should be treated
 as a development, debugging, and compatibility backend. High-frequency
 subscriber delivery, long-running agents, and gateway deployments should use an
-indexed database-backed driver instead of relying on file state growth.
+indexed database-backed driver instead of relying on file state growth. New CLI
+state directories default to DuckDB; explicit `file://` URIs and legacy file
+state directories remain supported for compatibility.
 
 The built-in DuckDB backend stores trajectory metadata, execution cursors,
 immutable entries, operation state, and named delivery queues in normalized

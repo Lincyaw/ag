@@ -100,7 +100,7 @@ func (application *app) writeConfig(loaded appconfig.Loaded) error {
 			return err
 		}
 		if err := writeSection(writer, "State",
-			[2]string{"Backend URI", emptyAs(config.State.BackendURI, "file")},
+			[2]string{"Backend URI", emptyAs(config.State.BackendURI, "duckdb")},
 			[2]string{"Directory", config.State.Directory},
 			[2]string{"Namespace", emptyAs(config.State.Namespace, "default")},
 		); err != nil {

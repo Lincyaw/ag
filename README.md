@@ -177,8 +177,8 @@ ag state prune --before <RFC3339-or-duration>
 ag version
 ```
 
-Use a local DuckDB state backend with indexed trajectory, operation, and
-delivery storage:
+By default, `--state-dir` stores state in a local DuckDB database under that
+directory. Use `--storage` when you need an explicit backend URI:
 
 ```text
 ag --storage 'duckdb:///absolute/path/agent-state.duckdb' run

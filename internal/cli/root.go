@@ -100,7 +100,11 @@ func New(stdout, stderr io.Writer, version string) *cobra.Command {
 		"",
 		"Config file (TOML, YAML, or JSON).",
 	)
-	root.PersistentFlags().String("state-dir", "", "Durable state directory.")
+	root.PersistentFlags().String(
+		"state-dir",
+		"",
+		"Durable state directory for the default DuckDB backend.",
+	)
 	root.PersistentFlags().String(
 		"storage",
 		"",
