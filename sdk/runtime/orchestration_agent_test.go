@@ -253,9 +253,11 @@ func TestExistingForkedAgentSessionMustMatchTrajectoryAncestry(
 ) {
 	parent := &Session{config: SessionConfig{ID: "parent-session"}}
 	invoker := &scopedAgentInvoker{
-		parentSession:    parent,
-		forkHead:         "expected-fork-head",
-		forkInvocationID: "tool-invocation",
+		parentSession: parent,
+		forkAnchor: trajectoryForkAnchor{
+			head:         "expected-fork-head",
+			invocationID: "tool-invocation",
+		},
 	}
 	metadata := sdk.TrajectoryMetadata{
 		ID:            "child-session",
@@ -720,8 +722,10 @@ func TestExistingForkedAgentSessionResumesTrajectoryCheckpoint(
 		parentSession:    parent,
 		parentInvocation: invocation,
 		parentProvider:   parent.config.Provider,
-		forkHead:         parent.head,
-		forkInvocationID: "fork-tool",
+		forkAnchor: trajectoryForkAnchor{
+			head:         parent.head,
+			invocationID: "fork-tool",
+		},
 	}
 	if _, err := initialInvoker.newAgentSession(
 		ctx,
@@ -755,8 +759,10 @@ func TestExistingForkedAgentSessionResumesTrajectoryCheckpoint(
 		parentSession:    parent,
 		parentInvocation: invocation,
 		parentProvider:   parent.config.Provider,
-		forkHead:         parent.head,
-		forkInvocationID: "fork-tool",
+		forkAnchor: trajectoryForkAnchor{
+			head:         parent.head,
+			invocationID: "fork-tool",
+		},
 	}
 	if _, err := resumeInvoker.executeAgentSession(
 		ctx,
@@ -934,8 +940,10 @@ func TestNewForkedAgentSessionInitializesFromParentTrajectoryBranch(
 		parentSession:    parent,
 		parentInvocation: invocation,
 		parentProvider:   parent.config.Provider,
-		forkHead:         head,
-		forkInvocationID: "branch-call",
+		forkAnchor: trajectoryForkAnchor{
+			head:         head,
+			invocationID: "branch-call",
+		},
 	}
 	child, err := invoker.newAgentSession(
 		ctx,
@@ -1145,8 +1153,10 @@ func TestForkedAgentFailureRestoresToExecutionBaseHead(t *testing.T) {
 		parentSession:    parent,
 		parentInvocation: invocation,
 		parentProvider:   parent.config.Provider,
-		forkHead:         head,
-		forkInvocationID: "delegate-call",
+		forkAnchor: trajectoryForkAnchor{
+			head:         head,
+			invocationID: "delegate-call",
+		},
 	}
 	child, err := invoker.newAgentSession(
 		ctx,

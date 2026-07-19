@@ -144,7 +144,7 @@ type preparedToolCall struct {
 	initial       sdk.Operation
 	failureKind   string
 	failureReason string
-	forkHead      string
+	forkAnchor    trajectoryForkAnchor
 }
 
 type toolCallOutcome struct {
@@ -206,7 +206,10 @@ func (session *Session) prepareToolCall(
 	); err != nil {
 		return preparedToolCall{}, err
 	}
-	prepared.forkHead = session.head
+	prepared.forkAnchor = trajectoryForkAnchor{
+		head:         session.head,
+		invocationID: invocation.ID,
+	}
 	if before.Block != nil {
 		prepared.failureKind = before.Block.Kind
 		prepared.failureReason = before.Block.Reason
@@ -250,8 +253,7 @@ func (session *Session) submitToolCall(
 		parentSession:    session,
 		parentInvocation: call.invocation,
 		parentProvider:   providerName,
-		forkHead:         call.forkHead,
-		forkInvocationID: call.invocation.ID,
+		forkAnchor:       call.forkAnchor,
 	}
 	ctx = sdk.WithAgentInvoker(ctx, invoker)
 	ctx = sdk.WithWorkflowInvoker(ctx, invoker)

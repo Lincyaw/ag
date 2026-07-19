@@ -16,8 +16,7 @@ type scopedAgentInvoker struct {
 	parentSession    *Session
 	parentInvocation sdk.Invocation
 	parentProvider   string
-	forkHead         string
-	forkInvocationID string
+	forkAnchor       trajectoryForkAnchor
 }
 
 type agentSessionBinding struct {
@@ -176,8 +175,7 @@ func (invoker *scopedAgentInvoker) bindAgentSession(
 		invoker.parentSession,
 		request.Mode,
 		invocation,
-		invoker.forkHead,
-		invoker.forkInvocationID,
+		invoker.forkAnchor,
 	)
 	if err != nil {
 		return agentSessionBinding{}, err
