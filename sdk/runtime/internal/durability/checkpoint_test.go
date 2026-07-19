@@ -261,6 +261,70 @@ func TestLoadSessionResumeBaseProjectsForkAnchorWithoutOwnedCheckpoint(t *testin
 	}
 }
 
+func TestLoadSessionResumeBaseClosesForkToolCalls(t *testing.T) {
+	t.Parallel()
+
+	checkpoint := sdk.TrajectoryEntry{
+		ID:           "parent-checkpoint",
+		TrajectoryID: "parent",
+		Kind:         sdk.TrajectoryKindCheckpoint,
+		Payload: mustJSON(t, durability.Checkpoint{
+			Messages: []sdk.Message{{
+				Role:    sdk.RoleUser,
+				Content: "base",
+			}},
+		}),
+	}
+	responsePayload := sdk.AfterProviderPayload{
+		Response: &sdk.ModelResponse{
+			Content: "assistant",
+			ToolCalls: []sdk.ToolCall{{
+				ID:        "call-1",
+				Name:      "delegate",
+				Arguments: json.RawMessage(`{}`),
+			}},
+		},
+	}
+	response := sdk.TrajectoryEntry{
+		ID:           "parent-response",
+		TrajectoryID: "parent",
+		ParentID:     checkpoint.ID,
+		Kind:         sdk.TrajectoryKindProviderResponse,
+		Payload:      mustJSON(t, responsePayload),
+	}
+	store := checkpointStore{
+		entries: map[string]sdk.TrajectoryEntry{
+			checkpoint.ID: checkpoint,
+			response.ID:   response,
+		},
+		branches: map[string][]sdk.TrajectoryEntry{
+			"child\x00parent-response": {checkpoint, response},
+		},
+	}
+	base, err := durability.LoadSessionResumeBase(
+		context.Background(),
+		store,
+		sdk.TrajectoryMetadata{
+			ID:            "child",
+			ParentID:      "parent",
+			ParentEntryID: response.ID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(base.Messages) != 3 {
+		t.Fatalf("fork messages = %#v", base.Messages)
+	}
+	placeholder := base.Messages[2]
+	if placeholder.Role != sdk.RoleTool ||
+		placeholder.ToolCallID != "call-1" ||
+		placeholder.Content != durability.ForkToolResultPlaceholder ||
+		placeholder.IsError {
+		t.Fatalf("fork placeholder = %#v", placeholder)
+	}
+}
+
 func TestLoadSessionResumeBaseUsesTerminalExecutionBaseHead(t *testing.T) {
 	t.Parallel()
 

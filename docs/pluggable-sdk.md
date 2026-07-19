@@ -522,9 +522,12 @@ inherits by default and may only be reduced. In the serialized contract,
 `tools: null` means inheritance while `tools: []` explicitly exposes no tools.
 `AgentSessionNew` starts an empty child context;
 `AgentSessionFork` creates a copy-on-write trajectory at the issuing tool-call
-entry and seeds the child with the parent messages. `AgentSessionResume`
-opens an existing child trajectory and appends a new prompt as a new agent
-operation; it does not replay the original creation/fork invocation.
+entry and seeds the child with the parent messages. If the inherited parent
+branch ends with assistant tool calls whose results are not part of the fork
+base, the projection closes them with placeholder tool results before appending
+the child prompt. `AgentSessionResume` opens an existing child trajectory and
+appends a new prompt as a new agent operation; it does not replay the original
+creation/fork invocation.
 Created child trajectories record `parent_session_id`, `origin_invocation_id`,
 and `origin_mode` in the trajectory environment, and resume validates those
 lineage fields before continuing.

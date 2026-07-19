@@ -1110,6 +1110,28 @@ func TestNewForkedAgentSessionInitializesFromParentTrajectoryBranch(
 		!strings.Contains(contents, "post checkpoint assistant") {
 		t.Fatalf("child request did not project parent branch: %s", contents)
 	}
+	toolResultIndex := -1
+	promptIndex := -1
+	for index, message := range childRequest.Messages {
+		if message.Role == sdk.RoleTool &&
+			message.ToolCallID == "branch-call" {
+			toolResultIndex = index
+			if message.Content != durability.ForkToolResultPlaceholder ||
+				message.IsError {
+				t.Fatalf("fork placeholder tool result = %#v", message)
+			}
+		}
+		if message.Role == sdk.RoleUser && message.Content == "child prompt" {
+			promptIndex = index
+		}
+	}
+	if toolResultIndex < 0 || promptIndex < 0 ||
+		toolResultIndex > promptIndex {
+		t.Fatalf(
+			"fork did not close inherited tool call before prompt: %#v",
+			childRequest.Messages,
+		)
+	}
 }
 
 func TestForkedAgentFailureRestoresToExecutionBaseHead(t *testing.T) {

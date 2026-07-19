@@ -236,6 +236,8 @@ type BranchBase struct {
 	Messages []sdk.Message
 }
 
+const ForkToolResultPlaceholder = "Forked agent inherited this parent tool call without its result."
+
 // SessionResumeBase is the durable trajectory projection used to resume a
 // session from a stable branch head. Checkpoint fields are retained because
 // exact resume also rebuilds provider/system state from checkpoint context.
@@ -287,6 +289,12 @@ func LoadSessionResumeBase(
 				)
 			}
 			return SessionResumeBase{}, err
+		}
+		if !preserveCheckpoint {
+			branchBase.Messages = CloseUnresolvedToolCalls(
+				branchBase.Messages,
+				ForkToolResultPlaceholder,
+			)
 		}
 		base.BranchBase = branchBase
 	}
@@ -458,6 +466,60 @@ func LoadBranchBase(
 		Head:     head,
 		Messages: messages,
 	}, nil
+}
+
+// CloseUnresolvedToolCalls appends placeholder tool results before a branch
+// projection crosses from an assistant tool-call message to later context.
+func CloseUnresolvedToolCalls(
+	messages []sdk.Message,
+	placeholder string,
+) []sdk.Message {
+	if placeholder == "" {
+		placeholder = "Tool result omitted from trajectory branch projection."
+	}
+	result := make([]sdk.Message, 0, len(messages))
+	var pending []string
+	flush := func() {
+		for _, id := range pending {
+			result = append(result, sdk.ToolMessage(
+				id,
+				sdk.ToolResult{Content: placeholder},
+			))
+		}
+		pending = pending[:0]
+	}
+	for _, message := range sdk.CloneMessages(messages) {
+		if message.Role != sdk.RoleTool && len(pending) > 0 {
+			flush()
+		}
+		result = append(result, message)
+		switch message.Role {
+		case sdk.RoleAssistant:
+			for _, call := range message.ToolCalls {
+				if call.ID != "" {
+					pending = append(pending, call.ID)
+				}
+			}
+		case sdk.RoleTool:
+			pending = removePendingToolCall(pending, message.ToolCallID)
+		}
+	}
+	flush()
+	return sdk.CloneMessages(result)
+}
+
+func removePendingToolCall(pending []string, id string) []string {
+	if id == "" || len(pending) == 0 {
+		return pending
+	}
+	for index, candidate := range pending {
+		if candidate != id {
+			continue
+		}
+		copy(pending[index:], pending[index+1:])
+		return pending[:len(pending)-1]
+	}
+	return pending
 }
 
 // BranchMessages projects the conversation visible at the supplied branch head.
