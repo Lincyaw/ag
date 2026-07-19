@@ -772,8 +772,10 @@ The `decide` event may return:
 - `Inject(messages)`.
 
 For a final kernel cause, hook actions are observed but cannot override the
-default. Otherwise all `Inject` messages are concatenated in hook order. With
-no injection the last `Stop` wins, then any `Step`, then the default action.
+default. Otherwise any `Stop` is an execution-control fence and wins over
+`Inject`; among `Stop` actions the last one wins. With no `Stop`, all `Inject`
+messages are concatenated in hook order, then any `Step`, then the default
+action.
 
 ## RPC protocol
 

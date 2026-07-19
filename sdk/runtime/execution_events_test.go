@@ -290,7 +290,7 @@ func TestPromptPersistsHookAuditOnTrajectoryEntries(t *testing.T) {
 		decision.Audit[0].Resolution.Outcome != sdk.EffectResolutionAction ||
 		decision.Audit[0].Resolution.Action == nil ||
 		decision.Audit[0].Resolution.Action.CauseCode != "policy_stop" ||
-		decision.Audit[0].Resolution.ActionRule != "first_stop" ||
+		decision.Audit[0].Resolution.ActionRule != "last_stop" ||
 		!reflect.DeepEqual(decision.Audit[0].Resolution.ActionSteps, []int{0}) {
 		t.Fatalf("decision audit = %#v", decision.Audit)
 	}
@@ -651,9 +651,9 @@ func TestResolveActionAuditRules(t *testing.T) {
 	)
 	if stopped.Kind != sdk.ActionStop ||
 		stopped.Cause == nil ||
-		stopped.Cause.Code != "first_stop" ||
-		resolution.ActionRule != "first_stop" ||
-		!reflect.DeepEqual(resolution.ActionSteps, []int{8}) {
+		stopped.Cause.Code != "second_stop" ||
+		resolution.ActionRule != "last_stop" ||
+		!reflect.DeepEqual(resolution.ActionSteps, []int{10}) {
 		t.Fatalf("stop resolution action=%#v resolution=%#v", stopped, resolution)
 	}
 
