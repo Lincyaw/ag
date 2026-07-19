@@ -26,6 +26,7 @@ import (
 )
 
 const defaultDuckDBStateFile = "agent-state.duckdb"
+const defaultSQLiteStateFile = "agent-state.db"
 
 type RunningRuntime struct {
 	Runtime   *agentruntime.Runtime
@@ -44,6 +45,7 @@ type StateBackendSource string
 const (
 	StateBackendExplicitURI        StateBackendSource = "explicit"
 	StateBackendDefaultDuckDB      StateBackendSource = "default_duckdb"
+	StateBackendDefaultSQLite      StateBackendSource = "default_sqlite"
 	StateBackendLegacyFileFallback StateBackendSource = "legacy_file_fallback"
 )
 
@@ -101,7 +103,7 @@ func StartRuntime(
 			"backend",
 			storage.String(),
 			"recommended_backend",
-			"duckdb",
+			"sqlite",
 		)
 	}
 	runtime, err := agentruntime.NewRuntimeContext(ctx, agentruntime.RuntimeConfig{
@@ -215,17 +217,38 @@ func OpenResolvedStateBackend(
 func defaultStateBackendURI(
 	directory string,
 ) (string, StateBackendSource) {
+	// Prefer existing DuckDB state for backwards compatibility.
 	duckDBPath := filepath.Join(directory, defaultDuckDBStateFile)
-	if defaultDuckDBStateExists(duckDBPath) || !legacyFileStateExists(directory) {
+	if defaultDuckDBStateExists(duckDBPath) {
 		return (&url.URL{
 			Scheme: "duckdb",
 			Path:   duckDBPath,
 		}).String(), StateBackendDefaultDuckDB
 	}
+	// Prefer existing SQLite state over legacy file fallback.
+	sqlitePath := filepath.Join(directory, defaultSQLiteStateFile)
+	if defaultSQLiteStateExists(sqlitePath) {
+		return (&url.URL{
+			Scheme: "sqlite",
+			Path:   sqlitePath,
+		}).String(), StateBackendDefaultSQLite
+	}
+	// Use SQLite as the default for new installations.
+	if !legacyFileStateExists(directory) {
+		return (&url.URL{
+			Scheme: "sqlite",
+			Path:   sqlitePath,
+		}).String(), StateBackendDefaultSQLite
+	}
 	return (&url.URL{
 		Scheme: "file",
 		Path:   directory,
 	}).String(), StateBackendLegacyFileFallback
+}
+
+func defaultSQLiteStateExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func defaultDuckDBStateExists(path string) bool {

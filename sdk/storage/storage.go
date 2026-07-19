@@ -31,6 +31,7 @@ func NewDefaultStorageRegistry() *StorageRegistry {
 		"memory":     memoryStorageDriver{},
 		"postgres":   postgresStorageDriver{scheme: "postgres"},
 		"postgresql": postgresStorageDriver{scheme: "postgresql"},
+		"sqlite":     sqliteStorageDriver{},
 	}}
 }
 

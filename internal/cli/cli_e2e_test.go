@@ -52,8 +52,10 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 		firstOutput.Result.Turns != 2 || firstOutput.Result.ToolCalls != 2 {
 		t.Fatalf("first output = %#v", firstOutput)
 	}
-	if _, err := os.Stat(filepath.Join(state, "agent-state.duckdb")); err != nil {
-		t.Fatalf("durable DuckDB state missing: %v", err)
+	_, sqliteErr := os.Stat(filepath.Join(state, "agent-state.db"))
+	_, duckdbErr := os.Stat(filepath.Join(state, "agent-state.duckdb"))
+	if sqliteErr != nil && duckdbErr != nil {
+		t.Fatalf("durable state missing: sqlite=%v duckdb=%v", sqliteErr, duckdbErr)
 	}
 
 	requests := server.requests(t)
