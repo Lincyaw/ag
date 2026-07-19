@@ -25,6 +25,7 @@ type Config struct {
 	Workspace     Workspace     `mapstructure:"workspace" json:"workspace" yaml:"workspace"`
 	Bash          Bash          `mapstructure:"bash" json:"bash" yaml:"bash"`
 	Compact       Compact       `mapstructure:"compact" json:"compact" yaml:"compact"`
+	HostFS        HostFS        `mapstructure:"hostfs" json:"hostfs" yaml:"hostfs"`
 	Plugins       Plugins       `mapstructure:"plugins" json:"plugins" yaml:"plugins"`
 	Registry      Registry      `mapstructure:"registry" json:"registry" yaml:"registry"`
 	Gateway       Gateway       `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
@@ -100,6 +101,14 @@ type Compact struct {
 	KeepRecentMessages int  `mapstructure:"keep_recent_messages" json:"keep_recent_messages" yaml:"keep_recent_messages"`
 	MaxMessageChars    int  `mapstructure:"max_message_chars" json:"max_message_chars" yaml:"max_message_chars"`
 	MaxToolResultChars int  `mapstructure:"max_tool_result_chars" json:"max_tool_result_chars" yaml:"max_tool_result_chars"`
+}
+
+type HostFS struct {
+	Enabled      bool     `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
+	Roots        []string `mapstructure:"roots" json:"roots" yaml:"roots"`
+	MaxReadBytes int64    `mapstructure:"max_read_bytes" json:"max_read_bytes" yaml:"max_read_bytes"`
+	MaxEntries   int      `mapstructure:"max_entries" json:"max_entries" yaml:"max_entries"`
+	MaxDepth     int      `mapstructure:"max_depth" json:"max_depth" yaml:"max_depth"`
 }
 
 type Plugins struct {
@@ -240,6 +249,9 @@ func (c Config) Validate() error {
 		c.Compact.MaxMessageChars < 1 || c.Compact.MaxToolResultChars < 1) {
 		return errors.New("compact limits must be positive")
 	}
+	if c.HostFS.Enabled && (c.HostFS.MaxReadBytes < 1 || c.HostFS.MaxEntries < 1 || c.HostFS.MaxDepth < 0) {
+		return errors.New("hostfs limits are invalid")
+	}
 	if strings.TrimSpace(c.State.Directory) == "" &&
 		strings.TrimSpace(c.State.BackendURI) == "" {
 		return errors.New("state.directory or state.backend_uri is required")
@@ -331,6 +343,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("compact.keep_recent_messages", 16)
 	v.SetDefault("compact.max_message_chars", 2_000)
 	v.SetDefault("compact.max_tool_result_chars", 4_000)
+	v.SetDefault("hostfs.enabled", false)
+	v.SetDefault("hostfs.roots", []string{"/"})
+	v.SetDefault("hostfs.max_read_bytes", 1<<20)
+	v.SetDefault("hostfs.max_entries", 500)
+	v.SetDefault("hostfs.max_depth", 3)
 	v.SetDefault("plugins.remote", []string{})
 	v.SetDefault("plugins.registry_uri", "")
 	v.SetDefault("plugins.registry_namespace", "default")
@@ -396,6 +413,11 @@ func bindFlags(v *viper.Viper, flags *pflag.FlagSet) error {
 		"bash.max_timeout":            "bash-max-timeout",
 		"bash.max_output_bytes":       "bash-max-output-bytes",
 		"compact.enabled":             "compact",
+		"hostfs.enabled":              "hostfs",
+		"hostfs.roots":                "hostfs-root",
+		"hostfs.max_read_bytes":       "hostfs-max-read-bytes",
+		"hostfs.max_entries":          "hostfs-max-entries",
+		"hostfs.max_depth":            "hostfs-max-depth",
 		"plugins.remote":              "plugin",
 		"plugins.registry_uri":        "registry-uri",
 		"plugins.registry_namespace":  "registry-namespace",

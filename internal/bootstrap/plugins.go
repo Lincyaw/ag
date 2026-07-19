@@ -7,6 +7,7 @@ import (
 	"github.com/lincyaw/ag/plugins/bash"
 	"github.com/lincyaw/ag/plugins/compact"
 	fileplugin "github.com/lincyaw/ag/plugins/file"
+	"github.com/lincyaw/ag/plugins/hostfs"
 	"github.com/lincyaw/ag/plugins/openai"
 	otelplugin "github.com/lincyaw/ag/plugins/otel"
 	"github.com/lincyaw/ag/sdk"
@@ -20,7 +21,7 @@ func configuredLocalPlugins(
 	tracer trace.Tracer,
 	meter metric.Meter,
 ) ([]sdk.Plugin, error) {
-	plugins := make([]sdk.Plugin, 0, 5)
+	plugins := make([]sdk.Plugin, 0, 6)
 	if config.Observability.Enabled {
 		plugin, err := otelplugin.New(otelplugin.Config{
 			Logger: logger,
@@ -56,6 +57,14 @@ func configuredLocalPlugins(
 			MaxReadBytes:  config.Workspace.MaxReadBytes,
 			MaxWriteBytes: config.Workspace.MaxWriteBytes,
 			MaxEntries:    config.Workspace.MaxEntries,
+		}))
+	}
+	if config.HostFS.Enabled {
+		plugins = append(plugins, hostfs.New(hostfs.Config{
+			Roots:        config.HostFS.Roots,
+			MaxReadBytes: config.HostFS.MaxReadBytes,
+			MaxEntries:   config.HostFS.MaxEntries,
+			MaxDepth:     config.HostFS.MaxDepth,
 		}))
 	}
 	if config.Bash.Enabled {

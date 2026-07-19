@@ -214,6 +214,11 @@ func addRunConfigFlags(flags *pflag.FlagSet) {
 	flags.Duration("bash-max-timeout", 0, "Maximum bash operation timeout.")
 	flags.Int64("bash-max-output-bytes", 0, "Maximum retained bytes per bash output stream.")
 	flags.Bool("compact", true, "Mount automatic prompt compaction.")
+	flags.Bool("hostfs", false, "Mount read-only absolute-path host filesystem tools.")
+	flags.StringSlice("hostfs-root", nil, "Allowed hostfs root (repeatable); defaults to / when hostfs is enabled.")
+	flags.Int64("hostfs-max-read-bytes", 0, "Maximum bytes per hostfs file read.")
+	flags.Int("hostfs-max-entries", 0, "Maximum entries returned by hostfs_tree.")
+	flags.Int("hostfs-max-depth", 0, "Maximum directory depth for hostfs_tree.")
 	addPluginConfigFlags(flags)
 }
 
