@@ -29,21 +29,29 @@ type DispatchResult struct {
 }
 
 type eventDispatchOptions struct {
-	postCommit                       bool
-	enqueueSubscriberDeliveries      bool
-	warnSubscriberDeliveryFailures   bool
-	runtimeOwnedSubscriberDeliveries bool
+	scope                       eventDispatchScope
+	enqueueSubscriberDeliveries bool
 }
 
+type eventDispatchScope uint8
+
+const (
+	eventDispatchEmit eventDispatchScope = iota
+	eventDispatchExecution
+	eventDispatchPostCommit
+)
+
 func emitEventDispatchOptions() eventDispatchOptions {
-	return eventDispatchOptions{enqueueSubscriberDeliveries: true}
+	return eventDispatchOptions{
+		scope:                       eventDispatchEmit,
+		enqueueSubscriberDeliveries: true,
+	}
 }
 
 func executionEventDispatchOptions() eventDispatchOptions {
 	return eventDispatchOptions{
-		enqueueSubscriberDeliveries:      true,
-		warnSubscriberDeliveryFailures:   true,
-		runtimeOwnedSubscriberDeliveries: true,
+		scope:                       eventDispatchExecution,
+		enqueueSubscriberDeliveries: true,
 	}
 }
 
@@ -51,14 +59,13 @@ func postCommitEventDispatchOptions(
 	delivery postCommitDelivery,
 ) eventDispatchOptions {
 	return eventDispatchOptions{
-		postCommit:                       true,
-		enqueueSubscriberDeliveries:      delivery.enqueueAfterDispatch(),
-		runtimeOwnedSubscriberDeliveries: true,
+		scope:                       eventDispatchPostCommit,
+		enqueueSubscriberDeliveries: delivery.enqueueAfterDispatch(),
 	}
 }
 
 func (options eventDispatchOptions) isPostCommit() bool {
-	return options.postCommit
+	return options.scope == eventDispatchPostCommit
 }
 
 func (options eventDispatchOptions) enqueueSubscribers() bool {
@@ -66,13 +73,13 @@ func (options eventDispatchOptions) enqueueSubscribers() bool {
 }
 
 func (options eventDispatchOptions) returnSubscriberFailures() bool {
-	return !options.warnSubscriberDeliveryFailures
+	return options.scope != eventDispatchExecution
 }
 
 func (options eventDispatchOptions) subscriberDeliveryContext(
 	ctx context.Context,
 ) context.Context {
-	if options.runtimeOwnedSubscriberDeliveries {
+	if options.scope != eventDispatchEmit {
 		return afterDispatchEventContext(ctx)
 	}
 	return ctx
