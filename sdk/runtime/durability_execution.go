@@ -73,7 +73,7 @@ func (session *Session) beginExecution(
 				ID:       executionID,
 				Provider: session.config.Provider,
 				System:   session.config.System,
-				MaxTurns: session.config.MaxTurns,
+				MaxTurns: effectiveMaxTurns(session.config.MaxTurns),
 			},
 			Input: entry,
 		},
@@ -882,10 +882,12 @@ func agentEndPayloadFromResult(
 		ContextInjections: sdk.CloneContextInjections(
 			result.ContextInjections,
 		),
-		Output:    output,
-		Turns:     result.Turns,
-		ToolCalls: result.ToolCalls,
-		Cause:     cause,
+		Output:       output,
+		Turns:        result.Turns,
+		ToolCalls:    result.ToolCalls,
+		InputTokens:  result.InputTokens,
+		OutputTokens: result.OutputTokens,
+		Cause:        cause,
 	}
 }
 

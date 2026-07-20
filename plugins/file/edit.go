@@ -186,7 +186,7 @@ func applyEdit(
 		count := strings.Count(source, *arguments.OldText)
 		switch {
 		case count == 0:
-			return "", 0, 0, errors.New("old_text was not found exactly")
+			return "", 0, 0, errors.New("old_text was not found exactly; re-read the file with read_file and use start_line/end_line instead")
 		case count > 1 && !arguments.ReplaceAll:
 			return "", 0, 0, fmt.Errorf(
 				"old_text matched %d locations; provide more context or set replace_all",

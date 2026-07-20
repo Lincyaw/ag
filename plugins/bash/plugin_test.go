@@ -21,20 +21,20 @@ import (
 
 func TestBashToolExecutesInRootWithExplicitEnvironment(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("AGENTM_UNEXPOSED_SECRET", "do-not-leak")
+	t.Setenv("AGENTM_INHERITED_VAR", "inherited-value")
 	runner := mustRunner(t, Config{
 		Root:        root,
 		Environment: []string{"EXPLICIT_VALUE=visible"},
 	})
 	result := call(t, runner, map[string]any{
-		"command": `printf 'cwd=%s\nsecret=%s\nexplicit=%s\n' "$PWD" "${AGENTM_UNEXPOSED_SECRET-unset}" "$EXPLICIT_VALUE"`,
+		"command": `printf 'cwd=%s\ninherited=%s\nexplicit=%s\n' "$PWD" "$AGENTM_INHERITED_VAR" "$EXPLICIT_VALUE"`,
 	})
 	if result.IsError {
 		t.Fatalf("command unexpectedly failed: %s", result.Content)
 	}
 	for _, expected := range []string{
 		"cwd=" + runner.root,
-		"secret=unset",
+		"inherited=inherited-value",
 		"explicit=visible",
 		"exit_code: 0",
 	} {

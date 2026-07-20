@@ -43,7 +43,6 @@ func New(config Config) sdk.Plugin { return &plugin{config: config} }
 func (plugin *plugin) Manifest() sdk.Manifest {
 	registers := []string{
 		sdk.ToolResource("read_file"),
-		sdk.ToolResource("list_files"),
 		sdk.ToolResource("search_files"),
 	}
 	if plugin.config.EnableWrite {
@@ -71,9 +70,6 @@ func (plugin *plugin) Install(
 		return err
 	}
 	if err := registrar.RegisterTool(readTool{filesystem: filesystem}); err != nil {
-		return err
-	}
-	if err := registrar.RegisterTool(listTool{filesystem: filesystem}); err != nil {
 		return err
 	}
 	if err := registrar.RegisterTool(searchTool{filesystem: filesystem}); err != nil {

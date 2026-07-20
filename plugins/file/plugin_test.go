@@ -53,7 +53,6 @@ func TestFileToolsAcceptRelativeAndAbsolutePathsAndEnforceBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	read := readTool{filesystem: filesystem}
-	list := listTool{filesystem: filesystem}
 	search := searchTool{filesystem: filesystem}
 	write := writeTool{filesystem: filesystem}
 
@@ -64,11 +63,11 @@ func TestFileToolsAcceptRelativeAndAbsolutePathsAndEnforceBounds(t *testing.T) {
 		t.Fatalf("read = %#v, %v", result, err)
 	}
 	absoluteResult, err := read.Call(ctx, json.RawMessage(`{"path":"`+filepath.ToSlash(filepath.Join(outside, "secret.txt"))+`"}`))
-	if err != nil || absoluteResult.IsError || !strings.Contains(absoluteResult.Content, "1	secret") {
+	if err != nil || absoluteResult.IsError || !strings.Contains(absoluteResult.Content, "1\tsecret") {
 		t.Fatalf("absolute read = %#v, %v", absoluteResult, err)
 	}
 	traversalResult, err := read.Call(ctx, json.RawMessage(`{"path":"../outside/secret.txt"}`))
-	if err != nil || traversalResult.IsError || !strings.Contains(traversalResult.Content, "1	secret") {
+	if err != nil || traversalResult.IsError || !strings.Contains(traversalResult.Content, "1\tsecret") {
 		t.Fatalf("parent traversal read = %#v, %v", traversalResult, err)
 	}
 	for name, arguments := range map[string]string{
@@ -85,16 +84,12 @@ func TestFileToolsAcceptRelativeAndAbsolutePathsAndEnforceBounds(t *testing.T) {
 			}
 		})
 	}
-	absoluteList, err := list.Call(ctx, json.RawMessage(`{"path":"`+filepath.ToSlash(outside)+`"}`))
-	if err != nil || absoluteList.IsError || !strings.Contains(absoluteList.Content, "file	secret.txt") {
-		t.Fatalf("absolute list = %#v, %v", absoluteList, err)
-	}
 	searchResult, err := search.Call(ctx, json.RawMessage(`{"path":"`+filepath.ToSlash(outside)+`","query":"secret"}`))
 	if err != nil || searchResult.IsError || !strings.Contains(searchResult.Content, "secret.txt:1:1: secret") {
 		t.Fatalf("absolute search = %#v, %v", searchResult, err)
 	}
-	if result, err := list.Call(ctx, []byte(`{"path":"outside-link"}`)); err != nil || !result.IsError {
-		t.Fatalf("listing a dangling workspace-relative symlink = %#v, %v", result, err)
+	if result, err := search.Call(ctx, []byte(`{"path":"outside-link","query":"x"}`)); err != nil || !result.IsError {
+		t.Fatalf("searching a dangling workspace-relative symlink = %#v, %v", result, err)
 	}
 	absoluteWrite := callToolForTest(t, write, map[string]any{
 		"path": filepath.Join(outside, "created.txt"), "content": "made",
@@ -205,8 +200,8 @@ func TestConcurrentWritesAreAtomicAndPluginManifestMatchesMode(t *testing.T) {
 		enableWrite bool
 		toolCount   int
 	}{
-		{name: "read-only", toolCount: 3},
-		{name: "writable", enableWrite: true, toolCount: 5},
+		{name: "read-only", toolCount: 2},
+		{name: "writable", enableWrite: true, toolCount: 4},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runtime, err := agentruntime.NewRuntime(agentruntime.RuntimeConfig{

@@ -19,7 +19,7 @@ func TestSchemaConversionNormalizesGoJSONValues(t *testing.T) {
 		},
 	}
 	converted, err := toProtoToolSpec(sdk.ToolSpec{
-		Name:              "list_files",
+		Name:              "search_files",
 		Parameters:        parameters,
 		InterruptBehavior: sdk.ToolInterruptCancel,
 	})

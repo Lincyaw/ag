@@ -138,7 +138,8 @@ func (runtime *Runtime) observeOperation(
 				current,
 			)
 		}
-		return sdk.Operation{}, err
+		// Watch returned a transient error; fall back to poll.
+		return runtime.waitAndPollAwaitedOperation(ctx, await, current)
 	}
 	return runtime.waitAndPollAwaitedOperation(ctx, await, current)
 }

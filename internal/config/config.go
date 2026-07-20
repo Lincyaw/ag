@@ -20,18 +20,29 @@ const (
 )
 
 type Config struct {
-	Agent         Agent         `mapstructure:"agent" json:"agent" yaml:"agent"`
-	OpenAI        OpenAI        `mapstructure:"openai" json:"openai" yaml:"openai"`
-	Workspace     Workspace     `mapstructure:"workspace" json:"workspace" yaml:"workspace"`
-	Bash          Bash          `mapstructure:"bash" json:"bash" yaml:"bash"`
-	Compact       Compact       `mapstructure:"compact" json:"compact" yaml:"compact"`
-	HostFS        HostFS        `mapstructure:"hostfs" json:"hostfs" yaml:"hostfs"`
-	Plugins       Plugins       `mapstructure:"plugins" json:"plugins" yaml:"plugins"`
-	Registry      Registry      `mapstructure:"registry" json:"registry" yaml:"registry"`
-	Gateway       Gateway       `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
-	State         State         `mapstructure:"state" json:"state" yaml:"state"`
-	Observability Observability `mapstructure:"observability" json:"observability" yaml:"observability"`
-	Logging       Logging       `mapstructure:"logging" json:"logging" yaml:"logging"`
+	DefaultModel  string                  `mapstructure:"default_model" json:"default_model,omitempty" yaml:"default_model,omitempty"`
+	Models        map[string]ModelProfile `mapstructure:"models" json:"models,omitempty" yaml:"models,omitempty"`
+	Agent         Agent                   `mapstructure:"agent" json:"agent" yaml:"agent"`
+	OpenAI        OpenAI                  `mapstructure:"openai" json:"openai" yaml:"openai"`
+	Workspace     Workspace               `mapstructure:"workspace" json:"workspace" yaml:"workspace"`
+	Bash          Bash                    `mapstructure:"bash" json:"bash" yaml:"bash"`
+	Compact       Compact                 `mapstructure:"compact" json:"compact" yaml:"compact"`
+	Tree          Tree                    `mapstructure:"tree" json:"tree" yaml:"tree"`
+	HostFS        HostFS                  `mapstructure:"hostfs" json:"hostfs" yaml:"hostfs"`
+	Plugins       Plugins                 `mapstructure:"plugins" json:"plugins" yaml:"plugins"`
+	Registry      Registry                `mapstructure:"registry" json:"registry" yaml:"registry"`
+	Gateway       Gateway                 `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
+	State         State                   `mapstructure:"state" json:"state" yaml:"state"`
+	Observability Observability           `mapstructure:"observability" json:"observability" yaml:"observability"`
+	Logging       Logging                 `mapstructure:"logging" json:"logging" yaml:"logging"`
+}
+
+type ModelProfile struct {
+	Model         string `mapstructure:"model" json:"model" yaml:"model"`
+	BaseURL       string `mapstructure:"base_url" json:"base_url" yaml:"base_url"`
+	APIKey        string `mapstructure:"api_key" json:"api_key" yaml:"api_key"`
+	MaxRetries    int    `mapstructure:"max_retries" json:"max_retries,omitempty" yaml:"max_retries,omitempty"`
+	ContextWindow int    `mapstructure:"context_window" json:"context_window,omitempty" yaml:"context_window,omitempty"`
 }
 
 type Agent struct {
@@ -101,6 +112,12 @@ type Compact struct {
 	KeepRecentMessages int  `mapstructure:"keep_recent_messages" json:"keep_recent_messages" yaml:"keep_recent_messages"`
 	MaxMessageChars    int  `mapstructure:"max_message_chars" json:"max_message_chars" yaml:"max_message_chars"`
 	MaxToolResultChars int  `mapstructure:"max_tool_result_chars" json:"max_tool_result_chars" yaml:"max_tool_result_chars"`
+}
+
+type Tree struct {
+	Enabled    bool `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
+	MaxEntries int  `mapstructure:"max_entries" json:"max_entries" yaml:"max_entries"`
+	MaxDepth   int  `mapstructure:"max_depth" json:"max_depth" yaml:"max_depth"`
 }
 
 type HostFS struct {
@@ -205,6 +222,7 @@ func Load(options LoadOptions) (Loaded, error) {
 	if err := v.UnmarshalExact(&values); err != nil {
 		return Loaded{}, fmt.Errorf("decode config: %w", err)
 	}
+	values.resolveModelProfile()
 	if err := values.Validate(); err != nil {
 		return Loaded{}, err
 	}
@@ -220,11 +238,11 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Agent.Provider) == "" {
 		return errors.New("agent.provider is required")
 	}
-	if c.Agent.MaxTurns < 1 {
-		return errors.New("agent.max_turns must be positive")
+	if c.Agent.MaxTurns < 0 {
+		return errors.New("agent.max_turns cannot be negative")
 	}
-	if c.Agent.Timeout <= 0 {
-		return errors.New("agent.timeout must be positive")
+	if c.Agent.Timeout < 0 {
+		return errors.New("agent.timeout cannot be negative")
 	}
 	if c.OpenAI.Enabled && strings.TrimSpace(c.OpenAI.Model) == "" {
 		return errors.New("openai.model is required")
@@ -248,6 +266,9 @@ func (c Config) Validate() error {
 		c.Compact.TargetTokens < 1 || c.Compact.KeepRecentMessages < 1 ||
 		c.Compact.MaxMessageChars < 1 || c.Compact.MaxToolResultChars < 1) {
 		return errors.New("compact limits must be positive")
+	}
+	if c.Tree.Enabled && (c.Tree.MaxEntries < 1 || c.Tree.MaxDepth < 0) {
+		return errors.New("tree limits are invalid")
 	}
 	if c.HostFS.Enabled && (c.HostFS.MaxReadBytes < 1 || c.HostFS.MaxEntries < 1 || c.HostFS.MaxDepth < 0) {
 		return errors.New("hostfs limits are invalid")
@@ -308,6 +329,39 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// resolveModelProfile applies a named model profile to the OpenAI config.
+// If openai.model matches a profile key, that profile is used. Otherwise
+// default_model selects the profile. When neither matches, openai.model is
+// treated as a literal model name (backward-compatible).
+func (c *Config) resolveModelProfile() {
+	if len(c.Models) == 0 {
+		return
+	}
+	name := strings.TrimSpace(c.OpenAI.Model)
+	if _, ok := c.Models[name]; !ok {
+		name = strings.TrimSpace(c.DefaultModel)
+	}
+	if name == "" {
+		return
+	}
+	profile, ok := c.Models[name]
+	if !ok {
+		return
+	}
+	if profile.Model != "" {
+		c.OpenAI.Model = profile.Model
+	}
+	if profile.BaseURL != "" {
+		c.OpenAI.BaseURL = profile.BaseURL
+	}
+	if profile.APIKey != "" {
+		c.OpenAI.APIKey = profile.APIKey
+	}
+	if profile.MaxRetries > 0 {
+		c.OpenAI.MaxRetries = profile.MaxRetries
+	}
+}
+
 func (l Loaded) Path() string {
 	if l.File != "" {
 		return l.File
@@ -316,10 +370,11 @@ func (l Loaded) Path() string {
 }
 
 func setDefaults(v *viper.Viper) {
+	v.SetDefault("default_model", "")
 	v.SetDefault("agent.system", DefaultSystem)
 	v.SetDefault("agent.provider", "openai")
-	v.SetDefault("agent.max_turns", 8)
-	v.SetDefault("agent.timeout", "5m")
+	v.SetDefault("agent.max_turns", 0)
+	v.SetDefault("agent.timeout", "0s")
 	v.SetDefault("openai.enabled", true)
 	v.SetDefault("openai.model", "gpt-5-mini")
 	v.SetDefault("openai.api_key", "")
@@ -327,11 +382,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("openai.max_retries", 2)
 	v.SetDefault("workspace.root", ".")
 	v.SetDefault("workspace.enabled", true)
-	v.SetDefault("workspace.enable_write", false)
+	v.SetDefault("workspace.enable_write", true)
 	v.SetDefault("workspace.max_read_bytes", 1<<20)
 	v.SetDefault("workspace.max_write_bytes", 1<<20)
 	v.SetDefault("workspace.max_entries", 1000)
-	v.SetDefault("bash.enabled", false)
+	v.SetDefault("bash.enabled", true)
 	v.SetDefault("bash.shell", "/bin/sh")
 	v.SetDefault("bash.default_timeout", "30s")
 	v.SetDefault("bash.max_timeout", "5m")
@@ -343,6 +398,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("compact.keep_recent_messages", 16)
 	v.SetDefault("compact.max_message_chars", 2_000)
 	v.SetDefault("compact.max_tool_result_chars", 4_000)
+	v.SetDefault("tree.enabled", true)
+	v.SetDefault("tree.max_entries", 500)
+	v.SetDefault("tree.max_depth", 4)
 	v.SetDefault("hostfs.enabled", false)
 	v.SetDefault("hostfs.roots", []string{"/"})
 	v.SetDefault("hostfs.max_read_bytes", 1<<20)
@@ -413,6 +471,9 @@ func bindFlags(v *viper.Viper, flags *pflag.FlagSet) error {
 		"bash.max_timeout":            "bash-max-timeout",
 		"bash.max_output_bytes":       "bash-max-output-bytes",
 		"compact.enabled":             "compact",
+		"tree.enabled":                "tree",
+		"tree.max_entries":            "tree-max-entries",
+		"tree.max_depth":              "tree-max-depth",
 		"hostfs.enabled":              "hostfs",
 		"hostfs.roots":                "hostfs-root",
 		"hostfs.max_read_bytes":       "hostfs-max-read-bytes",

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 const (
@@ -80,14 +80,14 @@ func (model progressModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.width = value.Width
 		model.height = value.Height
 		return model, nil
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return model.handleKey(value)
 	default:
 		return model, nil
 	}
 }
 
-func (model progressModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (model progressModel) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "ctrl+c":
 		if model.cancel != nil {
@@ -206,9 +206,9 @@ func (model *progressModel) apply(record progressRecord) {
 	}
 }
 
-func (model progressModel) View() string {
+func (model progressModel) View() tea.View {
 	if model.done {
-		return ""
+		return tea.NewView("")
 	}
 	width := model.effectiveWidth()
 	var output strings.Builder
@@ -223,7 +223,7 @@ func (model progressModel) View() string {
 		output.WriteByte('\n')
 		output.WriteString(model.renderHelp(width))
 	}
-	return output.String()
+	return tea.NewView(output.String())
 }
 
 func (model progressModel) effectiveWidth() int {
@@ -321,8 +321,19 @@ func (model progressModel) renderOverview(width int, height int) string {
 	} else {
 		lines = append(lines, "Current  starting")
 	}
+	if thought := model.latestThought(); thought != "" {
+		lines = append(lines, "")
+		lines = append(lines, model.styles.muted.Render(
+			"  "+fitProgressText(thought, width-2),
+		))
+	}
+	if lastErr := model.latestError(); lastErr != nil {
+		lines = append(lines, "")
+		lines = append(lines, "  "+model.styles.err.Render("error")+
+			"  "+fitProgressText(lastErr.Detail, width-9))
+	}
 	lines = append(lines, "")
-	lines = append(lines, model.styles.section.Render("Recent activity"))
+	lines = append(lines, model.styles.section.Render("Recent"))
 	recent := model.recentOverviewRecords(height - len(lines))
 	for _, record := range recent {
 		lines = append(lines, "  "+model.formatRecord(record, width-2))
@@ -331,6 +342,33 @@ func (model progressModel) renderOverview(width int, height int) string {
 		lines = append(lines, "  no events yet")
 	}
 	return fitLines(lines, height)
+}
+
+func (model progressModel) latestThought() string {
+	for i := len(model.history) - 1; i >= 0; i-- {
+		r := model.history[i]
+		if r.Status == progressStatusPlan && r.Detail != "" {
+			return r.Detail
+		}
+		if r.Status == progressStatusAnswer && r.Detail != "" {
+			return r.Detail
+		}
+	}
+	return ""
+}
+
+func (model progressModel) latestError() *progressRecord {
+	for i := len(model.history) - 1; i >= 0; i-- {
+		r := model.history[i]
+		if r.Status == progressStatusError {
+			return &model.history[i]
+		}
+		if r.Status == progressStatusOK || r.Status == progressStatusPlan ||
+			r.Status == progressStatusAnswer {
+			return nil
+		}
+	}
+	return nil
 }
 
 func (model progressModel) renderTimeline(width int, height int) string {

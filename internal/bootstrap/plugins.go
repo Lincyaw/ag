@@ -10,6 +10,7 @@ import (
 	"github.com/lincyaw/ag/plugins/hostfs"
 	"github.com/lincyaw/ag/plugins/openai"
 	otelplugin "github.com/lincyaw/ag/plugins/otel"
+	"github.com/lincyaw/ag/plugins/tree"
 	"github.com/lincyaw/ag/sdk"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -21,7 +22,7 @@ func configuredLocalPlugins(
 	tracer trace.Tracer,
 	meter metric.Meter,
 ) ([]sdk.Plugin, error) {
-	plugins := make([]sdk.Plugin, 0, 6)
+	plugins := make([]sdk.Plugin, 0, 7)
 	if config.Observability.Enabled {
 		plugin, err := otelplugin.New(otelplugin.Config{
 			Logger: logger,
@@ -48,6 +49,13 @@ func configuredLocalPlugins(
 			KeepRecentMessages: config.Compact.KeepRecentMessages,
 			MaxMessageChars:    config.Compact.MaxMessageChars,
 			MaxToolResultChars: config.Compact.MaxToolResultChars,
+		}))
+	}
+	if config.Workspace.Enabled && config.Tree.Enabled {
+		plugins = append(plugins, tree.New(tree.Config{
+			Root:       config.Workspace.Root,
+			MaxEntries: config.Tree.MaxEntries,
+			MaxDepth:   config.Tree.MaxDepth,
 		}))
 	}
 	if config.Workspace.Enabled {

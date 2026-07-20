@@ -19,6 +19,8 @@ type Checkpoint struct {
 	Output                      string                 `json:"output,omitempty"`
 	Turns                       int                    `json:"turns"`
 	ToolCalls                   int                    `json:"tool_calls"`
+	InputTokens                 int64                  `json:"input_tokens,omitempty"`
+	OutputTokens                int64                  `json:"output_tokens,omitempty"`
 	Generation                  uint64                 `json:"generation,omitempty"`
 	Action                      sdk.Action             `json:"action"`
 	ContextInjections           []sdk.ContextInjection `json:"context_injections,omitempty"`

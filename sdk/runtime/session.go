@@ -52,6 +52,8 @@ type Result struct {
 	ContextInjections []sdk.ContextInjection `json:"context_injections,omitempty"`
 	Turns             int                    `json:"turns"`
 	ToolCalls         int                    `json:"tool_calls"`
+	InputTokens       int64                  `json:"input_tokens"`
+	OutputTokens      int64                  `json:"output_tokens"`
 	Generation        uint64                 `json:"generation"`
 	Cause             sdk.Cause              `json:"cause"`
 }
@@ -340,11 +342,8 @@ func validateSessionConfig(runtime *Runtime, config *SessionConfig) error {
 	if err := sdk.ValidateResourceName("session", config.ID); err != nil {
 		return err
 	}
-	if config.MaxTurns == 0 {
-		config.MaxTurns = 8
-	}
-	if config.MaxTurns < 1 {
-		return errors.New("session max turns must be positive")
+	if config.MaxTurns < 0 {
+		return errors.New("session max turns cannot be negative")
 	}
 	if config.ResumePolicy == "" {
 		config.ResumePolicy = ResumeExact
@@ -355,6 +354,15 @@ func validateSessionConfig(runtime *Runtime, config *SessionConfig) error {
 		return fmt.Errorf("unknown resume policy %q", config.ResumePolicy)
 	}
 	return nil
+}
+
+const unlimitedTurns = 1<<31 - 1
+
+func effectiveMaxTurns(configured int) int {
+	if configured <= 0 {
+		return unlimitedTurns
+	}
+	return configured
 }
 
 func (session *Session) ID() string {
@@ -401,4 +409,8 @@ func (session *Session) Messages() []sdk.Message {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	return sdk.CloneMessages(session.messages)
+}
+
+func (runtime *Runtime) ListTrajectories(ctx context.Context) ([]sdk.TrajectorySummary, error) {
+	return runtime.trajectories.List(ctx)
 }

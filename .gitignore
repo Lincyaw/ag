@@ -7,3 +7,7 @@ coverage.txt
 __pycache__/
 examples/python-plugin/.generated/
 examples/python-plugin/.events.jsonl
+.cache
+.ag
+.config
+go/

@@ -95,6 +95,85 @@ unknown = true
 	}
 }
 
+func TestModelProfileResolution(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(`
+default_model = "fast"
+
+[models.fast]
+model = "DeepSeek-V4-flash"
+base_url = "http://localhost:8088/v1"
+api_key = "sk-fast"
+
+[models.pro]
+model = "DeepSeek-V4-pro"
+base_url = "http://localhost:8088/v1"
+api_key = "sk-pro"
+context_window = 262144
+
+[openai]
+enabled = true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(LoadOptions{ConfigFile: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Config.OpenAI.Model != "DeepSeek-V4-flash" {
+		t.Fatalf("model = %q, want DeepSeek-V4-flash", loaded.Config.OpenAI.Model)
+	}
+	if loaded.Config.OpenAI.BaseURL != "http://localhost:8088/v1" {
+		t.Fatalf("base_url = %q", loaded.Config.OpenAI.BaseURL)
+	}
+	if loaded.Config.OpenAI.APIKey != "sk-fast" {
+		t.Fatalf("api_key = %q", loaded.Config.OpenAI.APIKey)
+	}
+}
+
+func TestModelProfileOverrideByFlag(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(`
+default_model = "fast"
+
+[models.fast]
+model = "DeepSeek-V4-flash"
+base_url = "http://localhost:8088/v1"
+api_key = "sk-fast"
+
+[models.pro]
+model = "DeepSeek-V4-pro"
+base_url = "http://localhost:9999/v1"
+api_key = "sk-pro"
+
+[openai]
+enabled = true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	flags.String("model", "", "")
+	if err := flags.Set("model", "pro"); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(LoadOptions{ConfigFile: path, Flags: flags})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Config.OpenAI.Model != "DeepSeek-V4-pro" {
+		t.Fatalf("model = %q, want DeepSeek-V4-pro", loaded.Config.OpenAI.Model)
+	}
+	if loaded.Config.OpenAI.BaseURL != "http://localhost:9999/v1" {
+		t.Fatalf("base_url = %q", loaded.Config.OpenAI.BaseURL)
+	}
+	if loaded.Config.OpenAI.APIKey != "sk-pro" {
+		t.Fatalf("api_key = %q", loaded.Config.OpenAI.APIKey)
+	}
+}
+
 func TestExplicitMissingConfigFails(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.toml")
 	_, err := Load(LoadOptions{ConfigFile: path})

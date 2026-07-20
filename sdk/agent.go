@@ -72,6 +72,8 @@ type AgentResult struct {
 	ContextInjections []ContextInjection `json:"context_injections,omitempty"`
 	Turns             int                `json:"turns"`
 	ToolCalls         int                `json:"tool_calls"`
+	InputTokens       int64              `json:"input_tokens,omitempty"`
+	OutputTokens      int64              `json:"output_tokens,omitempty"`
 	Generation        uint64             `json:"generation"`
 	Cause             Cause              `json:"cause"`
 }

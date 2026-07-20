@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -111,63 +109,6 @@ func (tool readTool) Call(ctx context.Context, raw json.RawMessage) (sdk.ToolRes
 		startIndex,
 		end,
 	)}, nil
-}
-
-type listTool struct{ filesystem *rootedFS }
-
-func (listTool) Spec() sdk.ToolSpec {
-	return sdk.ToolSpec{
-		Name:        "list_files",
-		Description: "List direct children of a directory by workspace-relative or absolute path.",
-		Concurrency: sdk.ToolConcurrencyParallel,
-		Parameters:  pathSchema("Workspace-relative or absolute directory path; use . for the workspace root."),
-	}
-}
-
-func (tool listTool) Call(ctx context.Context, raw json.RawMessage) (sdk.ToolResult, error) {
-	var arguments struct {
-		Path string `json:"path"`
-	}
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return toolFailure(err), nil
-	}
-	if strings.TrimSpace(arguments.Path) == "" {
-		arguments.Path = "."
-	}
-	path, err := tool.filesystem.existing(arguments.Path)
-	if err != nil {
-		return toolFailure(err), nil
-	}
-	root, err := tool.filesystem.openRootFor(path)
-	if err != nil {
-		return toolFailure(err), nil
-	}
-	defer root.Close()
-	entries, err := fs.ReadDir(root.FS(), filepath.ToSlash(rootPath(path)))
-	if err != nil {
-		return toolFailure(err), nil
-	}
-	if len(entries) > tool.filesystem.maxEntries {
-		return toolFailure(fmt.Errorf(
-			"directory exceeds %d entry limit", tool.filesystem.maxEntries,
-		)), nil
-	}
-	var output strings.Builder
-	for _, entry := range entries {
-		if err := ctx.Err(); err != nil {
-			return sdk.ToolResult{}, err
-		}
-		kind := "file"
-		name := entry.Name()
-		if entry.IsDir() {
-			kind = "dir"
-			name += "/"
-		} else if entry.Type()&os.ModeSymlink != 0 {
-			kind = "symlink"
-		}
-		fmt.Fprintf(&output, "%s\t%s\n", kind, name)
-	}
-	return sdk.ToolResult{Content: strings.TrimSuffix(output.String(), "\n")}, nil
 }
 
 type writeTool struct{ filesystem *rootedFS }

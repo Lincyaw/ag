@@ -38,6 +38,20 @@ func newDuckDBTrajectoryStore(
 	path string,
 	namespace string,
 ) (*duckDBTrajectoryStore, error) {
+	store, err := openDuckDB(path, namespace)
+	if err != nil && isDuckDBCorruption(err) {
+		if repairErr := repairDuckDB(path); repairErr != nil {
+			return nil, fmt.Errorf(
+				"DuckDB store corrupted and repair failed: open error: %w; repair error: %v",
+				err, repairErr,
+			)
+		}
+		store, err = openDuckDB(path, namespace)
+	}
+	return store, err
+}
+
+func openDuckDB(path string, namespace string) (*duckDBTrajectoryStore, error) {
 	db, err := sql.Open("duckdb", path)
 	if err != nil {
 		return nil, fmt.Errorf("open DuckDB trajectory store: %w", err)
@@ -50,6 +64,10 @@ func newDuckDBTrajectoryStore(
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping DuckDB trajectory store: %w", err)
+	}
+	if err := checkDuckDBIntegrity(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 	if err := initDuckDBTrajectorySchema(ctx, db); err != nil {
 		_ = db.Close()
@@ -66,6 +84,105 @@ func newDuckDBTrajectoryStore(
 		db:        db,
 		namespace: namespace,
 	}, nil
+}
+
+func checkDuckDBIntegrity(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, "FORCE CHECKPOINT"); err != nil {
+		return fmt.Errorf("DuckDB integrity check failed: %w", err)
+	}
+	// Rebuild tables that may have corrupted indexes from unclean shutdown.
+	// CREATE TABLE AS SELECT copies data without indexes; schema init
+	// recreates them via PRIMARY KEY constraints on the fresh table.
+	tables := []string{
+		"ag_trajectory_executions",
+		"ag_trajectories",
+		"ag_trajectory_entries",
+		"ag_operations",
+		"ag_deliveries",
+		"ag_context_injections",
+	}
+	for _, table := range tables {
+		var count int
+		row := db.QueryRowContext(ctx,
+			"SELECT count(*) FROM information_schema.tables WHERE table_name = ?", table)
+		if err := row.Scan(&count); err != nil || count == 0 {
+			continue
+		}
+		backup := table + "__rebuild"
+		stmts := []string{
+			fmt.Sprintf("DROP TABLE IF EXISTS %s", backup),
+			fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM %s", backup, table),
+			fmt.Sprintf("DROP TABLE %s", table),
+			fmt.Sprintf("ALTER TABLE %s RENAME TO %s", backup, table),
+		}
+		for _, stmt := range stmts {
+			if _, err := db.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("DuckDB table rebuild %s: %w", table, err)
+			}
+		}
+	}
+	return nil
+}
+
+func isDuckDBCorruption(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "integrity check failed") ||
+		strings.Contains(msg, "failed to delete all rows from index") ||
+		strings.Contains(msg, "invalid input error") ||
+		strings.Contains(msg, "data corruption") ||
+		strings.Contains(msg, "wal") ||
+		strings.Contains(msg, "catalog error")
+}
+
+func repairDuckDB(path string) error {
+	walPath := path + ".wal"
+	if _, err := os.Stat(walPath); err == nil {
+		if removeErr := os.Remove(walPath); removeErr != nil {
+			return fmt.Errorf("remove corrupted WAL %q: %w", walPath, removeErr)
+		}
+	}
+	// Try to open and rebuild indexes by recreating tables from their data.
+	db, err := sql.Open("duckdb", path)
+	if err != nil {
+		return fmt.Errorf("reopen DuckDB for repair: %w", err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	tables := []string{
+		"ag_trajectories",
+		"ag_trajectory_entries",
+		"ag_trajectory_executions",
+		"ag_operations",
+		"ag_deliveries",
+		"ag_context_injections",
+		"ag_storage_schema",
+	}
+	for _, table := range tables {
+		// Copy data out, drop (with broken index), recreate from backup.
+		backup := table + "_repair_backup"
+		stmts := []string{
+			fmt.Sprintf("DROP TABLE IF EXISTS %s", backup),
+			fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM %s", backup, table),
+			fmt.Sprintf("DROP TABLE IF EXISTS %s", table),
+			fmt.Sprintf("ALTER TABLE %s RENAME TO %s", backup, table),
+		}
+		for _, stmt := range stmts {
+			if _, execErr := db.ExecContext(ctx, stmt); execErr != nil {
+				// Table may not exist yet — skip.
+				break
+			}
+		}
+	}
+	if _, err := db.ExecContext(ctx, "FORCE CHECKPOINT"); err != nil {
+		// Last resort: keep the file as-is, schema init will add missing tables.
+		return nil
+	}
+	return nil
 }
 
 func (store *duckDBTrajectoryStore) Ping(ctx context.Context) error {

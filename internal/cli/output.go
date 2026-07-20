@@ -196,6 +196,7 @@ func (application *app) writeRun(sessionID string, result agentruntime.Result) e
 		fmt.Fprintf(table, "Session:\t%s\n", tableCell(sessionID))
 		fmt.Fprintf(table, "Turns:\t%d\n", result.Turns)
 		fmt.Fprintf(table, "Tool calls:\t%d\n", result.ToolCalls)
+		fmt.Fprintf(table, "Tokens:\t%d in / %d out\n", result.InputTokens, result.OutputTokens)
 		fmt.Fprintf(
 			table,
 			"Cause:\t%s\n",

@@ -115,6 +115,8 @@ type AgentEndPayload struct {
 	Output            string             `json:"output,omitempty"`
 	Turns             int                `json:"turns,omitempty"`
 	ToolCalls         int                `json:"tool_calls,omitempty"`
+	InputTokens       int64              `json:"input_tokens,omitempty"`
+	OutputTokens      int64              `json:"output_tokens,omitempty"`
 	Cause             Cause              `json:"cause"`
 }
 

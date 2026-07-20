@@ -552,9 +552,11 @@ func agentRuntimeResult(
 		ContextInjections: sdk.CloneContextInjections(
 			result.ContextInjections,
 		),
-		Turns:      result.Turns,
-		ToolCalls:  result.ToolCalls,
-		Generation: result.Generation,
-		Cause:      result.Cause,
+		Turns:        result.Turns,
+		ToolCalls:    result.ToolCalls,
+		InputTokens:  result.InputTokens,
+		OutputTokens: result.OutputTokens,
+		Generation:   result.Generation,
+		Cause:        result.Cause,
 	}
 }

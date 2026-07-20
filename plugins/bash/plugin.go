@@ -62,6 +62,8 @@ func (plugin *plugin) Install(_ context.Context, registrar sdk.Registrar) error 
 	return registrar.RegisterTool(tool{runner: runner})
 }
 
+const defaultMaxConcurrency = 8
+
 type runner struct {
 	root           string
 	shell          string
@@ -69,6 +71,7 @@ type runner struct {
 	maxTimeout     time.Duration
 	maxOutputBytes int64
 	environment    []string
+	semaphore      chan struct{}
 }
 
 func newRunner(config Config) (*runner, error) {
@@ -137,14 +140,20 @@ func newRunner(config Config) (*runner, error) {
 		maxTimeout:     config.MaxTimeout,
 		maxOutputBytes: config.MaxOutputBytes,
 		environment:    environment,
+		semaphore:      make(chan struct{}, defaultMaxConcurrency),
 	}, nil
 }
 
 func buildEnvironment(root string, configured []string) ([]string, error) {
-	values := map[string]string{
-		"HOME": root,
-		"LANG": "C.UTF-8",
-		"PATH": "/usr/local/bin:/usr/bin:/bin",
+	values := make(map[string]string)
+	for _, entry := range os.Environ() {
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			values[name] = value
+		}
+	}
+	values["HOME"] = root
+	if values["LANG"] == "" {
+		values["LANG"] = "C.UTF-8"
 	}
 	for _, entry := range configured {
 		name, value, ok := strings.Cut(entry, "=")
@@ -233,6 +242,12 @@ func (runner *runner) run(
 ) (sdk.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
 		return sdk.ToolResult{}, err
+	}
+	select {
+	case runner.semaphore <- struct{}{}:
+		defer func() { <-runner.semaphore }()
+	case <-ctx.Done():
+		return sdk.ToolResult{}, ctx.Err()
 	}
 	runContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

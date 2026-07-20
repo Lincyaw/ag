@@ -100,6 +100,9 @@ func addGatewayRuntimeConfigFlags(flags *pflag.FlagSet) {
 		"Maximum retained bytes per bash output stream.",
 	)
 	flags.Bool("compact", true, "Mount automatic prompt compaction.")
+	flags.Bool("tree", true, "Mount the local workspace_tree plugin.")
+	flags.Int("tree-max-entries", 0, "Maximum entries returned by workspace_tree.")
+	flags.Int("tree-max-depth", 0, "Maximum directory depth for workspace_tree.")
 	flags.String("registry-uri", "", "Remote lease registry grpc[s] URI.")
 	flags.String(
 		"registry-namespace",

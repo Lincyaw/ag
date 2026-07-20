@@ -84,9 +84,11 @@ func resultFromCheckpoint(
 		ContextInjections: sdk.CloneContextInjections(
 			checkpoint.ContextInjections,
 		),
-		Turns:      checkpoint.Turns,
-		ToolCalls:  checkpoint.ToolCalls,
-		Generation: checkpoint.Generation,
+		Turns:        checkpoint.Turns,
+		ToolCalls:    checkpoint.ToolCalls,
+		InputTokens:  checkpoint.InputTokens,
+		OutputTokens: checkpoint.OutputTokens,
+		Generation:   checkpoint.Generation,
 	}
 	if result.Generation == 0 {
 		result.Generation = entry.Generation
@@ -120,6 +122,8 @@ func resultFromTerminal(entry sdk.TrajectoryEntry) (*Result, error) {
 		ContextInjections: sdk.CloneContextInjections(end.ContextInjections),
 		Turns:             end.Turns,
 		ToolCalls:         end.ToolCalls,
+		InputTokens:       end.InputTokens,
+		OutputTokens:      end.OutputTokens,
 		Generation:        entry.Generation,
 		Cause:             end.Cause,
 	}, nil

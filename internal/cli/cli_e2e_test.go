@@ -168,6 +168,9 @@ enabled = false
 [workspace]
 enabled = false
 
+[bash]
+enabled = false
+
 [compact]
 enabled = false
 
@@ -189,7 +192,7 @@ enabled = false
 	decodeJSON(t, result.stdout, &shown)
 	config := shown["config"].(map[string]any)
 	agent := config["agent"].(map[string]any)
-	if agent["provider"] != "from-env" || agent["timeout"] != "5m0s" {
+	if agent["provider"] != "from-env" || agent["timeout"] != "0s" {
 		t.Fatalf("effective agent config = %#v", agent)
 	}
 	stateConfig := config["state"].(map[string]any)

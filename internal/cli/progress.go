@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/lincyaw/ag/sdk"
 )
 
@@ -97,7 +97,7 @@ func newProgressReporter(
 	reporter := &progressReporter{
 		writer: writer,
 		input:  input,
-		styles: newProgressStyles(writer, useColor, forceColor),
+		styles: newProgressStyles(useColor || forceColor),
 		useTUI: useTUI,
 	}
 	reporter.queue = newProgressRecordQueue(reporter.deliver)

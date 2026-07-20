@@ -63,40 +63,9 @@ func progressRecordFromEvent(event sdk.Event) progressRecord {
 			Overview:  true,
 		}
 	case sdk.EventTurnStart:
-		var payload sdk.TurnStartPayload
-		if decodeProgressPayload(event, &payload) != nil {
-			return progressRecord{}
-		}
-		return progressRecord{
-			Status:    progressStatusModel,
-			Turn:      payload.Turn + 1,
-			Label:     "Thinking",
-			Detail:    "preparing next step",
-			Technical: fmt.Sprintf("turn=%d preparing model request", payload.Turn+1),
-		}
+		return progressRecord{}
 	case sdk.EventBeforeProvider:
-		var payload sdk.BeforeProviderPayload
-		if decodeProgressPayload(event, &payload) != nil {
-			return progressRecord{}
-		}
-		detail := fmt.Sprintf(
-			"%d message(s), %d tool(s) available",
-			len(payload.Messages),
-			len(payload.Tools),
-		)
-		return progressRecord{
-			Status:   progressStatusModel,
-			Turn:     payload.Turn + 1,
-			Provider: payload.Provider,
-			Label:    "Thinking",
-			Detail:   "deciding the next step",
-			Technical: fmt.Sprintf(
-				"provider=%s %s",
-				emptyAs(payload.Provider, "unknown"),
-				detail,
-			),
-			Overview: true,
-		}
+		return progressRecord{}
 	case sdk.EventAfterProvider:
 		var payload sdk.AfterProviderPayload
 		if decodeProgressPayload(event, &payload) != nil {
@@ -136,12 +105,16 @@ func progressRecordFromEvent(event sdk.Event) progressRecord {
 				Recent:    true,
 			}
 		}
+		detail := summarizeToolPlan(payload.Response.ToolCalls)
+		if thought := summarizeText(payload.Response.Content, 80); thought != "" {
+			detail = thought
+		}
 		return progressRecord{
 			Status:    progressStatusPlan,
 			Turn:      payload.Turn + 1,
 			Provider:  payload.Provider,
 			Label:     "Planning",
-			Detail:    summarizeToolPlan(payload.Response.ToolCalls),
+			Detail:    detail,
 			Technical: summarizeToolCalls(payload.Response.ToolCalls),
 			Overview:  true,
 			Recent:    true,

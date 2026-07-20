@@ -177,7 +177,7 @@ func (execution *promptExecution) runTurnsFrom(
 	ctx context.Context,
 	startTurn int,
 ) (Result, error) {
-	for turn := startTurn; turn < execution.session.config.MaxTurns; {
+	for turn := startTurn; execution.session.config.MaxTurns == 0 || turn < execution.session.config.MaxTurns; {
 		if err := ctx.Err(); err != nil {
 			cause := sdk.Cause{
 				Code:   sdk.CauseCancelled,
@@ -351,6 +351,8 @@ func (execution *promptExecution) executeTurn(
 	})
 	execution.result.Output = response.Content
 	execution.result.Turns = turn + 1
+	execution.result.InputTokens += response.Usage.InputTokens
+	execution.result.OutputTokens += response.Usage.OutputTokens
 
 	toolResults, interrupted, err := execution.executeTools(
 		ctx,
@@ -376,7 +378,7 @@ func (execution *promptExecution) executeTurn(
 		); err != nil {
 			return Result{}, promptTurnDone, err
 		}
-		if turn+1 >= execution.session.config.MaxTurns {
+		if execution.session.config.MaxTurns > 0 && turn+1 >= execution.session.config.MaxTurns {
 			result, done, err := execution.applyAction(
 				ctx,
 				lease.snapshot,
@@ -759,7 +761,7 @@ func (execution *promptExecution) decide(
 	}
 	if len(response.ToolCalls) > 0 {
 		defaultAction = sdk.Action{Kind: sdk.ActionStep}
-		if turn+1 >= execution.session.config.MaxTurns {
+		if execution.session.config.MaxTurns > 0 && turn+1 >= execution.session.config.MaxTurns {
 			defaultAction = sdk.Action{
 				Kind: sdk.ActionStop,
 				Cause: &sdk.Cause{
@@ -789,7 +791,7 @@ func (execution *promptExecution) decide(
 		decision.Actions,
 		decision.actionSteps,
 	)
-	if turn+1 >= execution.session.config.MaxTurns &&
+	if execution.session.config.MaxTurns > 0 && turn+1 >= execution.session.config.MaxTurns &&
 		action.Kind != sdk.ActionStop {
 		action = sdk.Action{
 			Kind: sdk.ActionStop,

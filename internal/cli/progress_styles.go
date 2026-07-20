@@ -1,10 +1,7 @@
 package cli
 
 import (
-	"io"
-
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/lipgloss/v2"
 )
 
 type progressStyles struct {
@@ -26,37 +23,30 @@ type progressStyles struct {
 	done      lipgloss.Style
 }
 
-func newProgressStyles(writer io.Writer, useColor bool, forceColor bool) progressStyles {
-	renderer := lipgloss.NewRenderer(writer)
-	switch {
-	case forceColor:
-		renderer.SetColorProfile(termenv.ANSI256)
-	case !useColor:
-		renderer.SetColorProfile(termenv.Ascii)
-	}
+func newProgressStyles(useColor bool) progressStyles {
 	styles := progressStyles{
-		brand:  renderer.NewStyle(),
-		strong: renderer.NewStyle(),
-		muted:  renderer.NewStyle(),
-		plain:  renderer.NewStyle(),
-		tab:    renderer.NewStyle().Padding(0, 1),
-		activeTab: renderer.NewStyle().
-			Bold(true).
-			Padding(0, 1),
-		selected: renderer.NewStyle(),
-		section:  renderer.NewStyle().Bold(true),
-		run:      renderer.NewStyle(),
-		model:    renderer.NewStyle(),
-		plan:     renderer.NewStyle(),
-		tool:     renderer.NewStyle(),
-		ok:       renderer.NewStyle(),
-		err:      renderer.NewStyle(),
-		answer:   renderer.NewStyle(),
-		done:     renderer.NewStyle(),
+		brand:     lipgloss.NewStyle(),
+		strong:    lipgloss.NewStyle(),
+		muted:     lipgloss.NewStyle(),
+		plain:     lipgloss.NewStyle(),
+		tab:       lipgloss.NewStyle().Padding(0, 1),
+		activeTab: lipgloss.NewStyle().Padding(0, 1),
+		selected:  lipgloss.NewStyle(),
+		section:   lipgloss.NewStyle(),
+		run:       lipgloss.NewStyle(),
+		model:     lipgloss.NewStyle(),
+		plan:      lipgloss.NewStyle(),
+		tool:      lipgloss.NewStyle(),
+		ok:        lipgloss.NewStyle(),
+		err:       lipgloss.NewStyle(),
+		answer:    lipgloss.NewStyle(),
+		done:      lipgloss.NewStyle(),
 	}
 	if !useColor {
 		return styles
 	}
+	styles.activeTab = styles.activeTab.Bold(true)
+	styles.section = styles.section.Bold(true)
 	styles.brand = styles.brand.Bold(true).Foreground(lipgloss.Color("69"))
 	styles.strong = styles.strong.Bold(true).Foreground(lipgloss.Color("252"))
 	styles.muted = styles.muted.Foreground(lipgloss.Color("245"))

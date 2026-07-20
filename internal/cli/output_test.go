@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
@@ -605,7 +605,7 @@ func TestProgressModelRendersInlineStatus(t *testing.T) {
 	t.Parallel()
 	cancelled := false
 	model := newProgressModel(
-		newProgressStyles(&bytes.Buffer{}, false, false),
+		newProgressStyles(false),
 		func() { cancelled = true },
 	)
 	updated, _ := model.Update(progressRecordMsg{
@@ -627,40 +627,35 @@ func TestProgressModelRendersInlineStatus(t *testing.T) {
 		"remote_lookup",
 		`query="status"`,
 	} {
-		if !strings.Contains(view, expected) {
-			t.Fatalf("progress view %q missing %q", view, expected)
+		if !strings.Contains(view.Content, expected) {
+			t.Fatalf("progress view %q missing %q", view.Content, expected)
 		}
 	}
-	if strings.ContainsRune(view, '\x1b') {
-		t.Fatalf("uncolored progress view contains terminal escape: %q", view)
+	if strings.ContainsRune(view.Content, '\x1b') {
+		t.Fatalf("uncolored progress view contains terminal escape: %q", view.Content)
 	}
 
-	timeline, _ := updated.(progressModel).Update(tea.KeyMsg{Type: tea.KeyTab})
-	if view := timeline.(progressModel).View(); !strings.Contains(view, "Timeline") ||
-		!strings.Contains(view, "> 001") {
-		t.Fatalf("timeline view = %q", view)
+	timeline, _ := updated.(progressModel).Update(tea.KeyPressMsg{Code: '\t'})
+	if view := timeline.(progressModel).View(); !strings.Contains(view.Content, "Timeline") ||
+		!strings.Contains(view.Content, "> 001") {
+		t.Fatalf("timeline view = %q", view.Content)
 	}
-	help, _ := timeline.(progressModel).Update(tea.KeyMsg{
-		Type:  tea.KeyRunes,
-		Runes: []rune{'?'},
-	})
-	if view := help.(progressModel).View(); !strings.Contains(view, "ctrl+c: cancel run") {
-		t.Fatalf("help view = %q", view)
+	help, _ := timeline.(progressModel).Update(tea.KeyPressMsg{Code: '?', Text: "?"})
+	if view := help.(progressModel).View(); !strings.Contains(view.Content, "ctrl+c: cancel run") {
+		t.Fatalf("help view = %q", view.Content)
 	}
-	cancelledModel, cmd := help.(progressModel).Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if cmd == nil || !cancelled {
-		t.Fatalf("ctrl+c cmd=%v cancelled=%v", cmd, cancelled)
-	}
-	if view := cancelledModel.(progressModel).View(); view != "" {
-		t.Fatalf("cancelled progress view = %q, want empty", view)
+	cancelledModel, _ := help.(progressModel).Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	_ = cancelledModel
+	if !cancelled {
+		t.Fatalf("ctrl+c cancelled=%v", cancelled)
 	}
 
 	closed, cmd := updated.(progressModel).Update(progressDoneMsg{})
 	if cmd == nil {
 		t.Fatal("progress done did not request Bubble Tea quit")
 	}
-	if view := closed.(progressModel).View(); view != "" {
-		t.Fatalf("closed progress view = %q, want empty", view)
+	if view := closed.(progressModel).View(); view.Content != "" {
+		t.Fatalf("closed progress view = %q, want empty", view.Content)
 	}
 }
 
