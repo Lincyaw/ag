@@ -16,7 +16,7 @@ import (
 	sdkstorage "github.com/lincyaw/ag/sdk/storage"
 )
 
-func TestFileToolsConfinePathsAndEnforceBounds(t *testing.T) {
+func TestFileToolsAcceptRelativeAndAbsolutePathsAndEnforceBounds(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	parent := t.TempDir()
@@ -54,6 +54,7 @@ func TestFileToolsConfinePathsAndEnforceBounds(t *testing.T) {
 	}
 	read := readTool{filesystem: filesystem}
 	list := listTool{filesystem: filesystem}
+	search := searchTool{filesystem: filesystem}
 	write := writeTool{filesystem: filesystem}
 
 	result, err := read.Call(ctx, []byte(`{"path":"hello.txt"}`))
@@ -62,13 +63,19 @@ func TestFileToolsConfinePathsAndEnforceBounds(t *testing.T) {
 		!strings.Contains(result.Content, "1\thello") {
 		t.Fatalf("read = %#v, %v", result, err)
 	}
+	absoluteResult, err := read.Call(ctx, json.RawMessage(`{"path":"`+filepath.ToSlash(filepath.Join(outside, "secret.txt"))+`"}`))
+	if err != nil || absoluteResult.IsError || !strings.Contains(absoluteResult.Content, "1	secret") {
+		t.Fatalf("absolute read = %#v, %v", absoluteResult, err)
+	}
+	traversalResult, err := read.Call(ctx, json.RawMessage(`{"path":"../outside/secret.txt"}`))
+	if err != nil || traversalResult.IsError || !strings.Contains(traversalResult.Content, "1	secret") {
+		t.Fatalf("parent traversal read = %#v, %v", traversalResult, err)
+	}
 	for name, arguments := range map[string]string{
-		"parent traversal": `{"path":"../outside/secret.txt"}`,
-		"absolute path":    `{"path":"` + filepath.ToSlash(filepath.Join(outside, "secret.txt")) + `"}`,
-		"symlink escape":   `{"path":"secret-link"}`,
-		"oversized":        `{"path":"too-large.txt"}`,
-		"binary":           `{"path":"binary"}`,
-		"unknown field":    `{"path":"hello.txt","extra":true}`,
+		"symlink escape": `{"path":"secret-link"}`,
+		"oversized":      `{"path":"too-large.txt"}`,
+		"binary":         `{"path":"binary"}`,
+		"unknown field":  `{"path":"hello.txt","extra":true}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -78,14 +85,32 @@ func TestFileToolsConfinePathsAndEnforceBounds(t *testing.T) {
 			}
 		})
 	}
+	absoluteList, err := list.Call(ctx, json.RawMessage(`{"path":"`+filepath.ToSlash(outside)+`"}`))
+	if err != nil || absoluteList.IsError || !strings.Contains(absoluteList.Content, "file	secret.txt") {
+		t.Fatalf("absolute list = %#v, %v", absoluteList, err)
+	}
+	searchResult, err := search.Call(ctx, json.RawMessage(`{"path":"`+filepath.ToSlash(outside)+`","query":"secret"}`))
+	if err != nil || searchResult.IsError || !strings.Contains(searchResult.Content, "secret.txt:1:1: secret") {
+		t.Fatalf("absolute search = %#v, %v", searchResult, err)
+	}
 	if result, err := list.Call(ctx, []byte(`{"path":"outside-link"}`)); err != nil || !result.IsError {
-		t.Fatalf("listing an escaping directory symlink = %#v, %v", result, err)
+		t.Fatalf("listing a dangling workspace-relative symlink = %#v, %v", result, err)
+	}
+	absoluteWrite := callToolForTest(t, write, map[string]any{
+		"path": filepath.Join(outside, "created.txt"), "content": "made",
+	})
+	if absoluteWrite.IsError {
+		t.Fatalf("absolute write = %#v", absoluteWrite)
+	}
+	created, err := os.ReadFile(filepath.Join(outside, "created.txt"))
+	if err != nil || string(created) != "made" {
+		t.Fatalf("absolute write content = %q, %v", created, err)
 	}
 	if result, err := write.Call(
 		ctx,
 		[]byte(`{"path":"outside-link/new.txt","content":"bad"}`),
 	); err != nil || !result.IsError {
-		t.Fatalf("writing through an escaping parent symlink = %#v, %v", result, err)
+		t.Fatalf("writing through a dangling workspace-relative parent symlink = %#v, %v", result, err)
 	}
 	if result, err := write.Call(
 		ctx,
@@ -209,7 +234,7 @@ func TestConcurrentWritesAreAtomicAndPluginManifestMatchesMode(t *testing.T) {
 	}
 }
 
-func TestFilesystemOperationsRemainConfinedAfterParentSwap(t *testing.T) {
+func TestWorkspaceRelativeOperationsRemainConfinedAfterParentSwap(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	root := t.TempDir()

@@ -43,7 +43,7 @@ type searchMatch struct {
 func (searchTool) Spec() sdk.ToolSpec {
 	return sdk.ToolSpec{
 		Name: "search_files",
-		Description: "Search UTF-8 files under a root-confined path and return deterministic path:line:column matches. " +
+		Description: "Search UTF-8 files under a workspace-relative or absolute path and return deterministic path:line:column matches. " +
 			"Literal search is the default; regular expressions and recursive globs are optional.",
 		Concurrency: sdk.ToolConcurrencyParallel,
 		Parameters: map[string]any{
@@ -51,7 +51,7 @@ func (searchTool) Spec() sdk.ToolSpec {
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Relative file or directory path; defaults to .",
+					"description": "Workspace-relative or absolute file or directory path; defaults to .",
 				},
 				"query": map[string]any{
 					"type": "string", "description": "Text or regular expression to find.",
@@ -127,11 +127,12 @@ func (tool searchTool) Call(
 	if err := ctx.Err(); err != nil {
 		return sdk.ToolResult{}, err
 	}
-	rootHandle, err := tool.filesystem.openRoot()
+	rootHandle, err := tool.filesystem.openRootFor(root)
 	if err != nil {
 		return toolFailure(err), nil
 	}
 	defer rootHandle.Close()
+	rootPath := rootPath(root)
 
 	matches := make([]searchMatch, 0, maxResults)
 	filesScanned := 0
@@ -142,7 +143,7 @@ func (tool searchTool) Call(
 			truncated = true
 			return errSearchTruncated
 		}
-		display := filepath.ToSlash(path)
+		display := displayPath(root, path)
 		if glob != nil && !glob.matches(display) {
 			return nil
 		}
@@ -186,16 +187,16 @@ func (tool searchTool) Call(
 		return nil
 	}
 
-	info, err := rootHandle.Stat(root)
+	info, err := rootHandle.Stat(rootPath)
 	if err != nil {
 		return toolFailure(err), nil
 	}
 	if info.Mode().IsRegular() {
-		err = searchFile(root)
+		err = searchFile(rootPath)
 	} else if !info.IsDir() {
 		return toolFailure(errors.New("search path is not a regular file or directory")), nil
 	} else {
-		walkRoot := filepath.ToSlash(root)
+		walkRoot := filepath.ToSlash(rootPath)
 		err = fs.WalkDir(rootHandle.FS(), walkRoot, func(
 			path string,
 			entry fs.DirEntry,
@@ -353,6 +354,13 @@ func (glob *fileGlob) matches(relative string) bool {
 		return true
 	}
 	return glob.matchBase && glob.expression.MatchString(filepath.Base(relative))
+}
+
+func displayPath(root string, path string) string {
+	if filepath.IsAbs(root) {
+		return filepath.ToSlash(filepath.Join(filesystemRoot(root), path))
+	}
+	return filepath.ToSlash(path)
 }
 
 func truncateRunes(value string, limit int) string {

@@ -19,13 +19,13 @@ type readTool struct{ filesystem *rootedFS }
 func (readTool) Spec() sdk.ToolSpec {
 	return sdk.ToolSpec{
 		Name:        "read_file",
-		Description: "Read a numbered range from one UTF-8 text file. The result includes a SHA-256 revision for conflict-safe edits.",
+		Description: "Read a numbered range from one UTF-8 text file by workspace-relative or absolute path. The result includes a SHA-256 revision for conflict-safe edits.",
 		Concurrency: sdk.ToolConcurrencyParallel,
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
-					"type": "string", "description": "Relative path to the file.",
+					"type": "string", "description": "Workspace-relative or absolute path to the file.",
 				},
 				"offset": map[string]any{
 					"type": "integer", "minimum": 1,
@@ -118,9 +118,9 @@ type listTool struct{ filesystem *rootedFS }
 func (listTool) Spec() sdk.ToolSpec {
 	return sdk.ToolSpec{
 		Name:        "list_files",
-		Description: "List direct children of a directory relative to the configured root.",
+		Description: "List direct children of a directory by workspace-relative or absolute path.",
 		Concurrency: sdk.ToolConcurrencyParallel,
-		Parameters:  pathSchema("Relative directory path; use . for the root."),
+		Parameters:  pathSchema("Workspace-relative or absolute directory path; use . for the workspace root."),
 	}
 }
 
@@ -138,12 +138,12 @@ func (tool listTool) Call(ctx context.Context, raw json.RawMessage) (sdk.ToolRes
 	if err != nil {
 		return toolFailure(err), nil
 	}
-	root, err := tool.filesystem.openRoot()
+	root, err := tool.filesystem.openRootFor(path)
 	if err != nil {
 		return toolFailure(err), nil
 	}
 	defer root.Close()
-	entries, err := fs.ReadDir(root.FS(), filepath.ToSlash(path))
+	entries, err := fs.ReadDir(root.FS(), filepath.ToSlash(rootPath(path)))
 	if err != nil {
 		return toolFailure(err), nil
 	}

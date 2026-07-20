@@ -55,8 +55,8 @@ func (plugin *plugin) Manifest() sdk.Manifest {
 	}
 	return sdk.Manifest{
 		Name:        "file",
-		Version:     "1.1.0",
-		Description: "root-confined, revision-aware file tools for agent-native read, search, and edit workflows",
+		Version:     "1.2.0",
+		Description: "revision-aware file tools for workspace-relative or absolute-path read, search, and edit workflows",
 		APIVersion:  sdk.APIVersion,
 		Registers:   registers,
 	}
@@ -136,24 +136,24 @@ func newRootedFS(config Config) (*rootedFS, error) {
 	}, nil
 }
 
-func (filesystem *rootedFS) existing(relative string) (string, error) {
-	name, err := relativePath(relative)
+func (filesystem *rootedFS) existing(path string) (string, error) {
+	name, err := filesystem.resolve(path)
 	if err != nil {
 		return "", err
 	}
-	root, err := filesystem.openRoot()
+	root, err := filesystem.openRootFor(name)
 	if err != nil {
 		return "", err
 	}
 	defer root.Close()
-	if _, err := root.Stat(name); err != nil {
+	if _, err := root.Stat(rootPath(name)); err != nil {
 		return "", err
 	}
 	return name, nil
 }
 
-func (filesystem *rootedFS) writable(relative string) (string, error) {
-	name, err := relativePath(relative)
+func (filesystem *rootedFS) writable(path string) (string, error) {
+	name, err := filesystem.resolve(path)
 	if err != nil {
 		return "", err
 	}
@@ -161,19 +161,19 @@ func (filesystem *rootedFS) writable(relative string) (string, error) {
 	if base == "." || base == string(filepath.Separator) {
 		return "", errors.New("file path has no basename")
 	}
-	root, err := filesystem.openRoot()
+	root, err := filesystem.openRootFor(name)
 	if err != nil {
 		return "", err
 	}
 	defer root.Close()
-	info, err := root.Stat(filepath.Dir(name))
+	info, err := root.Stat(rootPath(filepath.Dir(name)))
 	if err != nil {
 		return "", err
 	}
 	if !info.IsDir() {
 		return "", errors.New("destination parent is not a directory")
 	}
-	if info, err := root.Lstat(name); err == nil && info.Mode()&os.ModeSymlink != 0 {
+	if info, err := root.Lstat(rootPath(name)); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return "", errors.New("refusing to replace a symbolic link")
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
@@ -181,17 +181,21 @@ func (filesystem *rootedFS) writable(relative string) (string, error) {
 	return name, nil
 }
 
-func relativePath(relative string) (string, error) {
-	value := strings.TrimSpace(relative)
+func (filesystem *rootedFS) resolve(path string) (string, error) {
+	value := strings.TrimSpace(path)
 	if value == "" {
 		return "", errors.New("path is empty")
 	}
 	if filepath.IsAbs(value) {
-		return "", errors.New("path must be relative to the file root")
+		return filepath.Clean(value), nil
 	}
 	clean := filepath.Clean(value)
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", errors.New("path escapes the file root")
+		absolute, err := filepath.Abs(filepath.Join(filesystem.root, clean))
+		if err != nil {
+			return "", err
+		}
+		return filepath.Clean(absolute), nil
 	}
 	return clean, nil
 }
@@ -200,13 +204,41 @@ func (filesystem *rootedFS) openRoot() (*os.Root, error) {
 	return os.OpenRoot(filesystem.root)
 }
 
+func (filesystem *rootedFS) openRootFor(path string) (*os.Root, error) {
+	if filepath.IsAbs(path) {
+		return os.OpenRoot(filesystemRoot(path))
+	}
+	return filesystem.openRoot()
+}
+
+func filesystemRoot(path string) string {
+	volume := filepath.VolumeName(path)
+	if volume != "" {
+		return volume + string(filepath.Separator)
+	}
+	return string(filepath.Separator)
+}
+
+func rootPath(path string) string {
+	if !filepath.IsAbs(path) {
+		return path
+	}
+	volume := filepath.VolumeName(path)
+	clean := filepath.Clean(strings.TrimPrefix(path, volume))
+	clean = strings.TrimPrefix(clean, string(filepath.Separator))
+	if clean == "" {
+		return "."
+	}
+	return clean
+}
+
 func (filesystem *rootedFS) readText(path string) ([]byte, os.FileInfo, error) {
-	root, err := filesystem.openRoot()
+	root, err := filesystem.openRootFor(path)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer root.Close()
-	return filesystem.readTextAt(root, path)
+	return filesystem.readTextAt(root, rootPath(path))
 }
 
 func (filesystem *rootedFS) readTextAt(
@@ -244,12 +276,13 @@ func (filesystem *rootedFS) atomicWrite(
 	data []byte,
 	mode os.FileMode,
 ) error {
-	root, err := filesystem.openRoot()
+	root, err := filesystem.openRootFor(target)
 	if err != nil {
 		return err
 	}
 	defer root.Close()
-	temporary, temporaryPath, err := createTemporary(root, filepath.Dir(target))
+	targetPath := rootPath(target)
+	temporary, temporaryPath, err := createTemporary(root, filepath.Dir(targetPath))
 	if err != nil {
 		return err
 	}
@@ -277,11 +310,11 @@ func (filesystem *rootedFS) atomicWrite(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := root.Rename(temporaryPath, target); err != nil {
+	if err := root.Rename(temporaryPath, targetPath); err != nil {
 		return err
 	}
 	removeTemporary = false
-	directory, err := root.Open(filepath.Dir(target))
+	directory, err := root.Open(filepath.Dir(targetPath))
 	if err != nil {
 		return err
 	}
@@ -289,7 +322,7 @@ func (filesystem *rootedFS) atomicWrite(
 	if err := directory.Sync(); err != nil {
 		return err
 	}
-	written, err := root.ReadFile(target)
+	written, err := root.ReadFile(targetPath)
 	if err != nil {
 		return fmt.Errorf("verify write: %w", err)
 	}
