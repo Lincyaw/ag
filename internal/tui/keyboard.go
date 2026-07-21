@@ -570,6 +570,15 @@ func (m *appModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.forwardEditor(msg)
 	}
 
+	// PageUp/PageDown scroll the transcript without moving focus out of the
+	// composer. This keeps the primary Claude Code interaction model: users can
+	// inspect earlier output and immediately continue typing. Dialogs,
+	// completions, local panels, and history search have already had first
+	// chance to consume these keys above.
+	if isTranscriptPageKey(msg) {
+		return m.forwardChat(msg)
+	}
+
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+g"))):
 		return m.openExternalEditor()
@@ -665,6 +674,15 @@ func (m *appModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func isTranscriptPageKey(msg tea.KeyPressMsg) bool {
+	switch msg.String() {
+	case "pgup", "pgdown":
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldReturnToEditorForTextInput(msg tea.KeyPressMsg) bool {
