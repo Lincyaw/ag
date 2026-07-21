@@ -12,7 +12,7 @@ import (
 	"sync"
 
 	"github.com/lincyaw/ag/internal/tui/fsx"
-	
+
 	"github.com/lincyaw/ag/internal/tui/completion"
 )
 

@@ -32,8 +32,8 @@ func New(config Config) sdk.Plugin { return &plugin{config: config} }
 func (plugin) Manifest() sdk.Manifest {
 	return sdk.Manifest{
 		Name:        "tree",
-		Version:     "1.0.0",
-		Description: "bounded deterministic workspace file tree listing",
+		Version:     "1.1.0",
+		Description: "bounded deterministic file tree listing",
 		APIVersion:  sdk.APIVersion,
 		Registers:   []string{sdk.ToolResource("workspace_tree")},
 	}
@@ -90,14 +90,14 @@ type listTool struct{ lister *lister }
 func (listTool) Spec() sdk.ToolSpec {
 	return sdk.ToolSpec{
 		Name:        "workspace_tree",
-		Description: "Show a recursive file tree under the workspace root with deterministic ordering and bounded depth/output.",
+		Description: "Show a recursive file tree for a workspace-relative, parent-relative, or absolute path with deterministic ordering and bounded depth/output.",
 		Concurrency: sdk.ToolConcurrencyParallel,
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Relative directory or file path to list; defaults to the workspace root.",
+					"description": "Workspace-relative, parent-relative, or absolute directory/file path; defaults to the workspace root.",
 				},
 				"max_depth": map[string]any{
 					"type":        "integer",
@@ -164,21 +164,18 @@ func (tool listTool) Call(ctx context.Context, raw json.RawMessage) (sdk.ToolRes
 	return sdk.ToolResult{Content: format(display, entries, truncated)}, nil
 }
 
-func (lister *lister) resolve(relative string) (string, string, error) {
-	clean := filepath.Clean(strings.TrimSpace(relative))
+func (lister *lister) resolve(path string) (string, string, error) {
+	clean := filepath.Clean(strings.TrimSpace(path))
 	if clean == "." || clean == "" {
 		return lister.root, ".", nil
 	}
-	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
-		return "", "", errors.New("path must stay within the workspace root")
+	full := clean
+	if !filepath.IsAbs(full) {
+		full = filepath.Join(lister.root, full)
 	}
-	full := filepath.Join(lister.root, clean)
 	resolved, err := filepath.EvalSymlinks(full)
 	if err != nil {
 		return "", "", err
-	}
-	if resolved != lister.root && !strings.HasPrefix(resolved, lister.root+string(os.PathSeparator)) {
-		return "", "", errors.New("path escapes the workspace root")
 	}
 	return resolved, filepath.ToSlash(clean), nil
 }
@@ -186,7 +183,6 @@ func (lister *lister) resolve(relative string) (string, string, error) {
 func (lister *lister) list(ctx context.Context, start, display string, maxDepth, limit int, pattern string, includeHidden bool) ([]string, bool, error) {
 	var entries []string
 	truncated := false
-	rootDepth := depth(display)
 	err := filepath.WalkDir(start, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -194,31 +190,35 @@ func (lister *lister) list(ctx context.Context, start, display string, maxDepth,
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(lister.root, path)
+		rel, err := filepath.Rel(start, path)
 		if err != nil {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if rel == "." {
-			rel = display
-		}
 		if rel != "." && !includeHidden && hidden(rel) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if depth(rel)-rootDepth > maxDepth {
+		if depth(rel) > maxDepth {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		name := rel
+		name := display
+		if rel != "." {
+			name = filepath.ToSlash(filepath.Join(display, filepath.FromSlash(rel)))
+		}
 		if entry.IsDir() && name != "." && !strings.HasSuffix(name, "/") {
 			name += "/"
 		}
-		if entry.IsDir() || matches(pattern, rel) {
+		matchPath := rel
+		if matchPath == "." {
+			matchPath = display
+		}
+		if entry.IsDir() || matches(pattern, matchPath) {
 			if len(entries) >= limit {
 				truncated = true
 				return fs.SkipAll

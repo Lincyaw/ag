@@ -60,7 +60,8 @@ sdk/runtime/                     public agent-execution facade
 sdk/runtime/internal/durability/ checkpoint and restore domain rules
 sdk/storage/                     durability infrastructure adapters
 registry/                        plugin discovery bounded context
-gateway/                         user-session bounded context
+gateway/                         trajectory hosting and control bounded context
+gatewayrpc/                      gRPC Agent Manager transport
 pluginrpc/                       protobuf transport adapters
 plugins/                         optional resource implementations
 ```
@@ -135,11 +136,11 @@ replacement, restrictive permissions, namespace partitions, pagination, and
 retention cleanup. It still rewrites whole JSON state files and should be treated
 as a development, debugging, and compatibility backend. High-frequency
 subscriber delivery, long-running agents, and gateway deployments should use an
-indexed database-backed driver instead of relying on file state growth. New CLI
-state directories default to DuckDB; explicit `file://` URIs and legacy file
-state directories remain supported for compatibility. If the default
-`agent-state.duckdb` file already exists in a state directory, it takes
-precedence over legacy file-state markers in the same directory.
+indexed database-backed driver instead of relying on file state growth. New
+local CLI state directories default to SQLite; explicit `file://` URIs and
+legacy file state remain supported. An existing `agent-state.duckdb` is still
+selected before creating a new SQLite database so upgrades do not silently
+abandon durable state.
 
 The built-in DuckDB backend stores trajectory metadata, execution cursors,
 immutable entries, operation state, and named delivery queues in normalized
@@ -159,13 +160,16 @@ in-process readers. It reports `MultiProcessSafe=false`: multiple independent
 writer processes must not open the same native DuckDB file. A distributed
 deployment still needs a network database or service-backed storage driver.
 
-The built-in PostgreSQL backend stores trajectories, operations, and named
-delivery queues in one database and reports `AtomicState=true`. It implements
-`AppendTrajectory`, `StartExecution`, `CommitExecution`, and
-`CancelExecution`, so trajectory appends, execution acceptance, execution
-progress, cancellation completion, and host outbox projection can share a
-database transaction when the event contract allows planning subscriber
-deliveries before commit.
+SQLite and PostgreSQL share one GORM implementation of trajectories,
+operations, context injections, and named delivery queues. The PostgreSQL
+adapter only supplies the dialect connection, row/advisory locking, and schema
+migration serialization; it does not maintain a second copy of aggregate CRUD
+or transition rules. Both report `AtomicState=true`. PostgreSQL additionally
+coordinates independent processes and is the recommended Agent Manager
+backend. `AppendTrajectory`, `StartExecution`, `CommitExecution`, and
+`CancelExecution` keep trajectory changes and host outbox projection in one
+database transaction when the event contract allows planning deliveries before
+commit.
 
 `NewRuntime` requires a `StateBackend`; selecting memory, file, or an external
 driver is an application composition decision. Hosts with a startup context use
@@ -910,7 +914,8 @@ acceptance criterion.
 - local process supervision for `exec://`;
 - plugin-originated asynchronous event streams;
 - remote-to-host capability callbacks;
-- TUI and gateway protocols;
+- adding TUI/Agent Manager frames to the plugin RPC protocol (the dedicated
+  `gatewayrpc` protocol owns that boundary);
 
 These may be added through new drivers, capabilities, or protocol versions
 without changing the core plugin ownership and event-effect model.

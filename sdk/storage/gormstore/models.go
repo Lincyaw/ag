@@ -68,7 +68,7 @@ type TrajectoryEntry struct {
 	CauseCode      string
 	ActionKind     string
 	PayloadVersion uint32
-	Payload        []byte  `gorm:"type:blob"`
+	Payload        []byte
 	AttributesJSON *string `gorm:"type:text"`
 	AuditJSON      *string `gorm:"type:text"`
 }
@@ -85,12 +85,12 @@ type Operation struct {
 	ResourceRevision   string
 	State              string
 	Revision           uint64
-	Input              []byte  `gorm:"type:blob"`
-	InvocationJSON     string  `gorm:"type:text"`
+	Input              []byte
+	InvocationJSON     string `gorm:"type:text"`
 	InvocationRootID   string
 	InvocationParentID string
 	InvocationGroupID  string
-	Output             []byte `gorm:"type:blob"`
+	Output             []byte
 	OperationError     string `gorm:"type:text"`
 	SubmittedAt        time.Time
 	UpdatedAt          time.Time
@@ -116,7 +116,7 @@ type Delivery struct {
 	EventName        string
 	EventSessionID   string
 	EventGeneration  uint64
-	EventPayload     []byte `gorm:"type:blob"`
+	EventPayload     []byte
 	State            string
 	Attempt          int
 	AvailableAt      *time.Time
@@ -140,7 +140,7 @@ type ContextInjection struct {
 	TargetSessionID   string
 	TargetExecutionID string
 	IsMeta            bool
-	Messages          []byte  `gorm:"type:blob"`
+	Messages          []byte
 	AttributesJSON    *string `gorm:"type:text"`
 	CreatedAt         time.Time
 }

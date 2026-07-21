@@ -11,15 +11,19 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/lincyaw/ag/gateway"
+	gatewaymanager "github.com/lincyaw/ag/gateway/manager"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 )
 
 func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cleanupManagedGatewayProcess(t, home)
 	workspace := t.TempDir()
-	state := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(workspace, "input.txt"),
 		[]byte("file-content-from-cli"),
@@ -32,10 +36,8 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 	defer server.Close()
 
 	first := executeCLI(t,
-		"--state-dir", state,
 		"--otel=false",
 		"run",
-		"--session", "cli-e2e",
 		"--prompt", "use both tools",
 		"--output", "json",
 		"--base-url", server.URL+"/v1",
@@ -44,18 +46,22 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 		"--bash",
 	)
 	var firstOutput struct {
-		SessionID string              `json:"session_id"`
-		Result    agentruntime.Result `json:"result"`
+		TrajectoryID string              `json:"trajectory_id"`
+		Result       agentruntime.Result `json:"result"`
 	}
 	decodeJSON(t, first.stdout, &firstOutput)
-	if firstOutput.SessionID != "cli-e2e" || firstOutput.Result.Output != "first run complete" ||
+	trajectoryID := firstOutput.TrajectoryID
+	if trajectoryID == "" || firstOutput.Result.Output != "first run complete" ||
 		firstOutput.Result.Turns != 2 || firstOutput.Result.ToolCalls != 2 {
 		t.Fatalf("first output = %#v", firstOutput)
 	}
-	_, sqliteErr := os.Stat(filepath.Join(state, "agent-state.db"))
-	_, duckdbErr := os.Stat(filepath.Join(state, "agent-state.duckdb"))
-	if sqliteErr != nil && duckdbErr != nil {
-		t.Fatalf("durable state missing: sqlite=%v duckdb=%v", sqliteErr, duckdbErr)
+	configRoot, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(configRoot, "ag", "state", "agent-state.db")
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("managed trajectory state missing: %v", err)
 	}
 
 	requests := server.requests(t)
@@ -65,8 +71,7 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 	assertSecondProviderRequestContainsToolResults(t, requests[1], workspace)
 
 	shown := executeCLI(t,
-		"--state-dir", state,
-		"trajectory", "show", "cli-e2e", "-o", "json",
+		"trajectory", "show", trajectoryID, "-o", "json",
 	)
 	var trajectory sdk.Trajectory
 	decodeJSON(t, shown.stdout, &trajectory)
@@ -75,8 +80,7 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 		t.Fatalf("checkpoint IDs = %v", checkpoints)
 	}
 	firstCheckpoint := executeCLI(t,
-		"--state-dir", state,
-		"trajectory", "show", "cli-e2e", "--head", checkpoints[0], "-o", "json",
+		"trajectory", "show", trajectoryID, "--head", checkpoints[0], "-o", "json",
 	)
 	var checkpointBranch sdk.Trajectory
 	decodeJSON(t, firstCheckpoint.stdout, &checkpointBranch)
@@ -86,23 +90,21 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 	}
 
 	preview := executeCLI(t,
-		"--state-dir", state,
-		"trajectory", "rollback", "cli-e2e", checkpoints[0],
+		"trajectory", "rollback", trajectoryID, checkpoints[0],
 		"--dry-run", "-o", "json",
 	)
 	var rollbackPreview rollbackPreviewOutput
 	decodeJSON(t, preview.stdout, &rollbackPreview)
 	if !rollbackPreview.DryRun ||
-		rollbackPreview.TrajectoryID != "cli-e2e" ||
+		rollbackPreview.TrajectoryID != trajectoryID ||
 		rollbackPreview.CheckpointID != checkpoints[0] {
 		t.Fatalf("rollback preview = %#v", rollbackPreview)
 	}
 
 	second := executeCLI(t,
-		"--state-dir", state,
 		"--otel=false",
 		"run",
-		"--resume", "cli-e2e",
+		trajectoryID,
 		"--prompt", "continue from checkpoint",
 		"--output", "json",
 		"--base-url", server.URL+"/v1",
@@ -111,8 +113,8 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 		"--bash",
 	)
 	var secondOutput struct {
-		SessionID string              `json:"session_id"`
-		Result    agentruntime.Result `json:"result"`
+		TrajectoryID string              `json:"trajectory_id"`
+		Result       agentruntime.Result `json:"result"`
 	}
 	decodeJSON(t, second.stdout, &secondOutput)
 	if secondOutput.Result.Output != "resumed run complete" || secondOutput.Result.Turns != 1 {
@@ -120,8 +122,8 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 	}
 
 	rolledBack := executeCLI(t,
-		"--state-dir", state,
-		"trajectory", "rollback", "cli-e2e", checkpoints[0], "-o", "json",
+		"trajectory", "rollback", trajectoryID, checkpoints[0],
+		"--yes", "-o", "json",
 	)
 	var rollbackOutput map[string]string
 	decodeJSON(t, rolledBack.stdout, &rollbackOutput)
@@ -130,8 +132,8 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 	}
 
 	branch := executeCLI(t,
-		"--state-dir", state,
-		"trajectory", "show", "cli-e2e", "--head", rollbackOutput["head"], "-o", "json",
+		"trajectory", "show", trajectoryID,
+		"--head", rollbackOutput["head"], "-o", "json",
 	)
 	var rollbackBranch sdk.Trajectory
 	decodeJSON(t, branch.stdout, &rollbackBranch)
@@ -145,10 +147,48 @@ func TestCLIEndToEndToolsResumeInspectAndRollback(t *testing.T) {
 		}
 	}
 
-	listed := executeCLI(t, "--state-dir", state, "trajectory", "list", "-o", "json")
-	var summaries []sdk.TrajectorySummary
+	paused := executeCLI(t, "trajectory", "pause", trajectoryID, "-o", "json")
+	var control trajectoryControlOutput
+	decodeJSON(t, paused.stdout, &control)
+	if control.Status != agentStatusPaused {
+		t.Fatalf("pause output = %#v", control)
+	}
+	submitted := executeCLI(
+		t, "trajectory", "submit", trajectoryID,
+		"--prompt", "queued while paused", "-o", "json",
+	)
+	control = trajectoryControlOutput{}
+	decodeJSON(t, submitted.stdout, &control)
+	if control.InputID == "" || control.Status != string(gateway.AgentInputQueued) {
+		t.Fatalf("submit output = %#v", control)
+	}
+	pausedList := executeCLI(t, "trajectory", "list", "-o", "json")
+	var pausedSummaries []managedTrajectorySummary
+	decodeJSON(t, pausedList.stdout, &pausedSummaries)
+	if len(pausedSummaries) != 1 ||
+		pausedSummaries[0].Status != agentStatusPaused ||
+		pausedSummaries[0].PendingInputs != 1 {
+		t.Fatalf("paused summaries = %#v", pausedSummaries)
+	}
+	cancelled := executeCLI(t, "trajectory", "cancel", trajectoryID, "-o", "json")
+	control = trajectoryControlOutput{}
+	decodeJSON(t, cancelled.stdout, &control)
+	if control.Affected != 1 {
+		t.Fatalf("cancel output = %#v", control)
+	}
+	waited := executeCLI(t, "trajectory", "wait", trajectoryID, "-o", "json")
+	control = trajectoryControlOutput{}
+	decodeJSON(t, waited.stdout, &control)
+	if control.Status != agentStatusPaused {
+		t.Fatalf("wait output = %#v", control)
+	}
+	executeCLI(t, "trajectory", "resume", trajectoryID, "-o", "json")
+
+	listed := executeCLI(t, "trajectory", "list", "-o", "json")
+	var summaries []managedTrajectorySummary
 	decodeJSON(t, listed.stdout, &summaries)
-	if len(summaries) != 1 || summaries[0].ID != "cli-e2e" || summaries[0].Head != rollbackOutput["head"] {
+	if len(summaries) != 1 || summaries[0].ID != trajectoryID ||
+		summaries[0].Status != agentStatusIdle {
 		t.Fatalf("trajectory summaries = %#v", summaries)
 	}
 }
@@ -219,6 +259,7 @@ enabled = false
 func TestCLIDefaultHumanOutputAndExplicitJSONContract(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	cleanupManagedGatewayProcess(t, home)
 	t.Setenv("OPENAI_API_KEY", "")
 	configFile := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(configFile, []byte(`
@@ -251,7 +292,7 @@ api_key = "cli-config-key"
 	)
 	for _, expected := range []string{
 		"human-readable answer",
-		"Session:     human-session",
+		"Trajectory:  human-session",
 		"Turns:       1",
 		"Tool calls:  0",
 		"Cause:       model_end",
@@ -378,6 +419,31 @@ api_key = "cli-config-key"
 		!strings.Contains(failure.Error.Message, "unknown flag") {
 		t.Fatalf("late JSON flag error = %#v", failure)
 	}
+}
+
+func cleanupManagedGatewayProcess(t *testing.T, home string) {
+	t.Helper()
+	t.Cleanup(func() {
+		readyPath := filepath.Join(
+			home, ".ag", "gateway", gatewaymanager.DirectoryName,
+			gatewaymanager.ReadyName,
+		)
+		raw, err := os.ReadFile(readyPath)
+		if err != nil {
+			return
+		}
+		var ready gatewaymanager.Ready
+		if json.Unmarshal(raw, &ready) != nil || ready.PID <= 0 ||
+			ready.PID == os.Getpid() {
+			return
+		}
+		process, err := os.FindProcess(ready.PID)
+		if err != nil {
+			return
+		}
+		_ = process.Signal(os.Interrupt)
+		time.Sleep(25 * time.Millisecond)
+	})
 }
 
 type cliResult struct {

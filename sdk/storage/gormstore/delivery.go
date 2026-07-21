@@ -29,6 +29,12 @@ func (ds *deliveryStore) Enqueue(ctx context.Context, deliveries ...sdk.Delivery
 	defer ds.store.writeMu.Unlock()
 
 	return ds.store.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := ds.store.lockMutationResource(
+			tx,
+			"delivery:enqueue:"+ds.store.namespace+":"+ds.queue,
+		); err != nil {
+			return err
+		}
 		return ds.enqueueInTx(tx, prepared)
 	})
 }
@@ -128,12 +134,7 @@ func (ds *deliveryStore) Lease(
 	err := ds.store.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Head-of-line per partition: find the minimum sequence per partition
 		// among non-terminal deliveries, then pick the first available one.
-		sqlDB, err := tx.DB()
-		if err != nil {
-			return err
-		}
-		row := sqlDB.QueryRowContext(ctx,
-			`WITH heads AS (
+		query := `WITH heads AS (
 				SELECT partition_key, MIN(sequence) AS sequence
 				FROM ag_deliveries
 				WHERE namespace = ?
@@ -153,7 +154,15 @@ func (ds *deliveryStore) Lease(
 			    OR (delivery.state = ? AND delivery.lease_expires_at <= ?)
 			  )
 			ORDER BY delivery.sequence
-			LIMIT 1`,
+			LIMIT 1`
+		if ds.store.dialect == "postgres" {
+			query += " FOR UPDATE OF delivery SKIP LOCKED"
+		}
+		var candidate struct {
+			ID string
+		}
+		result := tx.Raw(
+			query,
 			ds.store.namespace,
 			ds.queue,
 			string(sdk.DeliveryDelivered),
@@ -164,12 +173,14 @@ func (ds *deliveryStore) Lease(
 			now,
 			string(sdk.DeliveryLeased),
 			now,
-		)
-		var candidateID string
-		if err := row.Scan(&candidateID); err != nil {
+		).Scan(&candidate)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
 			return sdk.ErrNoDelivery
 		}
-		existing, err := ds.loadTx(tx, candidateID)
+		existing, err := ds.loadTx(tx, candidate.ID)
 		if err != nil {
 			return err
 		}
@@ -243,7 +254,7 @@ func (ds *deliveryStore) transition(
 	defer ds.store.writeMu.Unlock()
 
 	return ds.store.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		delivery, err := ds.loadTx(tx, id)
+		delivery, err := ds.loadTx(ds.store.forUpdate(tx), id)
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return fmt.Errorf("%w: %s", sdk.ErrDeliveryLease, id)
 		}
@@ -398,12 +409,12 @@ func rowToDelivery(row Delivery) (sdk.Delivery, error) {
 			Generation: row.EventGeneration,
 			Payload:    append(json.RawMessage(nil), row.EventPayload...),
 		},
-		State:     sdk.DeliveryState(row.State),
-		Attempt:   row.Attempt,
+		State:      sdk.DeliveryState(row.State),
+		Attempt:    row.Attempt,
 		LeaseToken: row.LeaseToken,
-		LastError: row.LastError,
-		CreatedAt: row.CreatedAt.UTC(),
-		UpdatedAt: row.UpdatedAt.UTC(),
+		LastError:  row.LastError,
+		CreatedAt:  row.CreatedAt.UTC(),
+		UpdatedAt:  row.UpdatedAt.UTC(),
 	}
 	if row.AvailableAt != nil {
 		delivery.AvailableAt = row.AvailableAt.UTC()

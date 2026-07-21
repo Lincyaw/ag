@@ -2,11 +2,13 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"math"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -34,15 +36,21 @@ type PluginBinding struct {
 }
 
 type Session struct {
-	ID        string          `json:"id"`
-	UserID    string          `json:"user_id"`
-	Provider  string          `json:"provider,omitempty"`
-	System    string          `json:"system,omitempty"`
-	MaxTurns  int             `json:"max_turns"`
-	Revision  uint64          `json:"revision"`
-	Plugins   []PluginBinding `json:"plugins"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	ID            string `json:"id"`
+	UserID        string `json:"user_id"`
+	Provider      string `json:"provider,omitempty"`
+	System        string `json:"system,omitempty"`
+	MaxTurns      int    `json:"max_turns"`
+	WorkspaceRoot string `json:"workspace_root,omitempty"`
+	// RuntimeConfig is a private, durable execution profile supplied when the
+	// trajectory is created. It is deliberately excluded from API JSON so
+	// listing or attaching to a trajectory cannot disclose tool configuration.
+	RuntimeConfig json.RawMessage `json:"-"`
+	Paused        bool            `json:"paused,omitempty"`
+	Revision      uint64          `json:"revision"`
+	Plugins       []PluginBinding `json:"plugins"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
 }
 
 type SessionPage struct {
@@ -69,6 +77,7 @@ type SessionStore interface {
 func normalizeSession(session Session) (Session, error) {
 	session.ID = strings.TrimSpace(session.ID)
 	session.Provider = strings.TrimSpace(session.Provider)
+	session.WorkspaceRoot = strings.TrimSpace(session.WorkspaceRoot)
 	if err := sdk.ValidateResourceName("gateway session", session.ID); err != nil {
 		return Session{}, err
 	}
@@ -82,8 +91,31 @@ func normalizeSession(session Session) (Session, error) {
 			return Session{}, err
 		}
 	}
-	if session.MaxTurns <= 0 {
-		return Session{}, errors.New("gateway session max turns must be positive")
+	if session.MaxTurns < 0 {
+		return Session{}, errors.New("gateway session max turns cannot be negative")
+	}
+	if session.WorkspaceRoot != "" {
+		if !filepath.IsAbs(session.WorkspaceRoot) {
+			return Session{}, errors.New(
+				"gateway session workspace root must be absolute",
+			)
+		}
+		session.WorkspaceRoot = filepath.Clean(session.WorkspaceRoot)
+	}
+	if len(session.RuntimeConfig) > 0 {
+		if len(session.RuntimeConfig) > 1<<20 {
+			return Session{}, errors.New(
+				"gateway session runtime config exceeds 1 MiB",
+			)
+		}
+		if !json.Valid(session.RuntimeConfig) {
+			return Session{}, errors.New(
+				"gateway session runtime config is not valid JSON",
+			)
+		}
+		session.RuntimeConfig = append(
+			json.RawMessage(nil), session.RuntimeConfig...,
+		)
 	}
 	plugins := make([]PluginBinding, 0, len(session.Plugins))
 	seen := make(map[string]struct{}, len(session.Plugins))
@@ -191,6 +223,9 @@ func normalizeUserID(value string) (string, error) {
 
 func cloneSession(session Session) Session {
 	session.Plugins = clonePluginBindings(session.Plugins)
+	session.RuntimeConfig = append(
+		json.RawMessage(nil), session.RuntimeConfig...,
+	)
 	return session
 }
 

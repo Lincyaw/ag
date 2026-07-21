@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/lincyaw/ag/internal/lifecycle"
@@ -16,6 +17,7 @@ import (
 var (
 	ErrExecutionNotFound = errors.New("gateway execution not found")
 	ErrExecutionActive   = errors.New("gateway session execution is active")
+	ErrGatewayDraining   = errors.New("gateway is draining")
 )
 
 type Execution struct {
@@ -46,8 +48,47 @@ type ExecutionBackend interface {
 	Close(context.Context) error
 }
 
+// ExecutionDrainer is the optional graceful handoff phase implemented by
+// hosted backends. It stops admission and waits for active executions to hand
+// ownership back at a durable model-turn boundary without cancelling them.
+type ExecutionDrainer interface {
+	Drain(context.Context) error
+}
+
+// TrajectoryBackend is the optional durable trajectory control surface of an
+// execution backend. Gateway RPC uses it so show/rollback operate on the same
+// state hosted by background execution rather than opening a second store.
+type TrajectoryBackend interface {
+	LoadTrajectory(context.Context, Session, string) (sdk.Trajectory, error)
+	RollbackTrajectory(context.Context, Session, string) (sdk.Trajectory, error)
+}
+
+// TrajectoryEntryPageBackend is the optional payload-free inspection path.
+// Runtime-backed gateways implement it when their StateBackend can inspect
+// branch metadata without materializing trajectory payloads.
+type TrajectoryEntryPageBackend interface {
+	ListTrajectoryEntries(
+		context.Context,
+		Session,
+		string,
+		TrajectoryEntryQuery,
+	) (TrajectoryEntryPage, error)
+}
+
+type TrajectoryConversationBackend interface {
+	ListConversation(
+		context.Context,
+		Session,
+		string,
+		ConversationQuery,
+	) (ConversationPage, error)
+}
+
 type ServiceConfig struct {
 	Store            SessionStore
+	Events           EventStore
+	Inputs           InputStore
+	Interactions     *InteractionManager
 	Directory        PluginDirectory
 	Executions       ExecutionBackend
 	DefaultNamespace string
@@ -57,17 +98,39 @@ type ServiceConfig struct {
 }
 
 type Service struct {
-	store      SessionStore
-	directory  PluginDirectory
-	executions ExecutionBackend
-	manager    *Manager
-	gates      *sessionGate
-	defaults   Session
+	store        SessionStore
+	events       EventStore
+	inputs       InputStore
+	interactions *InteractionManager
+	directory    PluginDirectory
+	executions   ExecutionBackend
+	trajectories TrajectoryBackend
+	manager      *Manager
+	supervisor   *inputSupervisor
+	gates        *sessionGate
+	draining     atomic.Bool
+	defaults     Session
 }
 
 func NewService(config ServiceConfig) (*Service, error) {
 	if config.Executions == nil {
 		return nil, errors.New("gateway execution backend is nil")
+	}
+	if config.Events == nil {
+		config.Events = NewMemoryEventStore()
+	}
+	if config.Inputs == nil {
+		config.Inputs = NewMemoryInputStore()
+	}
+	if config.Interactions == nil {
+		var err error
+		config.Interactions, err = NewInteractionManager(
+			NewMemoryInteractionStore(),
+			config.Events,
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 	config.DefaultProvider = strings.TrimSpace(config.DefaultProvider)
 	if config.DefaultProvider != "" {
@@ -84,16 +147,20 @@ func NewService(config ServiceConfig) (*Service, error) {
 		)
 	}
 	service := &Service{
-		store:      config.Store,
-		directory:  config.Directory,
-		executions: config.Executions,
-		gates:      newSessionGate(),
+		store:        config.Store,
+		events:       config.Events,
+		inputs:       config.Inputs,
+		interactions: config.Interactions,
+		directory:    config.Directory,
+		executions:   config.Executions,
+		gates:        newSessionGate(),
 		defaults: Session{
 			Provider: config.DefaultProvider,
 			System:   config.DefaultSystem,
 			MaxTurns: config.DefaultMaxTurns,
 		},
 	}
+	service.trajectories, _ = config.Executions.(TrajectoryBackend)
 	manager, err := NewManager(ManagerConfig{
 		Store:            config.Store,
 		Directory:        config.Directory,
@@ -104,13 +171,126 @@ func NewService(config ServiceConfig) (*Service, error) {
 		return nil, err
 	}
 	service.manager = manager
+	service.supervisor = newInputSupervisor(
+		service.inputs,
+		service.store,
+		service.executions,
+		service.events,
+	)
 	return service, nil
+}
+
+func (service *Service) LoadTrajectory(
+	ctx context.Context,
+	userID string,
+	trajectoryID string,
+	head string,
+) (sdk.Trajectory, error) {
+	if service.trajectories == nil {
+		return sdk.Trajectory{}, errors.New("gateway trajectory inspection is unavailable")
+	}
+	session, err := service.manager.ownedSession(ctx, userID, trajectoryID)
+	if err != nil {
+		return sdk.Trajectory{}, err
+	}
+	return service.trajectories.LoadTrajectory(ctx, session, strings.TrimSpace(head))
+}
+
+func (service *Service) ListConversation(
+	ctx context.Context,
+	userID string,
+	trajectoryID string,
+	head string,
+	query ConversationQuery,
+) (ConversationPage, error) {
+	session, err := service.manager.ownedSession(ctx, userID, trajectoryID)
+	if err != nil {
+		return ConversationPage{}, err
+	}
+	if projector, ok := service.executions.(TrajectoryConversationBackend); ok {
+		return projector.ListConversation(
+			ctx,
+			session,
+			strings.TrimSpace(head),
+			query,
+		)
+	}
+	trajectory, err := service.LoadTrajectory(
+		ctx,
+		userID,
+		trajectoryID,
+		strings.TrimSpace(head),
+	)
+	if err != nil {
+		return ConversationPage{}, err
+	}
+	return projectConversationPage(trajectory, query)
+}
+
+func (service *Service) ListTrajectoryEntries(
+	ctx context.Context,
+	userID string,
+	trajectoryID string,
+	head string,
+	query TrajectoryEntryQuery,
+) (TrajectoryEntryPage, error) {
+	session, err := service.manager.ownedSession(ctx, userID, trajectoryID)
+	if err != nil {
+		return TrajectoryEntryPage{}, err
+	}
+	if inspector, ok := service.executions.(TrajectoryEntryPageBackend); ok {
+		return inspector.ListTrajectoryEntries(
+			ctx,
+			session,
+			strings.TrimSpace(head),
+			query,
+		)
+	}
+	trajectory, err := service.LoadTrajectory(
+		ctx,
+		userID,
+		trajectoryID,
+		strings.TrimSpace(head),
+	)
+	if err != nil {
+		return TrajectoryEntryPage{}, err
+	}
+	return projectTrajectoryEntryPage(trajectory, query)
+}
+
+func (service *Service) RollbackTrajectory(
+	ctx context.Context,
+	userID string,
+	trajectoryID string,
+	checkpointID string,
+) (sdk.Trajectory, error) {
+	if service.trajectories == nil {
+		return sdk.Trajectory{}, errors.New("gateway trajectory rollback is unavailable")
+	}
+	unlock, err := service.lockSession(ctx, trajectoryID)
+	if err != nil {
+		return sdk.Trajectory{}, err
+	}
+	defer unlock()
+	session, err := service.manager.ownedSession(ctx, userID, trajectoryID)
+	if err != nil {
+		return sdk.Trajectory{}, err
+	}
+	if err := service.requireIdle(ctx, session); err != nil {
+		return sdk.Trajectory{}, err
+	}
+	return service.trajectories.RollbackTrajectory(
+		ctx, session, strings.TrimSpace(checkpointID),
+	)
 }
 
 func (service *Service) CreateSession(
 	ctx context.Context,
 	session Session,
 ) (Session, error) {
+	if service.draining.Load() {
+		return Session{}, ErrGatewayDraining
+	}
 	if session.Provider == "" {
 		session.Provider = service.defaults.Provider
 	}
@@ -226,6 +406,9 @@ func (service *Service) SubmitMessage(
 	sessionID string,
 	content string,
 ) (Execution, error) {
+	if service.draining.Load() {
+		return Execution{}, ErrGatewayDraining
+	}
 	if strings.TrimSpace(content) == "" {
 		return Execution{}, fmt.Errorf(
 			"%w: gateway message content is empty",
@@ -272,6 +455,268 @@ func (service *Service) EnqueueContextInjection(
 		executionID,
 		injection,
 	)
+}
+
+func (service *Service) ListEvents(
+	ctx context.Context,
+	userID string,
+	sessionID string,
+	query EventQuery,
+) (EventPage, error) {
+	session, err := service.manager.ownedSession(ctx, userID, sessionID)
+	if err != nil {
+		return EventPage{}, err
+	}
+	return service.events.List(ctx, session.ID, query)
+}
+
+func (service *Service) GetEventCursor(
+	ctx context.Context,
+	userID string,
+	trajectoryID string,
+) (EventCursor, error) {
+	if _, err := service.manager.ownedSession(ctx, userID, trajectoryID); err != nil {
+		return EventCursor{}, err
+	}
+	sequence, err := service.events.Latest(ctx, trajectoryID)
+	return EventCursor{Sequence: sequence}, err
+}
+
+func (service *Service) EnqueueInput(
+	ctx context.Context,
+	userID string,
+	sessionID string,
+	input AgentInput,
+) (AgentInput, error) {
+	if service.draining.Load() {
+		return AgentInput{}, ErrGatewayDraining
+	}
+	session, err := service.manager.ownedSession(ctx, userID, sessionID)
+	if err != nil {
+		return AgentInput{}, err
+	}
+	input.SessionID = session.ID
+	input, err = normalizeAgentInput(input)
+	if err != nil {
+		return AgentInput{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
+	input, err = service.inputs.Enqueue(ctx, input)
+	if err != nil {
+		return AgentInput{}, err
+	}
+	service.supervisor.managerEvent(
+		session.ID,
+		GatewayEventInputQueued,
+		queuedInputEvent(input),
+	)
+	if !session.Paused {
+		service.supervisor.schedule(session.ID)
+	}
+	return input, nil
+}
+
+func queuedInputEvent(input AgentInput) AgentInput {
+	input.State = AgentInputQueued
+	input.ExecutionID = ""
+	input.LastError = ""
+	input.Revision = 1
+	input.UpdatedAt = input.CreatedAt
+	return input
+}
+
+func (service *Service) GetInput(
+	ctx context.Context,
+	userID string,
+	sessionID string,
+	inputID string,
+) (AgentInput, error) {
+	session, err := service.manager.ownedSession(ctx, userID, sessionID)
+	if err != nil {
+		return AgentInput{}, err
+	}
+	return service.inputs.Get(ctx, session.ID, inputID)
+}
+
+func (service *Service) ListInputs(
+	ctx context.Context,
+	userID string,
+	sessionID string,
+	query InputQuery,
+) (InputPage, error) {
+	session, err := service.manager.ownedSession(ctx, userID, sessionID)
+	if err != nil {
+		return InputPage{}, err
+	}
+	return service.inputs.List(ctx, session.ID, query)
+}
+
+func (service *Service) CancelInput(
+	ctx context.Context,
+	userID string,
+	sessionID string,
+	inputID string,
+	expectedRevision uint64,
+) (AgentInput, error) {
+	session, err := service.manager.ownedSession(ctx, userID, sessionID)
+	if err != nil {
+		return AgentInput{}, err
+	}
+	input, err := service.inputs.Get(ctx, session.ID, inputID)
+	if err != nil {
+		return AgentInput{}, err
+	}
+	if input.Revision != expectedRevision {
+		return AgentInput{}, fmt.Errorf(
+			"%w: input %s has revision %d, expected %d",
+			ErrInputConflict,
+			input.ID,
+			input.Revision,
+			expectedRevision,
+		)
+	}
+	if input.State.Terminal() {
+		return input, nil
+	}
+	if input.State == AgentInputQueued {
+		cancelled, err := service.inputs.CancelQueued(
+			ctx,
+			session.ID,
+			input.ID,
+			expectedRevision,
+		)
+		if err == nil {
+			service.supervisor.managerEvent(
+				session.ID,
+				GatewayEventInputCompleted,
+				cancelled,
+			)
+		}
+		return cancelled, err
+	}
+	if input.ExecutionID == "" {
+		return AgentInput{}, fmt.Errorf(
+			"%w: input %s is being bound to an execution; retry cancellation",
+			ErrInputConflict,
+			input.ID,
+		)
+	}
+	if _, err := service.executions.Cancel(
+		ctx,
+		session,
+		input.ExecutionID,
+	); err != nil {
+		return AgentInput{}, err
+	}
+	return input, nil
+}
+
+func (service *Service) SetSessionPaused(
+	ctx context.Context,
+	userID string,
+	sessionID string,
+	paused bool,
+	expectedRevision uint64,
+) (Session, error) {
+	unlock, err := service.lockSession(ctx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	defer unlock()
+	session, err := service.manager.ownedSession(ctx, userID, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	if session.Revision != expectedRevision {
+		return Session{}, fmt.Errorf(
+			"%w: session %s has revision %d, expected %d",
+			ErrSessionConflict,
+			session.ID,
+			session.Revision,
+			expectedRevision,
+		)
+	}
+	if session.Paused == paused {
+		return session, nil
+	}
+	session.Paused = paused
+	updated, err := service.store.Save(ctx, session, expectedRevision)
+	if err != nil {
+		return Session{}, err
+	}
+	eventName := GatewayEventSessionPaused
+	if !paused {
+		eventName = GatewayEventSessionResumed
+		service.supervisor.schedule(session.ID)
+	}
+	service.supervisor.managerEvent(session.ID, eventName, updated)
+	return updated, nil
+}
+
+func (service *Service) GetInteraction(
+	ctx context.Context,
+	userID string,
+	sessionID string,
+	interactionID string,
+) (Interaction, error) {
+	session, err := service.manager.ownedSession(ctx, userID, sessionID)
+	if err != nil {
+		return Interaction{}, err
+	}
+	return service.interactions.Get(ctx, session.ID, interactionID)
+}
+
+func (service *Service) ListInteractions(
+	ctx context.Context,
+	userID string,
+	sessionID string,
+	query InteractionQuery,
+) (InteractionPage, error) {
+	session, err := service.manager.ownedSession(ctx, userID, sessionID)
+	if err != nil {
+		return InteractionPage{}, err
+	}
+	return service.interactions.List(ctx, session.ID, query)
+}
+
+func (service *Service) ResolveInteraction(
+	ctx context.Context,
+	userID string,
+	sessionID string,
+	interactionID string,
+	expectedRevision uint64,
+	answer InteractionAnswer,
+) (Interaction, error) {
+	session, err := service.manager.ownedSession(ctx, userID, sessionID)
+	if err != nil {
+		return Interaction{}, err
+	}
+	resolved, err := service.interactions.Resolve(
+		ctx,
+		session.ID,
+		interactionID,
+		expectedRevision,
+		answer,
+	)
+	if err != nil {
+		if errors.Is(err, ErrInteractionConflict) {
+			return Interaction{}, err
+		}
+		return Interaction{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
+	return resolved, nil
+}
+
+func (service *Service) WaitEvents(
+	ctx context.Context,
+	userID string,
+	sessionID string,
+	query EventQuery,
+) (EventPage, error) {
+	session, err := service.manager.ownedSession(ctx, userID, sessionID)
+	if err != nil {
+		return EventPage{}, err
+	}
+	return service.events.Wait(ctx, session.ID, query)
 }
 
 func (service *Service) lockSession(
@@ -353,7 +798,11 @@ func (service *Service) RecoverSessions(
 		page, err := service.store.List(ctx, request)
 		if err != nil {
 			failures = append(failures, err)
-			return scheduled, errors.Join(failures...)
+			queueErr := service.supervisor.recover(ctx)
+			return scheduled, errors.Join(
+				errors.Join(failures...),
+				queueErr,
+			)
 		}
 		for _, session := range page.Items {
 			execution, err := service.executions.Recover(ctx, session)
@@ -372,7 +821,11 @@ func (service *Service) RecoverSessions(
 			scheduled = append(scheduled, execution)
 		}
 		if page.Next == "" {
-			return scheduled, errors.Join(failures...)
+			queueErr := service.supervisor.recover(ctx)
+			return scheduled, errors.Join(
+				errors.Join(failures...),
+				queueErr,
+			)
 		}
 		request.After = page.Next
 	}
@@ -383,10 +836,30 @@ func (service *Service) Close(ctx context.Context) error {
 		return nil
 	}
 	return errors.Join(
+		service.supervisor.close(ctx),
 		service.executions.Close(ctx),
+		service.inputs.Close(ctx),
+		service.interactions.Close(ctx),
+		service.events.Close(ctx),
 		service.directory.Close(ctx),
 		service.store.Close(ctx),
 	)
+}
+
+// Drain stops new work and waits for active execution hosts to yield at their
+// next durable model-turn boundary. Close remains the forced cancellation and
+// resource cleanup phase when this wait exceeds the host shutdown deadline.
+func (service *Service) Drain(ctx context.Context) error {
+	if service == nil {
+		return nil
+	}
+	service.draining.Store(true)
+	queueErr := service.supervisor.close(ctx)
+	drainer, ok := service.executions.(ExecutionDrainer)
+	if !ok {
+		return queueErr
+	}
+	return errors.Join(queueErr, drainer.Drain(ctx))
 }
 
 func (service *Service) requireIdle(

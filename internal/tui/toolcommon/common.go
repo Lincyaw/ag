@@ -9,9 +9,9 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/lincyaw/ag/internal/tui/tools"
 	"github.com/lincyaw/ag/internal/tui/spinner"
 	"github.com/lincyaw/ag/internal/tui/styles"
+	"github.com/lincyaw/ag/internal/tui/tools"
 	"github.com/lincyaw/ag/internal/tui/types"
 )
 
@@ -196,7 +196,7 @@ func RenderTool(msg *types.Message, inProgress spinner.Spinner, args, result str
 
 	warning := LongRunningWarning(msg)
 
-	if header, ok := RenderFriendlyHeader(msg, inProgress); ok {
+	if header, ok := RenderFriendlyHeader(msg, inProgress); ok && !hideToolDetails {
 		content := header
 		if args != "" && !hideToolDetails {
 			firstLineWidth := width - lipgloss.Width(content) - 1

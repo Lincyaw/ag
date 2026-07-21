@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -370,6 +371,50 @@ func TestConcurrentPoolsFenceClaims(t *testing.T) {
 			successes,
 			claimed,
 		)
+	}
+}
+
+func TestConcurrentPoolsSerializeDeliverySequences(t *testing.T) {
+	namespace := "delivery-sequence-" + sdk.NewID()
+	first := openPostgresTestBackend(t, namespace)
+	second := openPostgresTestBackend(t, namespace)
+	firstQueue, err := first.Deliveries("concurrent-queue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondQueue, err := second.Deliveries("concurrent-queue")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	errorsByWorker := make(chan error, 2)
+	for index, queue := range []sdk.DeliveryStore{firstQueue, secondQueue} {
+		go func(index int, queue sdk.DeliveryStore) {
+			<-start
+			delivery := testDelivery(
+				fmt.Sprintf("concurrent-delivery-%d", index),
+				fmt.Sprintf("concurrent-event-%d", index),
+			)
+			delivery.Partition = fmt.Sprintf("partition-%d", index)
+			errorsByWorker <- queue.Enqueue(context.Background(), delivery)
+		}(index, queue)
+	}
+	close(start)
+	for range 2 {
+		if err := <-errorsByWorker; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deliveries, err := firstQueue.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != 2 ||
+		deliveries[0].Sequence != 1 ||
+		deliveries[1].Sequence != 2 {
+		t.Fatalf("concurrent delivery order = %#v", deliveries)
 	}
 }
 

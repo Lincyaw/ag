@@ -313,3 +313,43 @@
   ownership). `NewRuntime` validates an advertised atomic-state capability once
   and retains the resulting `AtomicStateBackend` port. Execution commits do not
   repeatedly query backend metadata or rediscover the same interface.
+
+## 2026-07-21
+
+- **The replica loop is self-hosted by one durable ag trajectory** (L2:
+  gateway/trajectory convention). The loop builds `ag` from its disposable
+  worktree, persists the returned trajectory ID, and resumes it after accepted
+  binary and private-gateway restarts instead of creating a fresh external
+  coding session every iteration.
+- **Progress Markdown is the compaction handoff** (L2: existing auto-compact
+  hook). The self-hosted trajectory uses a deliberately low compaction
+  threshold, while every candidate must update `docs/replica-progress.md`.
+  Conversation context may shrink; observed gaps, evidence, and next work stay
+  durable and reviewable outside model context.
+- **Caller state is seeded, never reset** (L4, flagged). A dedicated worktree
+  is overlaid with the caller's tracked diff and non-ignored untracked files,
+  then committed as its private baseline. Keep/discard resets and cleans only
+  that validated worktree, preserving an already-dirty caller workspace.
+- **A run freezes scenario inputs before comparison** (L2: measurement
+  validity). Claude references and ag candidates use a copied scenario corpus.
+  Scenario additions made by an iteration take effect in the next run rather
+  than comparing different input sequences under one score.
+- **Opening a live DuckDB backend is observational, never a repair operation**
+  (L4, flagged). Normal open may checkpoint and initialize missing schema, but
+  must not drop and recreate existing tables. Destructive table reconstruction
+  is reserved for the explicit corruption-repair path; otherwise a concurrent
+  trajectory read can invalidate an executing agent's operation queries.
+- **The loop validates semantic agent termination** (L2: execution contract).
+  A zero process exit is insufficient: only a `model_end` result can advance a
+  candidate to tests and measurement. Provider, hook, execution, cancellation,
+  and max-turn causes remain durable rejected-iteration evidence.
+- **Relational state converges on one GORM implementation** (L2: storage
+  composition). SQLite and PostgreSQL share aggregate persistence, transitions,
+  indexes, and atomic commit code. PostgreSQL retains only dialect concerns:
+  connection setup, row/advisory locks, and serialized schema migration. The
+  configured `state.backend_uri` is the gateway composition root, and the
+  manager derives a namespace per trajectory instead of creating a parallel
+  DuckDB file tree. PostgreSQL is preferred for persistent/remote managers;
+  absent a URI, new local state falls back to SQLite while existing DuckDB and
+  file stores remain readable for compatibility. This supersedes the earlier
+  choice of DuckDB as the default for new state directories.

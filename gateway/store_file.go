@@ -19,8 +19,15 @@ import (
 const fileSessionSchemaVersion uint32 = 1
 
 type fileSessionState struct {
-	SchemaVersion uint32             `json:"schema_version"`
-	Sessions      map[string]Session `json:"sessions"`
+	SchemaVersion uint32                   `json:"schema_version"`
+	Sessions      map[string]storedSession `json:"sessions"`
+}
+
+// storedSession keeps private execution configuration in the control-plane
+// store while Session's normal JSON representation remains safe for clients.
+type storedSession struct {
+	Session
+	RuntimeConfig json.RawMessage `json:"runtime_config,omitempty"`
 }
 
 type fileSessionStore struct {
@@ -79,7 +86,7 @@ func (store *fileSessionStore) Create(
 	session.Revision = 1
 	session.CreatedAt = now
 	session.UpdatedAt = now
-	state.Sessions[session.ID] = cloneSession(session)
+	state.Sessions[session.ID] = storeSession(session)
 	if err := store.writeLocked(ctx, state); err != nil {
 		return Session{}, err
 	}
@@ -102,11 +109,11 @@ func (store *fileSessionStore) Get(
 	if err != nil {
 		return Session{}, err
 	}
-	session, exists := state.Sessions[strings.TrimSpace(id)]
+	stored, exists := state.Sessions[strings.TrimSpace(id)]
 	if !exists {
 		return Session{}, fmt.Errorf("%w: %s", ErrSessionNotFound, id)
 	}
-	return cloneSession(session), nil
+	return cloneSession(stored.Session), nil
 }
 
 func (store *fileSessionStore) List(
@@ -129,7 +136,7 @@ func (store *fileSessionStore) List(
 	if err != nil {
 		return SessionPage{}, err
 	}
-	return listSessions(state.Sessions, request), nil
+	return listSessions(loadSessions(state.Sessions), request), nil
 }
 
 func (store *fileSessionStore) ListByUser(
@@ -157,7 +164,7 @@ func (store *fileSessionStore) ListByUser(
 	if err != nil {
 		return SessionPage{}, err
 	}
-	return listSessionsByUser(state.Sessions, userID, request), nil
+	return listSessionsByUser(loadSessions(state.Sessions), userID, request), nil
 }
 
 func (store *fileSessionStore) Save(
@@ -181,7 +188,7 @@ func (store *fileSessionStore) Save(
 	if err != nil {
 		return Session{}, err
 	}
-	current, exists := state.Sessions[session.ID]
+	stored, exists := state.Sessions[session.ID]
 	if !exists {
 		return Session{}, fmt.Errorf(
 			"%w: %s",
@@ -189,6 +196,7 @@ func (store *fileSessionStore) Save(
 			session.ID,
 		)
 	}
+	current := stored.Session
 	session, err = prepareSessionUpdate(
 		current,
 		session,
@@ -198,7 +206,7 @@ func (store *fileSessionStore) Save(
 	if err != nil {
 		return Session{}, err
 	}
-	state.Sessions[session.ID] = cloneSession(session)
+	state.Sessions[session.ID] = storeSession(session)
 	if err := store.writeLocked(ctx, state); err != nil {
 		return Session{}, err
 	}
@@ -223,10 +231,11 @@ func (store *fileSessionStore) Delete(
 	if err != nil {
 		return err
 	}
-	current, exists := state.Sessions[id]
+	stored, exists := state.Sessions[id]
 	if !exists {
 		return fmt.Errorf("%w: %s", ErrSessionNotFound, id)
 	}
+	current := stored.Session
 	if current.Revision != expectedRevision {
 		return fmt.Errorf(
 			"%w: session %s has revision %d, expected %d",
@@ -256,7 +265,7 @@ func (store *fileSessionStore) readLocked() (fileSessionState, error) {
 	if errors.Is(err, fs.ErrNotExist) {
 		return fileSessionState{
 			SchemaVersion: fileSessionSchemaVersion,
-			Sessions:      make(map[string]Session),
+			Sessions:      make(map[string]storedSession),
 		}, nil
 	}
 	if err != nil {
@@ -279,9 +288,13 @@ func (store *fileSessionStore) readLocked() (fileSessionState, error) {
 		)
 	}
 	if state.Sessions == nil {
-		state.Sessions = make(map[string]Session)
+		state.Sessions = make(map[string]storedSession)
 	}
-	for id, session := range state.Sessions {
+	for id, stored := range state.Sessions {
+		session := stored.Session
+		session.RuntimeConfig = append(
+			json.RawMessage(nil), stored.RuntimeConfig...,
+		)
 		normalized, err := normalizeSession(session)
 		if err != nil {
 			return fileSessionState{}, fmt.Errorf(
@@ -298,9 +311,27 @@ func (store *fileSessionStore) readLocked() (fileSessionState, error) {
 				id,
 			)
 		}
-		state.Sessions[id] = normalized
+		state.Sessions[id] = storeSession(normalized)
 	}
 	return state, nil
+}
+
+func storeSession(session Session) storedSession {
+	cloned := cloneSession(session)
+	return storedSession{
+		Session: cloned,
+		RuntimeConfig: append(
+			json.RawMessage(nil), cloned.RuntimeConfig...,
+		),
+	}
+}
+
+func loadSessions(stored map[string]storedSession) map[string]Session {
+	sessions := make(map[string]Session, len(stored))
+	for id, value := range stored {
+		sessions[id] = cloneSession(value.Session)
+	}
+	return sessions
 }
 
 func (store *fileSessionStore) writeLocked(

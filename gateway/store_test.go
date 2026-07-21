@@ -32,6 +32,34 @@ func TestSessionStoreContract(t *testing.T) {
 	}
 }
 
+func TestFileSessionStorePersistsPrivateRuntimeConfig(t *testing.T) {
+	directory := t.TempDir()
+	store, err := NewFileSessionStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := testSession("runtime-profile")
+	session.RuntimeConfig = []byte(`{"openai":{"enabled":false}}`)
+	if _, err := store.Create(t.Context(), session); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewFileSessionStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close(context.Background()) })
+	loaded, err := reopened.Get(t.Context(), session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(loaded.RuntimeConfig) != string(session.RuntimeConfig) {
+		t.Fatalf("runtime config = %s", loaded.RuntimeConfig)
+	}
+}
+
 func testSessionStoreContract(t *testing.T, store SessionStore) {
 	t.Helper()
 	ctx := t.Context()

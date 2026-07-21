@@ -11,3 +11,5 @@ examples/python-plugin/.events.jsonl
 .ag
 .config
 go/
+.replica-artifacts/
+.replica-worktrees/

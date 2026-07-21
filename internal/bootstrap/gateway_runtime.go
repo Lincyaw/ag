@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/lincyaw/ag/gateway"
 	appconfig "github.com/lincyaw/ag/internal/config"
-	"github.com/lincyaw/ag/pluginrpc"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 	"go.opentelemetry.io/otel/metric"
@@ -23,19 +23,11 @@ func GatewayRuntimeBuilder(
 	meter metric.Meter,
 	version string,
 ) gateway.RuntimeBuilder {
-	catalog := sdk.NewPluginRegistry()
-	catalogErr := pluginrpc.RegisterDrivers(
-		catalog,
-		pluginrpc.ClientConfig{},
-	)
 	return func(
 		ctx context.Context,
 		spec gateway.RuntimeBuildSpec,
 		state sdk.StateBackend,
 	) (*agentruntime.Runtime, error) {
-		if catalogErr != nil {
-			return nil, catalogErr
-		}
 		runtime, err := agentruntime.NewRuntimeContext(
 			ctx,
 			agentruntime.RuntimeConfig{
@@ -45,6 +37,7 @@ func GatewayRuntimeBuilder(
 				Meter:            meter,
 				Storage:          state,
 				StorageOwnership: agentruntime.StorageBorrowed,
+				EventObserver:    spec.EventObserver,
 			},
 		)
 		if err != nil {
@@ -55,29 +48,47 @@ func GatewayRuntimeBuilder(
 			defer cancel()
 			return nil, errors.Join(cause, runtime.Close(closeCtx))
 		}
+		if spec.Interactions != nil {
+			if _, err := runtime.Mount(
+				ctx,
+				sdk.Local(gateway.NewInteractionPlugin(spec.Interactions)),
+			); err != nil {
+				return fail(err)
+			}
+		}
+		sessionConfig, err := gatewaySessionConfig(config, spec)
+		if err != nil {
+			return fail(err)
+		}
+		plan, err := BuildPluginPlan(
+			ctx,
+			sessionConfig,
+			logger,
+			tracer,
+			meter,
+		)
+		if err != nil {
+			return fail(err)
+		}
 		bound := make(map[string]struct{}, len(spec.Plugins))
 		for _, binding := range spec.Plugins {
 			bound[binding.Name] = struct{}{}
 		}
-		mountLocal := func(plugin sdk.Plugin) error {
-			if _, replaced := bound[plugin.Manifest().Name]; replaced {
-				return nil
+		for _, name := range plan.Mounts {
+			if _, replaced := bound[name]; replaced {
+				continue
 			}
-			_, err := runtime.Mount(ctx, sdk.Local(plugin))
-			return err
-		}
-		localPlugins, err := configuredLocalPlugins(config, logger, tracer, meter)
-		if err != nil {
-			return fail(err)
-		}
-		for _, plugin := range localPlugins {
-			if err := mountLocal(plugin); err != nil {
+			source, err := plan.Catalog.Resolve(ctx, name)
+			if err != nil {
+				return fail(err)
+			}
+			if _, err := runtime.Mount(ctx, source); err != nil {
 				return fail(err)
 			}
 		}
 
 		for _, binding := range spec.Plugins {
-			source, err := catalog.Resolve(ctx, binding.URI)
+			source, err := plan.Catalog.Resolve(ctx, binding.URI)
 			if err != nil {
 				return fail(err)
 			}
@@ -94,6 +105,26 @@ func GatewayRuntimeBuilder(
 		}
 		return runtime, nil
 	}
+}
+
+func gatewaySessionConfig(
+	config appconfig.Config,
+	spec gateway.RuntimeBuildSpec,
+) (appconfig.Config, error) {
+	if len(spec.RuntimeConfig) > 0 {
+		var profile appconfig.TrajectoryRuntimeProfile
+		if err := json.Unmarshal(spec.RuntimeConfig, &profile); err != nil {
+			return appconfig.Config{}, fmt.Errorf(
+				"decode trajectory runtime profile: %w",
+				err,
+			)
+		}
+		config = profile.Apply(config)
+	}
+	if spec.WorkspaceRoot != "" {
+		config.Workspace.Root = spec.WorkspaceRoot
+	}
+	return config, nil
 }
 
 type expectedManifestSource struct {

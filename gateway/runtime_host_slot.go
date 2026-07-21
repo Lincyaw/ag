@@ -166,9 +166,7 @@ func (registry *activeHostRegistry) beginClose() (
 ) {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
-	if registry.closed {
-		return nil, false
-	}
+	started := !registry.closed
 	registry.closed = true
 	runtimes := make([]*agentruntime.Runtime, 0, len(registry.hosts))
 	for _, slot := range registry.hosts {
@@ -177,7 +175,7 @@ func (registry *activeHostRegistry) beginClose() (
 		}
 	}
 	registry.closeIfIdleLocked()
-	return runtimes, true
+	return runtimes, started
 }
 
 func (registry *activeHostRegistry) waitClosed(ctx context.Context) error {

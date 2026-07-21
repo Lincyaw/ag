@@ -3,9 +3,9 @@ package toolcommon
 import (
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/lincyaw/ag/internal/tui/spinner"
 	"github.com/lincyaw/ag/internal/tui/layout"
 	"github.com/lincyaw/ag/internal/tui/service"
+	"github.com/lincyaw/ag/internal/tui/spinner"
 	"github.com/lincyaw/ag/internal/tui/styles"
 	"github.com/lincyaw/ag/internal/tui/types"
 )

@@ -2,15 +2,15 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
-	"github.com/lincyaw/ag/internal/bootstrap"
+	gatewayclient "github.com/lincyaw/ag/gateway/client"
 	appconfig "github.com/lincyaw/ag/internal/config"
-	agentruntime "github.com/lincyaw/ag/sdk/runtime"
+	"github.com/lincyaw/ag/sdk"
 	"github.com/spf13/cobra"
 )
 
@@ -20,54 +20,93 @@ func (application *app) runCommand() *cobra.Command {
 	var resumeID string
 	var interactive bool
 	command := &cobra.Command{
-		Use:   "run",
-		Short: "Run a prompt and durably record its trajectory",
-		Example: `  ag run                           # interactive session
-  ag run -p "Summarize this repo"  # interactive with initial prompt
-  ag run -p "one shot" -i=false    # non-interactive
-  ag run --resume <id>             # resume interactively`,
-		Args: noArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			if sessionID != "" && resumeID != "" {
-				return usageError{errors.New("--session and --resume are mutually exclusive")}
+		Use:   "run [trajectory-id]",
+		Short: "Open a trajectory view or run one prompt non-interactively",
+		Example: `  ag run                           # create and open a trajectory view
+  ag run <trajectory-id>           # attach to a background trajectory
+  ag run -p "Summarize this repo"  # prefill a new trajectory view
+  ag run -p "one shot" -i=false    # run through the background manager
+  ag trajectory list               # list attachable trajectories`,
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 1 {
+				return usageError{errors.New("ag run accepts at most one trajectory ID")}
 			}
+			return nil
+		},
+		RunE: func(command *cobra.Command, args []string) error {
+			trajectoryID := ""
+			if len(args) == 1 {
+				trajectoryID = strings.TrimSpace(args[0])
+			}
+			if resumeID != "" {
+				if trajectoryID != "" {
+					return usageError{errors.New(
+						"trajectory argument and compatibility --resume are mutually exclusive",
+					)}
+				}
+				trajectoryID = resumeID
+			}
+			if sessionID != "" && trajectoryID != "" {
+				return usageError{errors.New(
+					"new trajectory ID and attached trajectory are mutually exclusive",
+				)}
+			}
+
 			loaded, err := application.load(command)
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
-
+			loaded.Config, err = normalizeAgentViewConfig(loaded.Config)
+			if err != nil {
+				return err
+			}
 			useInteractive := interactive && isReaderTerminal(os.Stdin)
 			if !useInteractive && strings.TrimSpace(prompt) == "" {
 				return usageError{errors.New("--prompt is required in non-interactive mode")}
 			}
-
+			target, err := application.ensureManagedGateway(
+				command.Context(), loaded.Config,
+			)
+			if err != nil {
+				return err
+			}
 			if useInteractive {
-				return application.runInteractive(
-					command, loaded, prompt, sessionID, resumeID,
+				return application.runGatewayTUI(
+					command.Context(), loaded.Config, target,
+					prompt, sessionID, trajectoryID,
 				)
 			}
-			return application.runOnce(
-				command, loaded, prompt, sessionID, resumeID,
+			return application.runGatewayOnce(
+				command, loaded.Config, target, prompt, sessionID, trajectoryID,
 			)
 		},
 	}
 	command.Flags().StringVarP(&prompt, "prompt", "p", "", "Prompt to run.")
-	command.Flags().StringVar(&sessionID, "session", "", "ID for a new trajectory.")
-	command.Flags().StringVar(&resumeID, "resume", "", "Resume an existing trajectory ID.")
-	command.Flags().BoolVarP(&interactive, "interactive", "i", true,
-		"Interactive loop (use -i=false to disable).")
+	command.Flags().BoolVarP(
+		&interactive, "interactive", "i", true,
+		"Open the trajectory view (use -i=false for a direct one-shot run).",
+	)
+	command.Flags().StringVar(
+		&sessionID, "session", "", "Compatibility ID for a new trajectory.",
+	)
+	command.Flags().StringVar(
+		&resumeID, "resume", "", "Compatibility alias for the trajectory argument.",
+	)
+	_ = command.Flags().MarkHidden("session")
+	_ = command.Flags().MarkHidden("resume")
 	addRunConfigFlags(command.Flags())
 	return command
 }
 
-func (application *app) runOnce(
+func (application *app) runGatewayOnce(
 	command *cobra.Command,
-	loaded appconfig.Loaded,
+	config appconfig.Config,
+	target string,
 	prompt string,
-	sessionID string,
-	resumeID string,
+	newID string,
+	trajectoryID string,
 ) error {
-	ctx, cancel := commandContext(command, loaded.Config.Agent.Timeout)
+	ctx, cancel := commandContext(command, config.Agent.Timeout)
 	defer cancel()
 	progress := application.progressReporter()
 	if progress != nil {
@@ -76,126 +115,82 @@ func (application *app) runOnce(
 		}
 		defer func() { _ = progress.stop() }()
 	}
-	running, err := bootstrap.StartRuntime(
-		ctx, loaded.Config, application.stderr, application.version, progress,
+	client, err := gatewayclient.New(gatewayclient.Config{
+		Target: target, UserID: localGatewayUserID,
+	})
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	trajectoryID, err = openGatewayTrajectory(
+		ctx, client, config, newID, trajectoryID,
 	)
 	if err != nil {
 		return err
 	}
-	defer running.Close()
-
-	session, err := openSession(ctx, running.Runtime, loaded.Config, sessionID, resumeID)
-	if err != nil {
-		return err
+	session := &gatewayInteractiveSession{
+		frontend: gatewayRPCFrontend{client: client}, sessionID: trajectoryID,
 	}
-	result, err := session.Prompt(ctx, prompt)
+	if progress != nil {
+		session.observe = progress.Observe
+	}
+	cursor, err := session.latestEventCursor(ctx)
 	if err != nil {
-		return fmt.Errorf("run session %s: %w", session.ID(), err)
+		return fmt.Errorf("read trajectory event cursor: %w", err)
+	}
+	view, err := client.OpenView(ctx, trajectoryID, cursor)
+	if err != nil {
+		return fmt.Errorf("open trajectory view: %w", err)
+	}
+	session.frontend = gatewayRPCFrontend{client: client, view: view}
+	observerContext, stopObserver := context.WithCancel(ctx)
+	go session.observeEvents(observerContext, view)
+	result, err := session.Prompt(ctx, prompt)
+	stopObserver()
+	_ = view.Close()
+	if err != nil {
+		return fmt.Errorf("run trajectory %s: %w", trajectoryID, err)
 	}
 	if progress != nil {
 		_ = progress.stop()
 	}
-	return application.writeRun(session.ID(), result)
+	return application.writeRun(trajectoryID, result)
 }
 
-func (application *app) runInteractive(
-	command *cobra.Command,
-	loaded appconfig.Loaded,
-	initialPrompt string,
-	sessionID string,
-	resumeID string,
-) error {
-	ctx, cancel := commandContext(command, 0)
-	defer cancel()
-
-	styles := newProgressStyles(
-		application.colorEnabled(application.stderr) || application.colorForced(),
-	)
-
-	eventSink := &interactiveEventSink{}
-
-	running, err := bootstrap.StartRuntime(
-		ctx, loaded.Config, application.stderr, application.version, eventSink,
-	)
-	if err != nil {
-		return err
-	}
-	defer running.Close()
-
-	session, err := openSession(ctx, running.Runtime, loaded.Config, sessionID, resumeID)
-	if err != nil {
-		return err
-	}
-
-	model := newInteractiveModel(session, session.ID(), styles)
-	if strings.TrimSpace(initialPrompt) != "" {
-		model.input.SetValue(initialPrompt)
-	}
-	program := tea.NewProgram(
-		model,
-		tea.WithOutput(os.Stderr),
-	)
-	eventSink.program = program
-
-	if _, err := program.Run(); err != nil {
-		return fmt.Errorf("interactive session: %w", err)
-	}
-	return nil
-}
-
-func openSession(
+func openGatewayTrajectory(
 	ctx context.Context,
-	rt *agentruntime.Runtime,
-	cfg appconfig.Config,
-	sessionID string,
-	resumeID string,
-) (*agentruntime.Session, error) {
-	sessionConfig := agentruntime.SessionConfig{
-		ID:       sessionID,
-		Provider: cfg.Agent.Provider,
-		System:   cfg.Agent.System,
-		MaxTurns: cfg.Agent.MaxTurns,
-	}
-	if resumeID != "" {
-		resolved, err := resolveTrajectoryPrefix(ctx, rt, resumeID)
-		if err != nil {
-			return nil, err
-		}
-		sessionConfig.ResumePolicy = agentruntime.ResumeCurrent
-		session, err := rt.ResumeSession(ctx, resolved, sessionConfig)
-		if err != nil {
-			return nil, fmt.Errorf("create session: %w", err)
-		}
-		return session, nil
-	}
-	session, err := rt.NewSession(ctx, sessionConfig)
-	if err != nil {
-		return nil, fmt.Errorf("create session: %w", err)
-	}
-	return session, nil
-}
-
-func resolveTrajectoryPrefix(
-	ctx context.Context,
-	rt *agentruntime.Runtime,
-	id string,
+	client *gatewayclient.Client,
+	config appconfig.Config,
+	newID string,
+	trajectoryID string,
 ) (string, error) {
-	summaries, err := rt.ListTrajectories(ctx)
-	if err != nil {
-		return "", fmt.Errorf("resolve trajectory %q: %w", id, err)
-	}
-	var matches []string
-	for _, s := range summaries {
-		if strings.HasPrefix(s.ID, id) {
-			matches = append(matches, s.ID)
+	if trajectoryID != "" {
+		resolved, err := resolveGatewaySessionPrefix(ctx, client, trajectoryID)
+		if err != nil {
+			return "", err
 		}
+		if _, err := client.GetSession(ctx, resolved); err != nil {
+			return "", fmt.Errorf("open trajectory %s: %w", resolved, err)
+		}
+		return resolved, nil
 	}
-	switch len(matches) {
-	case 0:
-		return id, nil
-	case 1:
-		return matches[0], nil
-	default:
-		return "", fmt.Errorf("ambiguous trajectory prefix %q: matches %d trajectories", id, len(matches))
+	if newID == "" {
+		newID = sdk.NewID()
 	}
+	runtimeConfig, err := json.Marshal(
+		appconfig.NewTrajectoryRuntimeProfile(config),
+	)
+	if err != nil {
+		return "", fmt.Errorf("encode trajectory runtime profile: %w", err)
+	}
+	created, err := client.CreateSession(ctx, gatewayclient.CreateSessionRequest{
+		ID: newID, Provider: config.Agent.Provider,
+		System: config.Agent.System, MaxTurns: config.Agent.MaxTurns,
+		WorkspaceRoot: config.Workspace.Root,
+		RuntimeConfig: runtimeConfig,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create trajectory %s: %w", newID, err)
+	}
+	return created.ID, nil
 }

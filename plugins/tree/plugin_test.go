@@ -41,15 +41,47 @@ func TestListFilesToolListsDeterministicallyWithinBounds(t *testing.T) {
 	}
 }
 
-func TestListFilesRejectsEscapingPath(t *testing.T) {
+func TestListFilesAllowsPathsOutsideWorkspace(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "workspace")
+	adjacent := filepath.Join(parent, "AgentM")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(adjacent, "README.md"), "adjacent")
+
 	registrar := plugincontract.NewRegistrar()
-	if err := New(Config{Root: t.TempDir()}).Install(context.Background(), registrar); err != nil {
+	if err := New(Config{Root: root}).Install(context.Background(), registrar); err != nil {
 		t.Fatal(err)
 	}
 	tool := registrar.Tools["workspace_tree"].Value.(sdk.SyncTool)
-	result := call(t, tool, map[string]any{"path": "../outside"})
-	if !result.IsError || !strings.Contains(result.Content, "workspace root") {
-		t.Fatalf("result = %#v", result)
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "parent relative", path: "../AgentM", want: "../AgentM/README.md"},
+		{
+			name: "absolute",
+			path: adjacent,
+			want: filepath.ToSlash(filepath.Join(adjacent, "README.md")),
+		},
+	}
+	if err := os.Symlink(adjacent, filepath.Join(root, "agentm-link")); err == nil {
+		tests = append(tests, struct {
+			name string
+			path string
+			want string
+		}{name: "symlink", path: "agentm-link", want: "agentm-link/README.md"})
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := call(t, tool, map[string]any{"path": test.path})
+			if result.IsError || !strings.Contains(result.Content, test.want+"\n") {
+				t.Fatalf("result = %#v, want %q", result, test.want)
+			}
+		})
 	}
 }
 

@@ -7,8 +7,75 @@ import (
 	"io"
 	"strings"
 
+	"github.com/lincyaw/ag/gateway"
 	"github.com/lincyaw/ag/sdk"
 )
+
+func (application *app) writeTrajectoryInspection(
+	trajectory gateway.TrajectoryInspection,
+) error {
+	return application.render(trajectory, func(writer io.Writer) error {
+		table := newTable(writer)
+		fmt.Fprintf(table, "Trajectory:\t%s\n", tableCell(trajectory.ID))
+		fmt.Fprintf(table, "Head:\t%s\n", tableCell(emptyAs(trajectory.Head, "-")))
+		fmt.Fprintf(table, "Created:\t%s\n", formatTime(trajectory.CreatedAt))
+		fmt.Fprintf(table, "Updated:\t%s\n", formatTime(trajectory.UpdatedAt))
+		fmt.Fprintf(table, "Entries:\t%d\n", trajectory.EntryCount)
+		if err := table.Flush(); err != nil {
+			return err
+		}
+		if len(trajectory.Entries) == 0 {
+			return nil
+		}
+		if _, err := fmt.Fprintln(writer); err != nil {
+			return err
+		}
+		entries := newTable(writer)
+		fmt.Fprintln(entries, "TIME\tKIND\tID\tDETAIL")
+		for _, entry := range trajectory.Entries {
+			fmt.Fprintf(
+				entries,
+				"%s\t%s\t%s\t%s\n",
+				formatTime(entry.Timestamp),
+				tableCell(string(entry.Kind)),
+				tableCell(entry.ID),
+				tableCell(trajectoryEntrySummaryDetail(entry)),
+			)
+		}
+		return entries.Flush()
+	})
+}
+
+func trajectoryEntrySummaryDetail(entry gateway.TrajectoryEntrySummary) string {
+	var detail []string
+	if entry.Fields.Turn != nil {
+		detail = append(detail, fmt.Sprintf("turn=%d", *entry.Fields.Turn))
+	}
+	if entry.Fields.Provider != "" {
+		detail = append(detail, "provider="+entry.Fields.Provider)
+	}
+	if entry.Fields.Model != "" {
+		detail = append(detail, "model="+entry.Fields.Model)
+	}
+	if entry.Fields.ToolName != "" {
+		detail = append(detail, "tool="+entry.Fields.ToolName)
+	}
+	if entry.Fields.IsError != nil {
+		status := "ok"
+		if *entry.Fields.IsError {
+			status = "error"
+		}
+		detail = append(detail, "status="+status)
+	}
+	if entry.Fields.ActionKind != "" {
+		detail = append(detail, "action="+string(entry.Fields.ActionKind))
+	}
+	if entry.Fields.CauseCode != "" {
+		detail = append(detail, "cause="+entry.Fields.CauseCode)
+	}
+	detail = append(detail, fmt.Sprintf("payload=%dB", entry.PayloadBytes))
+	return strings.Join(detail, " ")
+}
 
 type rollbackOutput struct {
 	TrajectoryID string `json:"trajectory_id"`

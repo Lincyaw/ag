@@ -777,6 +777,84 @@ func TestDuckDBStateBackendStoresOperationsInDuckDB(t *testing.T) {
 	}
 }
 
+func TestDuckDBStateBackendCanBeObservedWhileOpen(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "agent-state.duckdb")
+	primary, err := NewDuckDBStateBackend(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := primary.Close(context.Background()); err != nil {
+			t.Errorf("close primary DuckDB backend: %v", err)
+		}
+	})
+	record := sdk.OperationRecord{
+		Operation: sdk.Operation{
+			ID:             "observed-operation",
+			IdempotencyKey: "observed-operation-key",
+		},
+		Kind:             sdk.OperationKindTool,
+		Resource:         "file",
+		ResourceRevision: "rev1",
+		Input:            []byte(`{"path":"a"}`),
+		Invocation: sdk.Invocation{
+			ID:          "child",
+			RootID:      "root",
+			ParentID:    "parent",
+			GroupID:     "group",
+			SessionID:   "session",
+			ExecutionID: "execution",
+		},
+	}
+	if _, _, err := primary.Operations().Submit(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	inspectionDB, err := sql.Open("duckdb", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inspectionDB.Close()
+	var tableOIDBefore uint64
+	if err := inspectionDB.QueryRowContext(
+		ctx,
+		"SELECT table_oid FROM duckdb_tables() WHERE table_name = 'ag_operations'",
+	).Scan(&tableOIDBefore); err != nil {
+		t.Fatal(err)
+	}
+
+	observer, err := NewDuckDBStateBackend(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := observer.Close(context.Background()); err != nil {
+			t.Errorf("close observer DuckDB backend: %v", err)
+		}
+	}()
+	if _, err := observer.Operations().Get(ctx, record.Operation.ID); err != nil {
+		t.Fatalf("observer read operation: %v", err)
+	}
+	if _, err := primary.Operations().Get(ctx, record.Operation.ID); err != nil {
+		t.Fatalf("primary read after observer opened: %v", err)
+	}
+	var tableOIDAfter uint64
+	if err := inspectionDB.QueryRowContext(
+		ctx,
+		"SELECT table_oid FROM duckdb_tables() WHERE table_name = 'ag_operations'",
+	).Scan(&tableOIDAfter); err != nil {
+		t.Fatal(err)
+	}
+	if tableOIDAfter != tableOIDBefore {
+		t.Fatalf(
+			"observer open replaced ag_operations table: oid %d became %d",
+			tableOIDBefore,
+			tableOIDAfter,
+		)
+	}
+}
+
 func duckDBTestDelivery(id string, eventID string) sdk.Delivery {
 	return sdk.Delivery{
 		ID:           id,

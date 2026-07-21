@@ -14,8 +14,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/lincyaw/ag/internal/tui/scrollbar"
 	"github.com/lincyaw/ag/internal/tui/messages"
+	"github.com/lincyaw/ag/internal/tui/scrollbar"
 )
 
 // ScrollKeyMap defines which keys trigger scroll actions.

@@ -158,6 +158,68 @@ func TestRuntimeExecutionBackendSubmitsPollsAndCancels(t *testing.T) {
 	})
 }
 
+func TestRuntimeExecutionBackendProjectsEvents(t *testing.T) {
+	states, err := NewFileSessionStateFactory(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := NewMemoryEventStore()
+	backend, err := NewRuntimeExecutionBackend(RuntimeExecutionConfig{
+		States: states,
+		Events: events,
+		Build:  testGatewayRuntimeBuilder(&gatewayTestProvider{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := backend.Close(ctx); err != nil {
+			t.Error(err)
+		}
+		if err := events.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	session := Session{
+		ID: "runtime-events", UserID: "user-a",
+		Provider: "gateway-test", MaxTurns: 3,
+	}
+	if err := backend.CreateSession(t.Context(), session); err != nil {
+		t.Fatal(err)
+	}
+	submitted, err := backend.Submit(t.Context(), session, "observe me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := waitGatewayExecution(
+		t,
+		backend,
+		session,
+		submitted.Execution.ID,
+	)
+	if completed.Execution.State != sdk.TrajectoryExecutionSucceeded {
+		t.Fatalf("completed execution = %#v", completed)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	query := EventQuery{Limit: maxEventPageSize}
+	for {
+		page, err := events.Wait(ctx, session.ID, query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range page.Items {
+			if event.Name == sdk.EventAgentEnd {
+				return
+			}
+			query.After = event.Sequence
+		}
+	}
+}
+
 func TestRuntimeExecutionBackendRecoversPendingExecution(t *testing.T) {
 	root := t.TempDir()
 	states, err := NewFileSessionStateFactory(root)
@@ -1359,7 +1421,7 @@ func newTestRuntimeExecutionBackendAt(
 func testGatewayRuntimeBuilder(provider sdk.Provider) RuntimeBuilder {
 	return func(
 		ctx context.Context,
-		_ RuntimeBuildSpec,
+		spec RuntimeBuildSpec,
 		state sdk.StateBackend,
 	) (*agentruntime.Runtime, error) {
 		runtime, err := agentruntime.NewRuntime(
@@ -1368,6 +1430,7 @@ func testGatewayRuntimeBuilder(provider sdk.Provider) RuntimeBuilder {
 				StorageOwnership: agentruntime.StorageBorrowed,
 				OperationPoll:    time.Millisecond,
 				TrajectoryLease:  time.Second,
+				EventObserver:    spec.EventObserver,
 			},
 		)
 		if err != nil {
@@ -1408,7 +1471,7 @@ func testGatewayContextRuntimeBuilder(
 ) RuntimeBuilder {
 	return func(
 		ctx context.Context,
-		_ RuntimeBuildSpec,
+		spec RuntimeBuildSpec,
 		state sdk.StateBackend,
 	) (*agentruntime.Runtime, error) {
 		runtime, err := agentruntime.NewRuntime(
@@ -1417,6 +1480,7 @@ func testGatewayContextRuntimeBuilder(
 				StorageOwnership: agentruntime.StorageBorrowed,
 				OperationPoll:    time.Millisecond,
 				TrajectoryLease:  time.Second,
+				EventObserver:    spec.EventObserver,
 			},
 		)
 		if err != nil {

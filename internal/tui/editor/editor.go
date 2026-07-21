@@ -24,14 +24,14 @@ import (
 	"github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
 
-	"github.com/lincyaw/ag/internal/tui/history"
-	"github.com/lincyaw/ag/internal/tui/paths"
 	"github.com/lincyaw/ag/internal/tui/completion"
-	"github.com/lincyaw/ag/internal/tui/editor/completions"
 	"github.com/lincyaw/ag/internal/tui/core"
-	"github.com/lincyaw/ag/internal/tui/layout"
+	"github.com/lincyaw/ag/internal/tui/editor/completions"
+	"github.com/lincyaw/ag/internal/tui/history"
 	"github.com/lincyaw/ag/internal/tui/internal/termfeatures"
+	"github.com/lincyaw/ag/internal/tui/layout"
 	"github.com/lincyaw/ag/internal/tui/messages"
+	"github.com/lincyaw/ag/internal/tui/paths"
 	"github.com/lincyaw/ag/internal/tui/styles"
 )
 

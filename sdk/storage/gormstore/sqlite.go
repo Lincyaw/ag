@@ -4,14 +4,18 @@ import (
 	"fmt"
 
 	"github.com/glebarez/sqlite"
+	"github.com/lincyaw/ag/internal/sqlitecoord"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
 func openSQLite(dsn string) (*gorm.DB, error) {
+	openMu := sqlitecoord.OpenMutex()
+	openMu.Lock()
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Discard,
 	})
+	openMu.Unlock()
 	if err != nil {
 		return nil, fmt.Errorf("open SQLite database: %w", err)
 	}

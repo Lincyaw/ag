@@ -32,12 +32,6 @@ func (trajectory *trajectoryExecutionRuntime) waitDurableStopped() {
 	trajectory.work.waitStopped()
 }
 
-func (trajectory *trajectoryExecutionRuntime) beginWork(
-	runtime *Runtime,
-) (func(), bool) {
-	return trajectory.work.begin(runtime)
-}
-
 func (trajectory *trajectoryExecutionRuntime) stopped() bool {
 	return trajectory.context != nil && trajectory.context.Err() != nil
 }

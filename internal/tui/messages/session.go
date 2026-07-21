@@ -29,13 +29,13 @@ type (
 		SessionID string
 		Starred   bool
 	}
-	SessionDeletedMsg   struct{ SessionID string }
-	SetSessionTitleMsg  struct{ Title string }
-	RegenerateTitleMsg  struct{}
-	ForkSessionMsg      struct{}
-	StreamCancelledMsg  struct{ ShowMessage bool }
-	ToggleSplitDiffMsg  struct{}
-	SendMsg             struct {
+	SessionDeletedMsg  struct{ SessionID string }
+	SetSessionTitleMsg struct{ Title string }
+	RegenerateTitleMsg struct{}
+	ForkSessionMsg     struct{}
+	StreamCancelledMsg struct{ ShowMessage bool }
+	ToggleSplitDiffMsg struct{}
+	SendMsg            struct {
 		Content     string
 		Attachments []Attachment
 		BypassQueue bool

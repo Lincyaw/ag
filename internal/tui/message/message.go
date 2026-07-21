@@ -8,9 +8,9 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/lincyaw/ag/internal/tui/layout"
 	"github.com/lincyaw/ag/internal/tui/markdown"
 	"github.com/lincyaw/ag/internal/tui/spinner"
-	"github.com/lincyaw/ag/internal/tui/layout"
 	"github.com/lincyaw/ag/internal/tui/styles"
 	"github.com/lincyaw/ag/internal/tui/types"
 )

@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 
 	agentsdk "github.com/lincyaw/ag/sdk"
 	openaisdk "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/azure"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/shared"
@@ -16,11 +20,14 @@ import (
 )
 
 type Config struct {
-	Model      string
-	APIKey     string
-	BaseURL    string
-	MaxRetries int
-	HTTPClient *http.Client
+	Model          string
+	APIKey         string
+	BaseURL        string
+	AzureEndpoint  string
+	APIVersion     string
+	DefaultHeaders map[string]string
+	MaxRetries     int
+	HTTPClient     *http.Client
 }
 
 type plugin struct {
@@ -28,6 +35,7 @@ type plugin struct {
 }
 
 func New(config Config) agentsdk.Plugin {
+	config.DefaultHeaders = maps.Clone(config.DefaultHeaders)
 	return plugin{config: config}
 }
 
@@ -49,15 +57,46 @@ func (p plugin) Install(_ context.Context, registrar agentsdk.Registrar) error {
 	if p.config.MaxRetries < 0 {
 		return errors.New("OpenAI max retries cannot be negative")
 	}
+	baseURL := strings.TrimSpace(p.config.BaseURL)
+	azureEndpoint := strings.TrimSpace(p.config.AzureEndpoint)
+	if baseURL != "" && azureEndpoint != "" {
+		return errors.New("OpenAI base URL and Azure endpoint cannot both be configured")
+	}
 
 	clientOptions := []option.RequestOption{
 		option.WithMaxRetries(p.config.MaxRetries),
 	}
-	if p.config.APIKey != "" {
-		clientOptions = append(clientOptions, option.WithAPIKey(p.config.APIKey))
+	if azureEndpoint != "" {
+		azureOptions, err := azureClientOptions(
+			azureEndpoint,
+			strings.TrimSpace(p.config.APIVersion),
+			p.config.APIKey,
+		)
+		if err != nil {
+			return err
+		}
+		clientOptions = append(clientOptions, azureOptions...)
+	} else {
+		if p.config.APIKey != "" {
+			clientOptions = append(clientOptions, option.WithAPIKey(p.config.APIKey))
+		}
+		if baseURL != "" {
+			clientOptions = append(clientOptions, option.WithBaseURL(baseURL))
+		}
 	}
-	if p.config.BaseURL != "" {
-		clientOptions = append(clientOptions, option.WithBaseURL(p.config.BaseURL))
+	headerNames := make([]string, 0, len(p.config.DefaultHeaders))
+	for name := range p.config.DefaultHeaders {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("OpenAI default header name cannot be empty")
+		}
+		headerNames = append(headerNames, name)
+	}
+	sort.Strings(headerNames)
+	for _, name := range headerNames {
+		clientOptions = append(
+			clientOptions,
+			option.WithHeader(name, p.config.DefaultHeaders[name]),
+		)
 	}
 
 	httpClient := p.config.HTTPClient
@@ -72,6 +111,50 @@ func (p plugin) Install(_ context.Context, registrar agentsdk.Registrar) error {
 		client: openaisdk.NewClient(clientOptions...),
 		model:  p.config.Model,
 	})
+}
+
+func azureClientOptions(
+	endpoint string,
+	apiVersion string,
+	apiKey string,
+) ([]option.RequestOption, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("invalid Azure endpoint %q", endpoint)
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, errors.New("Azure endpoint cannot contain credentials, query, or fragment")
+	}
+
+	prefixPath := strings.TrimRight(parsed.Path, "/")
+	prefixRawPath := strings.TrimRight(parsed.EscapedPath(), "/")
+	parsed.Path = ""
+	parsed.RawPath = ""
+
+	clientOptions := []option.RequestOption{
+		azure.WithEndpoint(parsed.String(), apiVersion),
+	}
+	if apiKey != "" {
+		clientOptions = append(clientOptions, azure.WithAPIKey(apiKey))
+	}
+	if prefixPath == "" {
+		return clientOptions, nil
+	}
+
+	clientOptions = append(clientOptions, option.WithMiddleware(func(
+		request *http.Request,
+		next option.MiddlewareNext,
+	) (*http.Response, error) {
+		requestPath := request.URL.Path
+		requestRawPath := request.URL.EscapedPath()
+		request.URL.Path = prefixPath + requestPath
+		request.URL.RawPath = prefixRawPath + requestRawPath
+		if request.URL.RawPath == request.URL.Path {
+			request.URL.RawPath = ""
+		}
+		return next(request)
+	}))
+	return clientOptions, nil
 }
 
 type provider struct {

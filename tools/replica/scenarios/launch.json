@@ -1,0 +1,7 @@
+{
+  "description": "Cold launch and idle prompt layout",
+  "reference_wait_for": "Claude",
+  "candidate_wait_for": "ag",
+  "settle_ms": 1500,
+  "actions": []
+}

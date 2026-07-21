@@ -29,16 +29,18 @@ an independent process.
 - transactional trajectory executions with durable input, renewable worker
   leases, crash/graceful-shutdown recovery, checkpoints, branch inspection,
   and rollback;
-- a multi-user HTTP gateway with session-scoped plugin composition,
-  asynchronous submit/poll/cancel, and startup execution recovery;
-- DuckDB state storage with immutable trajectory rows, indexed operation state,
-  indexed delivery queues, transactional execution fencing, atomic subscriber
-  outbox commits, and indexed analysis queries;
+- an auto-managed gRPC background Agent Manager with trajectory-scoped plugin
+  composition, a persistent bidirectional view stream, queued input,
+  asynchronous control, and startup execution recovery;
+- one GORM relational state implementation shared by SQLite and PostgreSQL,
+  with transactional execution fencing, atomic subscriber outbox commits,
+  indexed queues, and PostgreSQL multi-process coordination; DuckDB remains an
+  explicit single-process analytics backend;
 - OpenTelemetry transport instrumentation plus an asynchronous semantic OTel
   subscriber plugin;
 - Cobra CLI/config contract with `flag > AGENTM_* > config file > default`
   precedence;
-- local OpenAI plus local/standalone root-confined file and bounded bash plugins.
+- local OpenAI plus local/standalone bounded file and bash plugins.
 
 Delivery and operation execution are at-least-once. Plugin side effects must be
 idempotent; the SDK does not claim exactly-once execution.
@@ -83,11 +85,27 @@ by default; pass `--log-console` to additionally show them on stderr.
 api_key = "..."
 ```
 
+Azure-compatible gateways can also configure an endpoint, API version, and
+headers that are attached to every model request:
+
+```toml
+[openai]
+model = "deployment-or-model-name"
+api_key = "..."
+azure_endpoint = "https://example.openai.azure.com"
+api_version = "2024-03-01-preview"
+default_headers = { "X-Request-Source" = "agentm" }
+```
+
+`azure_endpoint` is mutually exclusive with `base_url`. Azure requests use the
+official Azure adapter from the OpenAI Go SDK, which treats the model as the
+deployment name and applies Azure endpoint, API-version, and authentication
+semantics. `ag config show` displays header names but redacts all header values.
+
 ```bash
 bin/ag run \
   --cwd . \
   --model gpt-5-mini \
-  --session example \
   --prompt "Read README.md and summarize the architecture."
 ```
 
@@ -97,10 +115,10 @@ Enable bounded shell execution explicitly:
 bin/ag run --bash --prompt "Run go test ./... and explain failures."
 ```
 
-Enable atomic file writes explicitly with `--write`. File paths stay confined
-to the configured root after symlink resolution. Bash inherits no ambient
-environment except explicit safe defaults and repeated `--env KEY=VALUE`
-entries in the standalone binary.
+Enable atomic file writes explicitly with `--write`. Relative file paths resolve
+from the configured workspace root; parent-relative and absolute paths are also
+accepted. Bash inherits no ambient environment except explicit safe defaults
+and repeated `--env KEY=VALUE` entries in the standalone binary.
 
 ## Run plugins as independent processes
 
@@ -160,43 +178,54 @@ backend, and compaction semantics.
 ## CLI
 
 ```text
-ag run
+ag run [trajectory-id]
 ag config show
 ag config path
 ag plugin list
 ag plugin discover
 ag plugin inspect <name[@instance-id]|uri>
 ag registry serve
-ag gateway serve
 ag trajectory list
 ag trajectory show <id> [--head <entry-id>]
 ag trajectory rollback <id> <checkpoint-id>
+ag trajectory submit <id> -p <prompt>
+ag trajectory pause|resume|cancel|wait <id>
 ag invocation show <root-invocation-id>
 ag state inspect
 ag state prune --before <RFC3339-or-duration>
 ag version
 ```
 
-By default, `--state-dir` stores state in a local DuckDB database under that
-directory. Existing state directories that only contain legacy file JSON state
-stay on the file backend for resume compatibility; once `agent-state.duckdb`
-exists in the directory, the default path uses DuckDB. Use `--storage` when you
-need an explicit backend URI:
+The auto-managed Agent Manager uses the same `state.backend_uri` as the rest of
+the runtime and gives each trajectory an isolated namespace. PostgreSQL is the
+recommended manager backend; when no URI is configured, a local installation
+falls back to SQLite under `state.directory`. Existing DuckDB and legacy file
+state are still detected for compatibility. `--state-dir` and `--storage`
+remain explicit controls, not a second execution identity for `ag run`.
 
 ```text
-ag --storage 'duckdb:///absolute/path/agent-state.duckdb' run
+ag --storage 'postgresql://agent@db/agentm?sslmode=require&namespace=local' state inspect
 ```
 
 Business output is written to stdout. Diagnostics and structured logs are
 written to stderr. The default output is human-readable text; explicitly pass
 `-o json` (or `--output json`) to any command for stable machine-readable
-output. JSON `ag run` output includes the generated trajectory ID. Use `ag run
---resume <id>` to restore the last committed checkpoint and continue.
+output. In a terminal, `ag run` creates and opens a trajectory view;
+`ag run <id-or-prefix>` reattaches to one moved to the background. For scripts,
+`ag run -i=false -p PROMPT` uses the same background manager and JSON output
+includes `trajectory_id`.
 
 See [docs/cli.md](docs/cli.md) for the text/JSON schemas, stream boundary, and
-exit-status contract. See [docs/gateway.md](docs/gateway.md) for the
-multi-session HTTP workflow, plugin switching, cancellation, and recovery
-semantics.
+exit-status contract. See [docs/gateway.md](docs/gateway.md) for the background
+Agent Manager, gRPC view protocol, queue, interactions, cancellation, and
+recovery semantics. See [docs/replica-lab.md](docs/replica-lab.md) for the
+deterministic Claude Code TUI comparison loop.
+
+`ag run` and `ag trajectory` lazily start and reuse a private loopback Agent
+Manager under `gateway.directory`; there is no public gateway command to start.
+`ag trajectory list` shows attachable foreground and background trajectories.
+For a remote deployment, set `gateway.target = "grpc://host:port"` or
+`"grpcs://host:port"` in the config file; no endpoint flag is exposed.
 
 Configuration files may be TOML, YAML, or JSON. The default path is shown by
 `ag config path`; `AGENTM_CONFIG` or `--config` selects another file. Secret

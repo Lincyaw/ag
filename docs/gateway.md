@@ -1,182 +1,217 @@
-# Gateway
+# Background Agent Manager
 
-`ag gateway serve` is the multi-user presenter for the SDK runtime. It owns
-durable session definitions, validates session-scoped plugin bindings against
-the registry, and runs each message as an asynchronous trajectory execution.
+The `gateway` package is an internal application boundary, not a public daemon
+command. `ag run` and `ag trajectory` import its manager API. On first use they
+health-check the current background process and, when necessary, start a
+detached copy of `ag` through a private environment protocol. There is no
+`ag gateway serve` command and no gateway URL flag.
 
-The gateway does not hot-reload a shared runtime. A session's plugin
-composition is immutable while one execution is active. After that execution
-is cancelled or reaches a terminal state, the user may attach or replace a
-plugin. The next message builds a new short-lived runtime from the updated
-composition and resumes the last committed trajectory checkpoint.
+The manager owns durable trajectory hosting: serialized input queues,
+execution lifecycle and recovery, plugin composition, pending user
+interactions, and an ordered event log. The TUI owns terminal input, rendering,
+scrolling, key bindings, and interaction presentation. It obtains the durable
+active-branch conversation projection through gRPC and never opens trajectory
+storage directly.
 
-## Configuration
+## One identity
 
-The default configuration path is `~/.ag/config.toml`. A minimal gateway
-configuration is:
+A trajectory is the only durable user-facing identity.
+
+- `ag run` creates a trajectory and attaches a view.
+- `ag run <trajectory-id-or-prefix>` attaches another view, hydrating its
+  historical conversation before following new events.
+- `ctrl+b` or `ctrl+d` detaches the view while execution remains hosted.
+- `ag trajectory list` lists attachable work and its projected state.
+- `submit`, `pause`, `resume`, `cancel`, `wait`, `show`, and `rollback` all
+  address the same trajectory ID.
+
+An execution is one run within that trajectory. A view is a transient
+attachment. The manager's historical Go `Session` structure is an internal
+control record; the gRPC contract and CLI do not introduce a second session ID.
+
+## Automatic process lifecycle
+
+Local state lives under `gateway.directory`, which defaults to
+`$HOME/.ag/gateway`. Process coordination uses:
+
+```text
+gateway.directory/
+  managed/
+    start.lock
+    config.json
+    ready.json
+    gateway.stderr.log
+  control/
+  events/          # legacy non-SQL event adapter only
+  inputs/
+  interactions/
+```
+
+Runtime durability is selected once through `state.backend_uri`, outside the
+manager's control files. The manager derives one namespace per trajectory from
+that URI. PostgreSQL is recommended when the manager is persistent, shared, or
+remote. With no explicit URI, new local installations use one SQLite database
+under `state.directory`; existing DuckDB or legacy file state is opened only
+for compatibility.
+
+The reconnect cursor log is a projection for attached views, not the agent's
+memory or the source of historical conversation. With a SQLite or PostgreSQL
+state URI it lives in the same database and deployment namespace in
+`ag_gateway_events` and `ag_gateway_event_cursors`; trajectory entries remain
+the authoritative facts. Before persistence, the gateway removes repeated
+conversation snapshots from events such as `turn_end`; reconnect pages are
+also bounded by encoded bytes rather than only by item count. The former
+`events/events.json` aggregate is read only by the legacy adapter. New legacy
+writes are append-only in
+`events.journal.jsonl`, so the whole aggregate is not decoded and rewritten on
+every runtime event. Existing `events.json` files are left in place and are not
+bulk-imported into SQL because their repeated payloads may be very large.
+
+Startup takes an inter-process lock, checks the ready record through gRPC
+health, writes a mode-`0600` runtime configuration, and launches the current
+executable in a new process session. Concurrent CLIs therefore converge on one
+manager. The child binds a random loopback port, reports a `grpc://` target in
+`ready.json`, recovers durable executions and queued inputs, and outlives any
+one TUI.
+
+If a recorded process fails its health check, the launcher first verifies that
+the ready record belongs to the requested gateway directory, asks that exact
+PID to stop, and waits for it to exit before replacing the ready record. It does
+not start a second server against the same control directory.
+
+The child mode is selected only by private `AG_INTERNAL_GATEWAY_*` environment
+variables. It is intentionally absent from Cobra help and `--dump-schema`.
+
+## gRPC boundary
+
+The protocol is [gatewayrpc/v1/gateway.proto](../gatewayrpc/v1/gateway.proto).
+Local and remote clients use the same service. `grpc://` uses plaintext HTTP/2;
+`grpcs://` uses TLS and the system trust roots by default.
+
+Short reads and administrative mutations are unary RPCs, including:
+
+- create/get/list/load/rollback trajectory;
+- enqueue/get/list/cancel input;
+- pause/resume dispatch;
+- get/list/resolve interaction;
+- get/cancel execution and inject context;
+- attach/detach a trajectory plugin.
+
+`Connect` is a persistent bidirectional stream. Its first client frame is
+`OpenView(user_id, trajectory_id, after_event)`. The manager replies with
+`ViewReady`, then multiplexes two classes of frames on that stream:
+
+- client commands such as enqueue input, cancel, resolve interaction, or
+  pause/resume, each carrying a request ID;
+- server responses and durable ordered events.
+
+gRPC keeps one HTTP/2 connection alive and multiplexes unary calls with the
+view stream. Detaching closes only the stream. It does not cancel the input or
+terminate the background runtime. Event sequence numbers remain durable
+cursors, so a future reconnect can replay everything after the last observed
+event.
+
+This replaces the former HTTP/SSE split. There is no WebSocket transport and no
+HTTP REST compatibility endpoint.
+
+## Local and remote configuration
+
+The default is zero-configuration local management:
 
 ```toml
-[agent]
-provider = "openai"
-system = "You are a concise agent."
-max_turns = 8
-timeout = "5m"
-
-[openai]
-enabled = true
-model = "deepseek-v4-flash"
-base_url = "https://ark.cn-beijing.volces.com/api/plan/v3"
-max_retries = 2
-
-[plugins]
-registry_uri = "grpc://127.0.0.1:9090"
-registry_namespace = "default"
-
 [gateway]
-listen = "127.0.0.1:8080"
-read_header_timeout = "5s"
-idle_timeout = "1m"
+target = ""
+directory = "/absolute/path/to/.ag/gateway"
 shutdown_timeout = "10s"
+
+[state]
+backend_uri = "postgresql://agent:password@db/agentm?sslmode=require"
+namespace = "team-a"
 ```
 
-When omitted, `gateway.directory` defaults to the resolved
-`$HOME/.ag/gateway` path. A configured path is interpreted literally; shell
-tilde expansion does not apply inside TOML.
+`target = ""` means “health-check or start the local manager.” To use a remote
+embedding of `gatewayrpc.NewGRPCServer`, configure one target without changing
+CLI arguments:
 
-The OpenAI-compatible API key is read from `[openai].api_key` in the config
-file, with `OPENAI_API_KEY` and `AGENTM_OPENAI_API_KEY` available as
-compatibility aliases. `ag config show` reports only whether the key is set.
-
-Start the control plane, one or more standalone plugins, and the gateway:
-
-```bash
-ag registry serve
-
-agentm-plugin-file \
-  --listen 127.0.0.1:9001 \
-  --registry-uri grpc://127.0.0.1:9090 \
-  --instance-id file-a \
-  --root .
-
-ag gateway serve
+```toml
+[gateway]
+target = "grpcs://agents.example.com:443"
 ```
 
-The gateway writes one human-readable readiness record by default. Use
-`ag gateway serve -o json` for a stable machine-readable record.
+The repository does not expose a foreground gateway command. A remote host is
+an application embedding the `gateway`, `gatewayrpc`, and bootstrap packages;
+it supplies listener ownership, TLS credentials, and authentication policy.
 
-## HTTP flow
+## Queue and controls
 
-Every user-scoped request currently requires `X-AG-User-ID`. This is an
-injectable authentication boundary in the Go package. The built-in command is
-intended for loopback use or a trusted reverse proxy that removes any incoming
-copy of this header and injects an authenticated identity.
+Each accepted input progresses through `queued`, `dispatching`, and one of
+`succeeded`, `failed`, or `cancelled`. A trajectory dispatches at most one input
+at a time.
 
-Create a session. Omitted provider, system, and max-turn values use the
-configured agent defaults:
+Pause prevents the next dispatch but does not interrupt an execution already in
+progress. Cancel requests cancel every non-terminal queued input and the active
+execution. Cancellation is persisted before the runtime context is stopped.
+`wait` opens a view stream before checking queue state, avoiding the race where
+completion occurs between a state read and event subscription.
 
-```bash
-curl -sS -X POST http://127.0.0.1:8080/v1/sessions \
-  -H 'X-AG-User-ID: alice' \
-  -H 'Content-Type: application/json' \
-  -d '{"id":"alice-main"}'
-```
+The `ask_user` tool creates a durable pending interaction. A view resolves it
+with an expected revision; cancellation durably cancels the pending interaction
+as part of execution teardown.
 
-Discover active plugins and attach one using the session's current revision:
+## Process state and restart
 
-```bash
-curl -sS 'http://127.0.0.1:8080/v1/plugins?name=file' \
-  -H 'X-AG-User-ID: alice'
+The gateway follows a web-server model. One request or recovered execution is a
+goroutine hosted by the gateway process; a background agent is not a dedicated
+OS process. Its durable identity is the trajectory plus its input queue,
+execution lease, operations, interactions, and event cursor.
 
-curl -sS -X POST \
-  http://127.0.0.1:8080/v1/sessions/alice-main/plugins \
-  -H 'X-AG-User-ID: alice' \
-  -H 'Content-Type: application/json' \
-  -d '{"selector":"file@file-a","expected_revision":1}'
-```
+In-memory host slots, provider streams, cancellation functions, and shell child
+processes are disposable. On restart the manager reloads control records,
+reconstructs runtime hosts, waits out any still-valid execution lease, and
+continues from the last committed trajectory boundary. Tokens or subprocess
+output that had not crossed a durable boundary can be replayed or lost, and
+external side effects remain at-least-once/idempotency concerns rather than an
+exactly-once guarantee.
 
-Submitting a message returns `202 Accepted` with a durable execution ID:
+SIGTERM uses two phases controlled by `gateway.shutdown_timeout`. First the
+gRPC server stops accepting calls and the service enters draining: new
+trajectories and inputs receive `Unavailable`, while each active execution is
+allowed to finish its current model turn, including tool results and the turn
+checkpoint. It then releases its execution lease as pending, so the replacement
+process resumes at the next model call. A response that already reached this
+checkpoint is not replayed. If the drain deadline expires, `Close` cancels the
+remaining provider/tool contexts and performs the ordinary recovery handoff;
+that forced path may resume from an earlier committed checkpoint.
 
-```bash
-curl -sS -X POST \
-  http://127.0.0.1:8080/v1/sessions/alice-main/messages \
-  -H 'X-AG-User-ID: alice' \
-  -H 'Content-Type: application/json' \
-  -d '{"content":"Inspect the repository."}'
-```
+## Composition and recovery
 
-Poll or cancel that exact execution:
+A newly created trajectory persists its own runtime profile: local plugin
+switches and limits, workspace policy, model selection, and configured remote
+plugin references. The manager's process configuration remains responsible for
+credentials, logging, listeners, and storage. This lets one long-lived manager
+host differently configured agents without whichever CLI started it first
+silently defining every later trajectory. The private profile is stored with
+the control record but omitted from list/get JSON responses.
 
-```bash
-curl -sS \
-  http://127.0.0.1:8080/v1/sessions/alice-main/executions/EXECUTION_ID \
-  -H 'X-AG-User-ID: alice'
+A trajectory's plugin composition is immutable while an execution is active.
+After the execution becomes terminal, a plugin can be attached, replaced, or
+detached; the next prompt builds a short-lived runtime from the new composition
+and resumes the last committed checkpoint.
 
-curl -sS -X POST \
-  http://127.0.0.1:8080/v1/sessions/alice-main/executions/EXECUTION_ID/cancel \
-  -H 'X-AG-User-ID: alice'
-```
+Each trajectory persists its absolute workspace root, so one manager can host
+work from multiple repositories. When no remote plugin registry is configured,
+the manager embeds the configured durable registry backend.
 
-Cancellation is persisted before the in-memory context is stopped. The cancel
-response waits for the old execution host to quiesce, so a successful response
-is also the boundary after which plugin composition may safely change. Attach
-or replace a plugin with the latest session revision, then submit another
-message. That message resumes from the last successful checkpoint and uses the
-new composition.
+On startup the manager reads control records and asks the execution backend to
+recover each trajectory. The runtime/store remains authoritative for execution
+state, fencing, results, and recoverability. Gateway memory only prevents two
+active hosts for the same trajectory; it does not invent another lifecycle.
 
-Gateway serializes same-session composition changes with prompt submission while
-the submission is establishing its execution reservation. The runtime backend
-then reserves active execution ownership before a prompt is durably accepted.
-That pre-durable reservation is treated as an active execution boundary, so
-cancellation requests wait for the accepted execution ID instead of starting a
-second runtime host through a fallback path.
-Session plugin bindings are validated after that reservation and before the
-runtime host is built; stale bindings therefore fail the submit without reopening
-the check-then-reserve window for concurrent composition changes.
-The execution state returned by polling is always projected from trajectory
-storage. Background runtime hosts log submit, recovery, and close errors through
-the gateway logger, but they do not create a second in-memory result model.
-Gateway closes those hosts through the runtime host's detached close boundary,
-so post-cancel cleanup remains a runtime lifecycle rule instead of a gateway
-workaround.
-Startup recovery lists gateway sessions, but the execution backend owns the
-recoverability check, active execution reservation, and session binding
-validation. The service does not pre-validate plugin composition as a separate
-recovery truth.
-
-Cancellation uses the runtime execution-control model in both hosted and
-unhosted cases. If the short-lived runtime host can be opened, it performs the
-runtime-owned cancellation unwind; otherwise the gateway uses a state-only
-`ExecutionHost` command and durably fences that execution. The gateway does not
-inspect raw trajectory metadata or trajectory stores to invent its own
-cancellation or result semantics.
-
-## Endpoints
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/healthz` | Process liveness |
-| `POST` | `/v1/sessions` | Create a durable user session |
-| `GET` | `/v1/sessions` | List the current user's sessions |
-| `GET` | `/v1/sessions/{session}` | Read one owned session |
-| `GET` | `/v1/plugins` | Discover leased plugin instances |
-| `POST` | `/v1/sessions/{session}/plugins` | Attach or replace a plugin |
-| `DELETE` | `/v1/sessions/{session}/plugins/{plugin}` | Detach a plugin |
-| `POST` | `/v1/sessions/{session}/messages` | Submit an asynchronous execution |
-| `GET` | `/v1/sessions/{session}/executions/{execution}` | Poll one execution |
-| `POST` | `/v1/sessions/{session}/executions/{execution}/cancel` | Durably cancel one execution |
-
-Session control records are stored under
-`gateway.directory/control/sessions.json`. Each session receives an isolated
-state namespace under `gateway.directory/state`; trajectory, operation, and
-named delivery queue state remain separate SDK ports behind that namespace.
-User-facing session lists are served through a user-scoped session-store query;
-the service layer does not scan every user's sessions and filter them in
-memory.
-
-On startup, the gateway scans its session control records to recover the
-composition context for each session, then asks the execution backend to
-recover that session. Inside the backend, the runtime recovery candidate is the
-execution lifecycle read model: pending and expired-lease executions can run
-immediately, while a still-valid worker lease carries a delay before recovery
-may claim it. Completed results are reconstructed from durable trajectory
-checkpoints, so polling does not depend on process-local result memory.
+Trajectory `show` and `rollback` also go through gRPC. `show` pages compact
+entry summaries at a fixed branch head; it never sends the full aggregate or
+repeated checkpoint payloads as one RPC message. Conversation hydration pages
+user/assistant content separately with UTF-8-safe chunks and a response byte
+budget. The execution backend opens the same per-trajectory state namespace
+used by background execution, and rollback first enforces the idle boundary.
+Rollback responses omit entries. The CLI never opens a parallel state store for
+these operations.

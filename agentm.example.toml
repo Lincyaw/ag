@@ -1,5 +1,5 @@
 [agent]
-system = "You are a concise command-line agent. Use the read-only workspace tools when they are useful."
+system = "You are a concise command-line agent. Use the available workspace tools when they are useful."
 max_turns = 8
 timeout = "5m"
 
@@ -7,12 +7,28 @@ timeout = "5m"
 model = "gpt-5-mini"
 # Prefer ~/.ag/config.toml for local development; keep this unset in shared files.
 api_key = ""
+# Use azure_endpoint instead of base_url for Azure-compatible gateways.
+# azure_endpoint = "https://example.openai.azure.com"
+# api_version = "2024-03-01-preview"
+# default_headers = { "X-Request-Source" = "agentm" }
 base_url = ""
 max_retries = 2
 
 [workspace]
 root = "."
 max_read_bytes = 65536
+
+[gateway]
+# Empty means ag automatically manages a local background process. Set a
+# grpc:// or grpcs:// target only when attaching to a remote manager.
+target = ""
+
+[state]
+# PostgreSQL is recommended for a persistent or remote background manager.
+# Credentials may also come from AGENTM_STATE_BACKEND_URI.
+# backend_uri = "postgresql://agent:password@127.0.0.1:5432/agentm?sslmode=disable"
+# namespace = "local"
+# With no backend_uri, new local state uses SQLite under state.directory.
 
 [logging]
 level = "info"

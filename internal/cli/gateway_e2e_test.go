@@ -1,20 +1,18 @@
 package cli
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/lincyaw/ag/gateway"
+	gatewayclient "github.com/lincyaw/ag/gateway/client"
+	"github.com/lincyaw/ag/gatewayrpc"
 	"github.com/lincyaw/ag/internal/bootstrap"
 	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/lincyaw/ag/pluginrpc"
@@ -162,96 +160,65 @@ func TestGatewayCancelsChangesPluginAndResumesDurableContext(t *testing.T) {
 			t.Errorf("close gateway service: %v", err)
 		}
 	})
-	handler, err := gateway.NewHTTPHandler(
-		service,
-		gateway.HeaderAuthenticator,
+	client := serveGatewayE2EManager(t, service)
+
+	session, err := client.CreateSession(
+		t.Context(), gatewayclient.CreateSessionRequest{ID: "gateway-switch"},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	session := gatewayE2ERequest[gateway.Session](
-		t,
-		handler,
-		http.MethodPost,
-		"/v1/sessions",
-		map[string]any{"id": "gateway-switch"},
-		http.StatusCreated,
+	session, err = client.AttachPlugin(
+		t.Context(), session.ID, "switch-plugin@node-a", session.Revision,
 	)
-	session = gatewayE2ERequest[gateway.Session](
-		t,
-		handler,
-		http.MethodPost,
-		"/v1/sessions/gateway-switch/plugins",
-		map[string]any{
-			"selector":          "switch-plugin@node-a",
-			"expected_revision": session.Revision,
-		},
-		http.StatusOK,
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := client.SubmitMessage(
+		t.Context(), session.ID, "remember this",
 	)
-	first := gatewayE2ERequest[gateway.Execution](
-		t,
-		handler,
-		http.MethodPost,
-		"/v1/sessions/gateway-switch/messages",
-		map[string]any{"content": "remember this"},
-		http.StatusAccepted,
-	)
-	first = waitGatewayE2EExecution(t, handler, first.Execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first = waitGatewayE2EExecution(t, client, first.Execution.ID)
 	if first.Result == nil || first.Result.Output != "context-from-a" {
 		t.Fatalf("first result = %#v", first)
 	}
 
-	blocked := gatewayE2ERequest[gateway.Execution](
-		t,
-		handler,
-		http.MethodPost,
-		"/v1/sessions/gateway-switch/messages",
-		map[string]any{"content": "block"},
-		http.StatusAccepted,
+	blocked, err := client.SubmitMessage(
+		t.Context(), session.ID, "block",
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case <-firstProvider.entered:
 	case <-time.After(5 * time.Second):
 		t.Fatal("blocking provider did not start")
 	}
-	cancelled := gatewayE2ERequest[gateway.Execution](
-		t,
-		handler,
-		http.MethodPost,
-		"/v1/sessions/gateway-switch/executions/"+
-			blocked.Execution.ID+"/cancel",
-		nil,
-		http.StatusOK,
+	cancelled, err := client.CancelExecution(
+		t.Context(), session.ID, blocked.Execution.ID,
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cancelled.Execution.State != sdk.TrajectoryExecutionCancelled {
 		t.Fatalf("cancelled execution = %#v", cancelled)
 	}
 
-	session = gatewayE2ERequest[gateway.Session](
-		t,
-		handler,
-		http.MethodPost,
-		"/v1/sessions/gateway-switch/plugins",
-		map[string]any{
-			"selector":          "switch-plugin@node-b",
-			"expected_revision": session.Revision,
-		},
-		http.StatusOK,
+	session, err = client.AttachPlugin(
+		t.Context(), session.ID, "switch-plugin@node-b", session.Revision,
 	)
-	continued := gatewayE2ERequest[gateway.Execution](
-		t,
-		handler,
-		http.MethodPost,
-		"/v1/sessions/gateway-switch/messages",
-		map[string]any{"content": "continue"},
-		http.StatusAccepted,
+	if err != nil {
+		t.Fatal(err)
+	}
+	continued, err := client.SubmitMessage(
+		t.Context(), session.ID, "continue",
 	)
-	continued = waitGatewayE2EExecution(
-		t,
-		handler,
-		continued.Execution.ID,
-	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continued = waitGatewayE2EExecution(t, client, continued.Execution.ID)
 	if continued.Result == nil ||
 		continued.Result.Output != "continued-by-b" {
 		t.Fatalf("continued result = %#v", continued)
@@ -272,6 +239,45 @@ func TestGatewayCancelsChangesPluginAndResumesDurableContext(t *testing.T) {
 		contents[2] != "continue" {
 		t.Fatalf("resumed message contents = %#v", contents)
 	}
+}
+
+func serveGatewayE2EManager(
+	t *testing.T,
+	service *gateway.Service,
+) *gatewayclient.Client {
+	t.Helper()
+	server, err := gatewayrpc.NewGRPCServer(service, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(listener) }()
+	client, err := gatewayclient.New(gatewayclient.Config{
+		Target: "grpc://" + listener.Addr().String(), UserID: "user-a",
+	})
+	if err != nil {
+		server.Stop()
+		_ = listener.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = client.Close()
+		server.GracefulStop()
+		_ = listener.Close()
+		select {
+		case err := <-done:
+			if err != nil && !errors.Is(err, net.ErrClosed) {
+				t.Errorf("serve gateway RPC: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("gateway RPC server did not stop")
+		}
+	})
+	return client
 }
 
 func serveGatewayE2EPlugin(
@@ -321,57 +327,20 @@ func serveGatewayE2EPlugin(
 	return "grpc://" + listener.Addr().String()
 }
 
-func gatewayE2ERequest[T any](
-	t *testing.T,
-	handler http.Handler,
-	method string,
-	path string,
-	input any,
-	status int,
-) T {
-	t.Helper()
-	var body bytes.Buffer
-	if input != nil {
-		if err := json.NewEncoder(&body).Encode(input); err != nil {
-			t.Fatal(err)
-		}
-	}
-	request := httptest.NewRequest(method, path, &body)
-	request.Header.Set(gateway.UserHeader, "user-a")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != status {
-		t.Fatalf(
-			"%s %s status=%d body=%s",
-			method,
-			path,
-			response.Code,
-			response.Body.String(),
-		)
-	}
-	var result T
-	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-		t.Fatalf("decode %s %s: %v", method, path, err)
-	}
-	return result
-}
-
 func waitGatewayE2EExecution(
 	t *testing.T,
-	handler http.Handler,
+	client *gatewayclient.Client,
 	executionID string,
 ) gateway.Execution {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		execution := gatewayE2ERequest[gateway.Execution](
-			t,
-			handler,
-			http.MethodGet,
-			"/v1/sessions/gateway-switch/executions/"+executionID,
-			nil,
-			http.StatusOK,
+		execution, err := client.GetExecution(
+			t.Context(), "gateway-switch", executionID,
 		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if execution.Execution.Terminal() {
 			return execution
 		}

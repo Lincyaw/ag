@@ -30,8 +30,8 @@ const (
 )
 
 type runOutput struct {
-	SessionID string              `json:"session_id"`
-	Result    agentruntime.Result `json:"result"`
+	TrajectoryID string              `json:"trajectory_id"`
+	Result       agentruntime.Result `json:"result"`
 }
 
 type cliErrorOutput struct {
@@ -181,8 +181,8 @@ func (application *app) render(machine any, human func(io.Writer) error) error {
 	return human(application.stdout)
 }
 
-func (application *app) writeRun(sessionID string, result agentruntime.Result) error {
-	value := runOutput{SessionID: sessionID, Result: result}
+func (application *app) writeRun(trajectoryID string, result agentruntime.Result) error {
+	value := runOutput{TrajectoryID: trajectoryID, Result: result}
 	return application.render(value, func(writer io.Writer) error {
 		if result.Output != "" {
 			if err := application.writeHumanContent(writer, result.Output); err != nil {
@@ -193,7 +193,7 @@ func (application *app) writeRun(sessionID string, result agentruntime.Result) e
 			}
 		}
 		table := newTable(writer)
-		fmt.Fprintf(table, "Session:\t%s\n", tableCell(sessionID))
+		fmt.Fprintf(table, "Trajectory:\t%s\n", tableCell(trajectoryID))
 		fmt.Fprintf(table, "Turns:\t%d\n", result.Turns)
 		fmt.Fprintf(table, "Tool calls:\t%d\n", result.ToolCalls)
 		fmt.Fprintf(table, "Tokens:\t%d in / %d out\n", result.InputTokens, result.OutputTokens)

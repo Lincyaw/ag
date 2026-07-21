@@ -4,10 +4,10 @@ package commands
 type Command struct {
 	Hidden       bool
 	SlashCommand string
-	Name        string
-	Aliases     []string
-	Description string
-	Args        string
+	Name         string
+	Aliases      []string
+	Description  string
+	Args         string
 }
 
 // Registry holds available commands for completion.

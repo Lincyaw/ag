@@ -63,6 +63,27 @@ func OpenPluginDirectory(
 	return directory, nil
 }
 
+func OpenGatewayPluginDirectory(
+	ctx context.Context,
+	config appconfig.Config,
+) (registry.Directory, string, error) {
+	if strings.TrimSpace(config.Plugins.RegistryURI) != "" {
+		directory, err := OpenPluginDirectory(ctx, config.Plugins)
+		return directory, config.Plugins.RegistryURI, err
+	}
+	directory, err := registry.NewDefaultBackendRegistry().Open(
+		ctx,
+		config.Registry.BackendURI,
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf(
+			"open embedded gateway plugin directory: %w",
+			err,
+		)
+	}
+	return directory, directory.String(), nil
+}
+
 func ListPluginInstances(
 	ctx context.Context,
 	directory registry.Directory,

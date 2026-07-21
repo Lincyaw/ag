@@ -429,7 +429,8 @@ func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 	}
 	if durableResult == nil ||
 		durableResult.Output != result.Output ||
-		durableResult.Cause.Code != "model_end" {
+		durableResult.Cause.Code != "model_end" ||
+		len(durableResult.Messages) != len(result.Messages) {
 		t.Fatalf("durable execution result = %#v", durableResult)
 	}
 	completedExecutionID := trajectory.Execution.ID
@@ -462,6 +463,10 @@ func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 				entry.Fields.OperationKey == "" ||
 				entry.Fields.CorrelationID != entry.Fields.OperationKey {
 				t.Fatalf("provider request fields = %#v", entry.Fields)
+			}
+			if strings.Contains(string(entry.Payload), `"request"`) ||
+				strings.Contains(string(entry.Payload), `"messages"`) {
+				t.Fatalf("provider request copied model context: %s", entry.Payload)
 			}
 		case sdk.TrajectoryKindProviderResponse:
 			providerResponses++
@@ -516,6 +521,22 @@ func TestSessionTrajectoryAsyncOperationsRestoreAndRollback(t *testing.T) {
 			}
 		case sdk.TrajectoryKindCheckpoint:
 			checkpoints = append(checkpoints, entry.ID)
+			checkpoint, err := durability.DecodeCheckpoint(session.ID(), entry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if checkpoint.MessageMode != durability.CheckpointMessagesBranch ||
+				len(checkpoint.Messages) != 0 {
+				t.Fatalf("checkpoint copied message snapshot: %#v", checkpoint)
+			}
+		case sdk.TrajectoryKindTerminal:
+			var end sdk.AgentEndPayload
+			if err := json.Unmarshal(entry.Payload, &end); err != nil {
+				t.Fatal(err)
+			}
+			if len(end.Messages) != 0 {
+				t.Fatalf("terminal copied message snapshot: %#v", end.Messages)
+			}
 		}
 	}
 	if len(providerRequestIDs) != 2 || len(toolCallIDs) != 1 || len(checkpoints) != 2 {

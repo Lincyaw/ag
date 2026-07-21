@@ -1,0 +1,296 @@
+syntax = "proto3";
+
+package gatewayrpc.v1;
+
+option go_package = "github.com/lincyaw/ag/gatewayrpc/v1;gatewayv1";
+
+// GatewayService is the private control plane used by ag frontends. The
+// public identity is a trajectory; the gateway's historical Session type is
+// deliberately not part of this protocol's vocabulary.
+service GatewayService {
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  rpc CreateTrajectory(CreateTrajectoryRequest) returns (JsonValue);
+  rpc GetTrajectory(GetTrajectoryRequest) returns (JsonValue);
+  rpc ListTrajectories(ListTrajectoriesRequest) returns (JsonValue);
+  rpc LoadTrajectory(LoadTrajectoryRequest) returns (JsonValue);
+  rpc ListConversation(ListConversationRequest) returns (JsonValue);
+  rpc ListTrajectoryEntries(ListTrajectoryEntriesRequest) returns (JsonValue);
+  rpc RollbackTrajectory(RollbackTrajectoryRequest) returns (JsonValue);
+  rpc AttachPlugin(AttachPluginRequest) returns (JsonValue);
+  rpc DetachPlugin(DetachPluginRequest) returns (JsonValue);
+  rpc SubmitMessage(SubmitMessageRequest) returns (JsonValue);
+  rpc EnqueueContextInjection(EnqueueContextInjectionRequest) returns (JsonValue);
+
+  rpc EnqueueInput(EnqueueInputRequest) returns (JsonValue);
+  rpc GetInput(GetInputRequest) returns (JsonValue);
+  rpc ListInputs(ListInputsRequest) returns (JsonValue);
+  rpc CancelInput(CancelInputRequest) returns (JsonValue);
+
+  rpc SetPaused(SetPausedRequest) returns (JsonValue);
+
+  rpc ListEvents(ListEventsRequest) returns (JsonValue);
+  rpc GetEventCursor(GetEventCursorRequest) returns (JsonValue);
+
+  rpc GetInteraction(GetInteractionRequest) returns (JsonValue);
+  rpc ListInteractions(ListInteractionsRequest) returns (JsonValue);
+  rpc ResolveInteraction(ResolveInteractionRequest) returns (JsonValue);
+
+  rpc GetExecution(GetExecutionRequest) returns (JsonValue);
+  rpc CancelExecution(CancelExecutionRequest) returns (JsonValue);
+
+  // Connect is one persistent, bidirectional attachment to a trajectory view.
+  // The first client frame must be OpenView. Commands and durable events are
+  // then multiplexed over the same HTTP/2 stream until the view detaches.
+  rpc Connect(stream ViewRequest) returns (stream ViewResponse);
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  string protocol_version = 2;
+}
+
+// JsonValue keeps the RPC operation contract typed while allowing the gateway
+// domain model to evolve without maintaining a second copy of every runtime
+// structure in protobuf. The payload is one canonical JSON value.
+message JsonValue {
+  bytes json = 1;
+}
+
+message CreateTrajectoryRequest {
+  string user_id = 1;
+  string id = 2;
+  string provider = 3;
+  string system = 4;
+  int32 max_turns = 5;
+  string workspace_root = 6;
+  bytes runtime_config_json = 7;
+}
+
+message GetTrajectoryRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+}
+
+message ListTrajectoriesRequest {
+  string user_id = 1;
+  string after = 2;
+  int32 limit = 3;
+}
+
+message LoadTrajectoryRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  string head = 3;
+}
+
+message ListConversationRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  string head = 3;
+  uint64 after = 4;
+  int32 limit = 5;
+}
+
+message ListTrajectoryEntriesRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  string head = 3;
+  uint64 after = 4;
+  int32 limit = 5;
+}
+
+message RollbackTrajectoryRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  string checkpoint_id = 3;
+}
+
+message AttachPluginRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  string selector = 3;
+  uint64 expected_revision = 4;
+}
+
+message DetachPluginRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  string name = 3;
+  uint64 expected_revision = 4;
+}
+
+message SubmitMessageRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  string content = 3;
+}
+
+message EnqueueContextInjectionRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  string execution_id = 3;
+  bytes injection_json = 4;
+}
+
+message EnqueueInputRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  string input_id = 3;
+  string content = 4;
+}
+
+message GetInputRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  string input_id = 3;
+}
+
+message ListInputsRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  uint64 after = 3;
+  int32 limit = 4;
+}
+
+message CancelInputRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  string input_id = 3;
+  uint64 expected_revision = 4;
+}
+
+message SetPausedRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  bool paused = 3;
+  uint64 expected_revision = 4;
+}
+
+message ListEventsRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  uint64 after = 3;
+  int32 limit = 4;
+}
+
+message GetEventCursorRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+}
+
+message GetInteractionRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  string interaction_id = 3;
+}
+
+message ListInteractionsRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  uint64 after = 3;
+  int32 limit = 4;
+  string state = 5;
+}
+
+message ResolveInteractionRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  string interaction_id = 3;
+  uint64 expected_revision = 4;
+  string option_id = 5;
+  string text = 6;
+}
+
+message GetExecutionRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  string execution_id = 3;
+}
+
+message CancelExecutionRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  string execution_id = 3;
+}
+
+message ViewRequest {
+  oneof frame {
+    OpenView open = 1;
+    ViewCommand command = 2;
+  }
+}
+
+message OpenView {
+  string user_id = 1;
+  string trajectory_id = 2;
+  uint64 after_event = 3;
+}
+
+message ViewCommand {
+  string request_id = 1;
+  oneof command {
+    ViewEnqueueInput enqueue_input = 2;
+    ViewCancelInput cancel_input = 3;
+    ViewResolveInteraction resolve_interaction = 4;
+    ViewSetPaused set_paused = 5;
+    ViewCancelExecution cancel_execution = 6;
+  }
+}
+
+message ViewEnqueueInput {
+  string input_id = 1;
+  string content = 2;
+}
+
+message ViewCancelInput {
+  string input_id = 1;
+  uint64 expected_revision = 2;
+}
+
+message ViewResolveInteraction {
+  string interaction_id = 1;
+  uint64 expected_revision = 2;
+  string option_id = 3;
+  string text = 4;
+}
+
+message ViewSetPaused {
+  bool paused = 1;
+  uint64 expected_revision = 2;
+}
+
+message ViewCancelExecution {
+  string execution_id = 1;
+}
+
+message ViewResponse {
+  oneof frame {
+    ViewReady ready = 1;
+    ViewEvent event = 2;
+    ViewResult result = 3;
+    ViewFailure failure = 4;
+  }
+}
+
+message ViewReady {
+  JsonValue trajectory = 1;
+  uint64 cursor = 2;
+}
+
+message ViewEvent {
+  JsonValue event = 1;
+}
+
+message ViewResult {
+  string request_id = 1;
+  JsonValue value = 2;
+}
+
+message ViewFailure {
+  string request_id = 1;
+  string code = 2;
+  string message = 3;
+}

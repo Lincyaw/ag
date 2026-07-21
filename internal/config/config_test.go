@@ -79,6 +79,52 @@ api_key = "file-key"
 	}
 }
 
+func TestLoadAzureOpenAIOptions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(`
+[openai]
+model = "gpt-test"
+api_key = "test-key"
+azure_endpoint = "https://example.com/azure"
+api_version = "2024-03-01-preview"
+default_headers = { "X-TT-LOGID" = "agentm" }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(LoadOptions{ConfigFile: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Config.OpenAI.Model != "gpt-test" {
+		t.Fatalf("model = %q", loaded.Config.OpenAI.Model)
+	}
+	if loaded.Config.OpenAI.AzureEndpoint != "https://example.com/azure" {
+		t.Fatalf("azure_endpoint = %q", loaded.Config.OpenAI.AzureEndpoint)
+	}
+	if loaded.Config.OpenAI.APIVersion != "2024-03-01-preview" {
+		t.Fatalf("api_version = %q", loaded.Config.OpenAI.APIVersion)
+	}
+	if loaded.Config.OpenAI.DefaultHeaders["x-tt-logid"] != "agentm" {
+		t.Fatalf("default_headers = %#v", loaded.Config.OpenAI.DefaultHeaders)
+	}
+}
+
+func TestLoadRejectsBaseURLWithAzureEndpoint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(`
+[openai]
+base_url = "https://example.com/v1"
+azure_endpoint = "https://example.com/azure"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(LoadOptions{ConfigFile: path}); err == nil {
+		t.Fatal("expected conflicting endpoints to fail")
+	}
+}
+
 func TestLoadRejectsUnknownKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte(`
@@ -235,10 +281,7 @@ func TestDefaultGatewayConfigurationUsesDotAG(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Config.Gateway.Listen != "127.0.0.1:8080" ||
-		loaded.Config.Gateway.Directory != filepath.Join(home, ".ag", "gateway") ||
-		loaded.Config.Gateway.ReadHeaderTimeout != 5*time.Second ||
-		loaded.Config.Gateway.IdleTimeout != time.Minute ||
+	if loaded.Config.Gateway.Directory != filepath.Join(home, ".ag", "gateway") ||
 		loaded.Config.Gateway.ShutdownTimeout != 10*time.Second {
 		t.Fatalf("gateway defaults = %#v", loaded.Config.Gateway)
 	}

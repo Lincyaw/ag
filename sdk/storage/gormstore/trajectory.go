@@ -15,6 +15,35 @@ type trajectoryStore struct {
 	store *Store
 }
 
+type trajectoryEntryInspectionRow struct {
+	TrajectoryID   string
+	EntryID        string
+	ParentID       string
+	Ordinal        uint64
+	Depth          uint64
+	Kind           string
+	RecordedAt     time.Time
+	Generation     uint64
+	ExecutionID    string
+	OperationKey   string
+	Turn           *int
+	CorrelationID  string
+	Provider       string
+	Model          string
+	ToolName       string
+	ToolCallID     string
+	FinishReason   string
+	InputTokens    int64
+	OutputTokens   int64
+	IsError        *bool
+	CauseCode      string
+	ActionKind     string
+	PayloadVersion uint32
+	PayloadBytes   int64
+	AttributesJSON *string
+	AuditJSON      *string
+}
+
 func (ts *trajectoryStore) Create(
 	ctx context.Context,
 	trajectory sdk.Trajectory,
@@ -36,6 +65,12 @@ func (ts *trajectoryStore) Create(
 	defer ts.store.writeMu.Unlock()
 
 	return ts.store.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := ts.store.lockMutationResource(
+			tx,
+			"trajectory:create:"+ts.store.namespace+":"+trajectory.ID,
+		); err != nil {
+			return err
+		}
 		// Check existence
 		var count int64
 		if err := tx.Model(&Trajectory{}).
@@ -122,7 +157,10 @@ func (ts *trajectoryStore) appendInTx(
 	if err := sdk.ValidateResourceName("trajectory", commit.TrajectoryID); err != nil {
 		return sdk.TrajectoryMetadata{}, err
 	}
-	trajectory, _, ownedCount, err := ts.loadStoredTrajectoryTx(tx, commit.TrajectoryID)
+	trajectory, _, ownedCount, err := ts.loadStoredTrajectoryTx(
+		ts.store.forUpdate(tx),
+		commit.TrajectoryID,
+	)
 	if err != nil {
 		return sdk.TrajectoryMetadata{}, err
 	}
@@ -290,7 +328,10 @@ func (ts *trajectoryStore) beginExecutionInTx(
 	if err != nil {
 		return sdk.TrajectoryMetadata{}, err
 	}
-	trajectory, _, ownedCount, err := ts.loadStoredTrajectoryTx(tx, id)
+	trajectory, _, ownedCount, err := ts.loadStoredTrajectoryTx(
+		ts.store.forUpdate(tx),
+		id,
+	)
 	if err != nil {
 		return sdk.TrajectoryMetadata{}, err
 	}
@@ -360,7 +401,10 @@ func (ts *trajectoryStore) mutateExecution(
 
 	var execution sdk.TrajectoryExecution
 	err := ts.store.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		trajectory, _, _, err := ts.loadStoredTrajectoryTx(tx, id)
+		trajectory, _, _, err := ts.loadStoredTrajectoryTx(
+			ts.store.forUpdate(tx),
+			id,
+		)
 		if err != nil {
 			return err
 		}
@@ -423,7 +467,10 @@ func (ts *trajectoryStore) commitExecutionInTx(
 	}
 	commit.Entries = entries
 
-	trajectory, _, ownedCount, err := ts.loadStoredTrajectoryTx(tx, commit.TrajectoryID)
+	trajectory, _, ownedCount, err := ts.loadStoredTrajectoryTx(
+		ts.store.forUpdate(tx),
+		commit.TrajectoryID,
+	)
 	if err != nil {
 		return sdk.TrajectoryMetadata{}, err
 	}
@@ -500,7 +547,10 @@ func (ts *trajectoryStore) cancelExecutionInTx(
 	if err != nil {
 		return sdk.TrajectoryMetadata{}, false, err
 	}
-	trajectory, _, ownedCount, err := ts.loadStoredTrajectoryTx(tx, commit.TrajectoryID)
+	trajectory, _, ownedCount, err := ts.loadStoredTrajectoryTx(
+		ts.store.forUpdate(tx),
+		commit.TrajectoryID,
+	)
 	if err != nil {
 		return sdk.TrajectoryMetadata{}, false, err
 	}
@@ -661,6 +711,231 @@ func (ts *trajectoryStore) LoadBranchView(
 		head,
 		branch,
 	), nil
+}
+
+func (ts *trajectoryStore) InspectTrajectoryEntries(
+	ctx context.Context,
+	id string,
+	head string,
+) (sdk.TrajectoryMetadata, []sdk.TrajectoryEntryInspection, error) {
+	if err := sdk.ValidateResourceName("trajectory", id); err != nil {
+		return sdk.TrajectoryMetadata{}, nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return sdk.TrajectoryMetadata{}, nil, err
+	}
+	return ts.inspectTrajectoryEntriesTx(
+		ts.store.db.WithContext(ctx),
+		id,
+		head,
+		make(map[string]struct{}),
+	)
+}
+
+func (ts *trajectoryStore) inspectTrajectoryEntriesTx(
+	tx *gorm.DB,
+	id string,
+	head string,
+	trajectoryPath map[string]struct{},
+) (sdk.TrajectoryMetadata, []sdk.TrajectoryEntryInspection, error) {
+	if _, exists := trajectoryPath[id]; exists {
+		return sdk.TrajectoryMetadata{}, nil, fmt.Errorf(
+			"trajectory parent cycle contains %q",
+			id,
+		)
+	}
+	trajectoryPath[id] = struct{}{}
+	defer delete(trajectoryPath, id)
+
+	trajectory, inheritedCount, ownedCount, err := ts.loadStoredTrajectoryTx(tx, id)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, nil, err
+	}
+	metadata := trajectoryMetadataFn(
+		trajectory,
+		int(inheritedCount+ownedCount),
+		int(ownedCount),
+	)
+	if head == "" {
+		head = metadata.Head
+	}
+
+	candidates := make([]sdk.TrajectoryEntryInspection, 0, metadata.EntryCount)
+	if trajectory.ParentID != "" {
+		_, inherited, err := ts.inspectTrajectoryEntriesTx(
+			tx,
+			trajectory.ParentID,
+			trajectory.ParentEntryID,
+			trajectoryPath,
+		)
+		if err != nil {
+			return sdk.TrajectoryMetadata{}, nil, err
+		}
+		candidates = append(candidates, inherited...)
+	}
+	owned, err := ts.loadOwnedEntryInspectionsTx(tx, id)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, nil, err
+	}
+	candidates = append(candidates, owned...)
+
+	branch, err := resolveInspectionBranch(id, head, candidates)
+	if err != nil {
+		return sdk.TrajectoryMetadata{}, nil, err
+	}
+	metadata.Head = head
+	metadata.EntryCount = len(branch)
+	metadata.OwnedEntryCount = 0
+	metadata.Checkpoint = ""
+	for _, entry := range branch {
+		if entry.TrajectoryID == id {
+			metadata.OwnedEntryCount++
+		}
+		if entry.Kind == sdk.TrajectoryKindCheckpoint {
+			metadata.Checkpoint = entry.ID
+		}
+	}
+	return metadata, branch, nil
+}
+
+func (ts *trajectoryStore) loadOwnedEntryInspectionsTx(
+	tx *gorm.DB,
+	id string,
+) ([]sdk.TrajectoryEntryInspection, error) {
+	var rows []trajectoryEntryInspectionRow
+	if err := tx.Table((TrajectoryEntry{}).TableName()).
+		Select(`trajectory_id, entry_id, parent_id, ordinal, depth, kind,
+			recorded_at, generation, execution_id, operation_key, turn,
+			correlation_id, provider, model, tool_name, tool_call_id,
+			finish_reason, input_tokens, output_tokens, is_error, cause_code,
+			action_kind, payload_version, length(payload) AS payload_bytes,
+			attributes_json, audit_json`).
+		Where("namespace = ? AND trajectory_id = ?", ts.store.namespace, id).
+		Order("ordinal").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	result := make([]sdk.TrajectoryEntryInspection, 0, len(rows))
+	for _, row := range rows {
+		entry, err := rowToTrajectoryEntryInspection(row)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, entry)
+	}
+	return result, nil
+}
+
+func rowToTrajectoryEntryInspection(
+	row trajectoryEntryInspectionRow,
+) (sdk.TrajectoryEntryInspection, error) {
+	kind := sdk.TrajectoryKind(row.Kind)
+	if !kind.Valid() {
+		return sdk.TrajectoryEntryInspection{}, fmt.Errorf(
+			"trajectory entry %q has invalid kind %q",
+			row.EntryID,
+			row.Kind,
+		)
+	}
+	if row.PayloadBytes < 0 || uint64(row.PayloadBytes) > uint64(^uint(0)>>1) {
+		return sdk.TrajectoryEntryInspection{}, fmt.Errorf(
+			"trajectory entry %q payload size %d is not representable",
+			row.EntryID,
+			row.PayloadBytes,
+		)
+	}
+	entry := sdk.TrajectoryEntryInspection{
+		ID:             row.EntryID,
+		TrajectoryID:   row.TrajectoryID,
+		ParentID:       row.ParentID,
+		Ordinal:        row.Ordinal,
+		Depth:          row.Depth,
+		Kind:           kind,
+		Timestamp:      row.RecordedAt.UTC(),
+		Generation:     row.Generation,
+		PayloadVersion: row.PayloadVersion,
+		PayloadBytes:   int(row.PayloadBytes),
+		Fields: sdk.TrajectoryEntryFields{
+			ExecutionID:   row.ExecutionID,
+			OperationKey:  row.OperationKey,
+			Turn:          row.Turn,
+			CorrelationID: row.CorrelationID,
+			Provider:      row.Provider,
+			Model:         row.Model,
+			ToolName:      row.ToolName,
+			ToolCallID:    row.ToolCallID,
+			FinishReason:  row.FinishReason,
+			InputTokens:   row.InputTokens,
+			OutputTokens:  row.OutputTokens,
+			IsError:       row.IsError,
+			CauseCode:     row.CauseCode,
+			ActionKind:    sdk.ActionKind(row.ActionKind),
+		},
+	}
+	if row.AttributesJSON != nil {
+		var attributes map[string]string
+		if err := json.Unmarshal([]byte(*row.AttributesJSON), &attributes); err != nil {
+			return sdk.TrajectoryEntryInspection{}, fmt.Errorf(
+				"decode entry %q attributes: %w",
+				row.EntryID,
+				err,
+			)
+		}
+		entry.AttributeCount = len(attributes)
+	}
+	if row.AuditJSON != nil {
+		var audit []json.RawMessage
+		if err := json.Unmarshal([]byte(*row.AuditJSON), &audit); err != nil {
+			return sdk.TrajectoryEntryInspection{}, fmt.Errorf(
+				"decode entry %q audit: %w",
+				row.EntryID,
+				err,
+			)
+		}
+		entry.AuditCount = len(audit)
+	}
+	return entry, nil
+}
+
+func resolveInspectionBranch(
+	trajectoryID string,
+	head string,
+	candidates []sdk.TrajectoryEntryInspection,
+) ([]sdk.TrajectoryEntryInspection, error) {
+	if head == "" {
+		return []sdk.TrajectoryEntryInspection{}, nil
+	}
+	byID := make(map[string]sdk.TrajectoryEntryInspection, len(candidates))
+	for _, entry := range candidates {
+		byID[entry.ID] = entry
+	}
+	reversed := make([]sdk.TrajectoryEntryInspection, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for cursor := head; cursor != ""; {
+		if _, exists := seen[cursor]; exists {
+			return nil, fmt.Errorf(
+				"trajectory %q branch cycle contains entry %q",
+				trajectoryID,
+				cursor,
+			)
+		}
+		seen[cursor] = struct{}{}
+		entry, exists := byID[cursor]
+		if !exists {
+			return nil, fmt.Errorf(
+				"%w: trajectory %s entry %s",
+				sdk.ErrTrajectoryEntryNotFound,
+				trajectoryID,
+				cursor,
+			)
+		}
+		reversed = append(reversed, entry)
+		cursor = entry.ParentID
+	}
+	for left, right := 0, len(reversed)-1; left < right; left, right = left+1, right-1 {
+		reversed[left], reversed[right] = reversed[right], reversed[left]
+	}
+	return reversed, nil
 }
 
 func (ts *trajectoryStore) FindLatest(
@@ -850,7 +1125,10 @@ func (ts *trajectoryStore) Delete(
 	defer ts.store.writeMu.Unlock()
 
 	return ts.store.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		trajectory, _, _, err := ts.loadStoredTrajectoryTx(tx, id)
+		trajectory, _, _, err := ts.loadStoredTrajectoryTx(
+			ts.store.forUpdate(tx),
+			id,
+		)
 		if err != nil {
 			return err
 		}

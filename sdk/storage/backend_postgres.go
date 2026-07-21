@@ -8,14 +8,18 @@ import (
 	"strings"
 
 	"github.com/lincyaw/ag/sdk"
-	postgresstore "github.com/lincyaw/ag/sdk/storage/postgres"
+	"github.com/lincyaw/ag/sdk/storage/gormstore"
 )
 
 func NewPostgresStateBackend(
 	ctx context.Context,
 	connectionString string,
 ) (sdk.StateBackend, error) {
-	return postgresstore.NewStateBackend(ctx, connectionString)
+	parsed, err := url.Parse(connectionString)
+	if err != nil {
+		return nil, fmt.Errorf("parse PostgreSQL connection string: %w", err)
+	}
+	return postgresStorageDriver{scheme: parsed.Scheme}.Open(ctx, parsed)
 }
 
 type postgresStorageDriver struct {
@@ -53,13 +57,24 @@ func (driver postgresStorageDriver) Open(
 	connectionQuery := connectionURL.Query()
 	connectionQuery.Del("namespace")
 	connectionURL.RawQuery = connectionQuery.Encode()
-	displayURL := *parsed
+	return openGORMPostgres(ctx, &connectionURL, namespace)
+}
+
+func openGORMPostgres(
+	ctx context.Context,
+	connectionURL *url.URL,
+	namespace string,
+) (sdk.StateBackend, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	displayURL := *connectionURL
 	displayQuery := displayURL.Query()
 	displayQuery.Set("namespace", namespace)
 	displayURL.RawQuery = displayQuery.Encode()
-	return postgresstore.Open(ctx, postgresstore.Config{
-		ConnectionString: connectionURL.String(),
-		Namespace:        namespace,
-		DisplayURI:       displayURL.Redacted(),
-	})
+	return gormstore.OpenPostgres(
+		connectionURL.String(),
+		namespace,
+		displayURL.Redacted(),
+	)
 }

@@ -94,6 +94,7 @@ type RuntimeConfig struct {
 type Runtime struct {
 	mu                  sync.Mutex
 	current             atomic.Pointer[registrySnapshot]
+	draining            bool
 	closed              bool
 	closeDone           chan struct{}
 	closeErr            error
@@ -402,6 +403,54 @@ func (runtime *Runtime) RequestClose(ctx context.Context) {
 	runtime.startClose(ctx)
 }
 
+// RequestDrain closes trajectory admission without cancelling work that is
+// already hosted. Prompt executions observe this request after committing the
+// current turn boundary, hand durable ownership back as pending, and return.
+func (runtime *Runtime) RequestDrain() {
+	if runtime == nil {
+		return
+	}
+	runtime.mu.Lock()
+	if !runtime.closed {
+		runtime.draining = true
+	}
+	runtime.mu.Unlock()
+}
+
+// Drain waits for admitted trajectory work to finish its current durable turn
+// boundary. A caller timeout only stops waiting; Close is the explicit forced
+// cancellation phase.
+func (runtime *Runtime) Drain(ctx context.Context) error {
+	if runtime == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runtime.RequestDrain()
+	done := make(chan struct{})
+	go func() {
+		runtime.trajectoryExecution.waitDurableStopped()
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
+}
+
+func (runtime *Runtime) drainRequested() bool {
+	if runtime == nil {
+		return false
+	}
+	runtime.mu.Lock()
+	draining := runtime.draining || runtime.closed
+	runtime.mu.Unlock()
+	return draining
+}
+
 func (runtime *Runtime) startClose(ctx context.Context) <-chan struct{} {
 	if ctx == nil {
 		ctx = context.Background()
@@ -410,6 +459,7 @@ func (runtime *Runtime) startClose(ctx context.Context) <-chan struct{} {
 	runtime.mu.Lock()
 	var states []*mountState
 	if !runtime.closed {
+		runtime.draining = true
 		runtime.closed = true
 		current := runtime.current.Load()
 		states = make([]*mountState, 0, len(current.plugins))

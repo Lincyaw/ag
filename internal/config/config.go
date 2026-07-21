@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,7 +17,7 @@ import (
 
 const (
 	AppName       = "ag"
-	DefaultSystem = "You are a concise command-line agent. Use the read-only workspace tools when they are useful."
+	DefaultSystem = "You are a concise command-line agent. Use the available workspace tools when they are useful."
 )
 
 type Config struct {
@@ -38,11 +39,14 @@ type Config struct {
 }
 
 type ModelProfile struct {
-	Model         string `mapstructure:"model" json:"model" yaml:"model"`
-	BaseURL       string `mapstructure:"base_url" json:"base_url" yaml:"base_url"`
-	APIKey        string `mapstructure:"api_key" json:"api_key" yaml:"api_key"`
-	MaxRetries    int    `mapstructure:"max_retries" json:"max_retries,omitempty" yaml:"max_retries,omitempty"`
-	ContextWindow int    `mapstructure:"context_window" json:"context_window,omitempty" yaml:"context_window,omitempty"`
+	Model          string            `mapstructure:"model" json:"model" yaml:"model"`
+	BaseURL        string            `mapstructure:"base_url" json:"base_url" yaml:"base_url"`
+	AzureEndpoint  string            `mapstructure:"azure_endpoint" json:"azure_endpoint,omitempty" yaml:"azure_endpoint,omitempty"`
+	APIVersion     string            `mapstructure:"api_version" json:"api_version,omitempty" yaml:"api_version,omitempty"`
+	DefaultHeaders map[string]string `mapstructure:"default_headers" json:"default_headers,omitempty" yaml:"default_headers,omitempty"`
+	APIKey         string            `mapstructure:"api_key" json:"api_key" yaml:"api_key"`
+	MaxRetries     int               `mapstructure:"max_retries" json:"max_retries,omitempty" yaml:"max_retries,omitempty"`
+	ContextWindow  int               `mapstructure:"context_window" json:"context_window,omitempty" yaml:"context_window,omitempty"`
 }
 
 type Agent struct {
@@ -65,11 +69,14 @@ func (agent Agent) MarshalJSON() ([]byte, error) {
 }
 
 type OpenAI struct {
-	Enabled    bool   `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
-	Model      string `mapstructure:"model" json:"model" yaml:"model"`
-	APIKey     string `mapstructure:"api_key" json:"api_key" yaml:"api_key"`
-	BaseURL    string `mapstructure:"base_url" json:"base_url" yaml:"base_url"`
-	MaxRetries int    `mapstructure:"max_retries" json:"max_retries" yaml:"max_retries"`
+	Enabled        bool              `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
+	Model          string            `mapstructure:"model" json:"model" yaml:"model"`
+	APIKey         string            `mapstructure:"api_key" json:"api_key" yaml:"api_key"`
+	BaseURL        string            `mapstructure:"base_url" json:"base_url" yaml:"base_url"`
+	AzureEndpoint  string            `mapstructure:"azure_endpoint" json:"azure_endpoint,omitempty" yaml:"azure_endpoint,omitempty"`
+	APIVersion     string            `mapstructure:"api_version" json:"api_version,omitempty" yaml:"api_version,omitempty"`
+	DefaultHeaders map[string]string `mapstructure:"default_headers" json:"default_headers,omitempty" yaml:"default_headers,omitempty"`
+	MaxRetries     int               `mapstructure:"max_retries" json:"max_retries" yaml:"max_retries"`
 }
 
 type Workspace struct {
@@ -144,25 +151,19 @@ type Registry struct {
 }
 
 type Gateway struct {
-	Listen            string        `mapstructure:"listen" json:"listen" yaml:"listen"`
-	Directory         string        `mapstructure:"directory" json:"directory" yaml:"directory"`
-	ReadHeaderTimeout time.Duration `mapstructure:"read_header_timeout" json:"read_header_timeout" yaml:"read_header_timeout"`
-	IdleTimeout       time.Duration `mapstructure:"idle_timeout" json:"idle_timeout" yaml:"idle_timeout"`
-	ShutdownTimeout   time.Duration `mapstructure:"shutdown_timeout" json:"shutdown_timeout" yaml:"shutdown_timeout"`
+	Target          string        `mapstructure:"target" json:"target,omitempty" yaml:"target,omitempty"`
+	Directory       string        `mapstructure:"directory" json:"directory" yaml:"directory"`
+	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout" json:"shutdown_timeout" yaml:"shutdown_timeout"`
 }
 
 func (gateway Gateway) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Listen            string `json:"listen"`
-		Directory         string `json:"directory"`
-		ReadHeaderTimeout string `json:"read_header_timeout"`
-		IdleTimeout       string `json:"idle_timeout"`
-		ShutdownTimeout   string `json:"shutdown_timeout"`
+		Target          string `json:"target,omitempty"`
+		Directory       string `json:"directory"`
+		ShutdownTimeout string `json:"shutdown_timeout"`
 	}{
-		Listen: gateway.Listen, Directory: gateway.Directory,
-		ReadHeaderTimeout: gateway.ReadHeaderTimeout.String(),
-		IdleTimeout:       gateway.IdleTimeout.String(),
-		ShutdownTimeout:   gateway.ShutdownTimeout.String(),
+		Target: gateway.Target, Directory: gateway.Directory,
+		ShutdownTimeout: gateway.ShutdownTimeout.String(),
 	})
 }
 
@@ -250,6 +251,10 @@ func (c Config) Validate() error {
 	if c.OpenAI.MaxRetries < 0 {
 		return errors.New("openai.max_retries cannot be negative")
 	}
+	if strings.TrimSpace(c.OpenAI.BaseURL) != "" &&
+		strings.TrimSpace(c.OpenAI.AzureEndpoint) != "" {
+		return errors.New("openai.base_url and openai.azure_endpoint cannot both be configured")
+	}
 	if c.Workspace.Enabled && strings.TrimSpace(c.Workspace.Root) == "" {
 		return errors.New("workspace.root is required")
 	}
@@ -300,16 +305,19 @@ func (c Config) Validate() error {
 	if c.Registry.MaxMessageBytes < 0 {
 		return errors.New("registry.max_message_bytes cannot be negative")
 	}
-	if strings.TrimSpace(c.Gateway.Listen) == "" {
-		return errors.New("gateway.listen is required")
-	}
 	if strings.TrimSpace(c.Gateway.Directory) == "" {
 		return errors.New("gateway.directory is required")
 	}
-	if c.Gateway.ReadHeaderTimeout <= 0 ||
-		c.Gateway.IdleTimeout <= 0 ||
-		c.Gateway.ShutdownTimeout <= 0 {
-		return errors.New("gateway timeouts must be positive")
+	if c.Gateway.ShutdownTimeout <= 0 {
+		return errors.New("gateway.shutdown_timeout must be positive")
+	}
+	if target := strings.TrimSpace(c.Gateway.Target); target != "" {
+		parsed, err := url.Parse(target)
+		if err != nil || (parsed.Scheme != "grpc" && parsed.Scheme != "grpcs") ||
+			parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
+			parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+			return errors.New("gateway.target must be an absolute grpc:// or grpcs:// host:port URI")
+		}
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Logging.Level)) {
 	case "debug", "info", "warn", "warning", "error":
@@ -354,6 +362,15 @@ func (c *Config) resolveModelProfile() {
 	if profile.BaseURL != "" {
 		c.OpenAI.BaseURL = profile.BaseURL
 	}
+	if profile.AzureEndpoint != "" {
+		c.OpenAI.AzureEndpoint = profile.AzureEndpoint
+	}
+	if profile.APIVersion != "" {
+		c.OpenAI.APIVersion = profile.APIVersion
+	}
+	if profile.DefaultHeaders != nil {
+		c.OpenAI.DefaultHeaders = maps.Clone(profile.DefaultHeaders)
+	}
 	if profile.APIKey != "" {
 		c.OpenAI.APIKey = profile.APIKey
 	}
@@ -379,6 +396,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("openai.model", "gpt-5-mini")
 	v.SetDefault("openai.api_key", "")
 	v.SetDefault("openai.base_url", "")
+	v.SetDefault("openai.azure_endpoint", "")
+	v.SetDefault("openai.api_version", "")
+	v.SetDefault("openai.default_headers", map[string]string{})
 	v.SetDefault("openai.max_retries", 2)
 	v.SetDefault("workspace.root", ".")
 	v.SetDefault("workspace.enabled", true)
@@ -415,10 +435,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("registry.tls_cert_file", "")
 	v.SetDefault("registry.tls_key_file", "")
 	v.SetDefault("registry.max_message_bytes", 0)
-	v.SetDefault("gateway.listen", "127.0.0.1:8080")
+	v.SetDefault("gateway.target", "")
 	v.SetDefault("gateway.directory", defaultGatewayDirectory())
-	v.SetDefault("gateway.read_header_timeout", "5s")
-	v.SetDefault("gateway.idle_timeout", "1m")
 	v.SetDefault("gateway.shutdown_timeout", "10s")
 	v.SetDefault("state.directory", defaultStateDirectory())
 	v.SetDefault("state.backend_uri", "")
@@ -451,56 +469,51 @@ func configureEnvironment(v *viper.Viper) {
 
 func bindFlags(v *viper.Viper, flags *pflag.FlagSet) error {
 	bindings := map[string]string{
-		"agent.system":                "system",
-		"agent.provider":              "provider",
-		"agent.max_turns":             "max-turns",
-		"agent.timeout":               "timeout",
-		"openai.enabled":              "openai",
-		"openai.model":                "model",
-		"openai.base_url":             "base-url",
-		"openai.max_retries":          "max-retries",
-		"workspace.enabled":           "file",
-		"workspace.root":              "cwd",
-		"workspace.enable_write":      "write",
-		"workspace.max_read_bytes":    "max-read-bytes",
-		"workspace.max_write_bytes":   "max-write-bytes",
-		"workspace.max_entries":       "max-entries",
-		"bash.enabled":                "bash",
-		"bash.shell":                  "shell",
-		"bash.default_timeout":        "bash-timeout",
-		"bash.max_timeout":            "bash-max-timeout",
-		"bash.max_output_bytes":       "bash-max-output-bytes",
-		"compact.enabled":             "compact",
-		"tree.enabled":                "tree",
-		"tree.max_entries":            "tree-max-entries",
-		"tree.max_depth":              "tree-max-depth",
-		"hostfs.enabled":              "hostfs",
-		"hostfs.roots":                "hostfs-root",
-		"hostfs.max_read_bytes":       "hostfs-max-read-bytes",
-		"hostfs.max_entries":          "hostfs-max-entries",
-		"hostfs.max_depth":            "hostfs-max-depth",
-		"plugins.remote":              "plugin",
-		"plugins.registry_uri":        "registry-uri",
-		"plugins.registry_namespace":  "registry-namespace",
-		"registry.listen":             "listen",
-		"registry.advertise_uri":      "advertise-uri",
-		"registry.backend_uri":        "registry-backend",
-		"registry.tls_cert_file":      "tls-cert",
-		"registry.tls_key_file":       "tls-key",
-		"registry.max_message_bytes":  "max-message-bytes",
-		"gateway.listen":              "gateway-listen",
-		"gateway.directory":           "gateway-dir",
-		"gateway.read_header_timeout": "read-header-timeout",
-		"gateway.idle_timeout":        "idle-timeout",
-		"gateway.shutdown_timeout":    "shutdown-timeout",
-		"state.directory":             "state-dir",
-		"state.backend_uri":           "storage",
-		"state.namespace":             "state-namespace",
-		"observability.enabled":       "otel",
-		"logging.level":               "log-level",
-		"logging.format":              "log-format",
-		"logging.file":                "log-file",
-		"logging.console":             "log-console",
+		"agent.system":               "system",
+		"agent.provider":             "provider",
+		"agent.max_turns":            "max-turns",
+		"agent.timeout":              "timeout",
+		"openai.enabled":             "openai",
+		"openai.model":               "model",
+		"openai.base_url":            "base-url",
+		"openai.max_retries":         "max-retries",
+		"workspace.enabled":          "file",
+		"workspace.root":             "cwd",
+		"workspace.enable_write":     "write",
+		"workspace.max_read_bytes":   "max-read-bytes",
+		"workspace.max_write_bytes":  "max-write-bytes",
+		"workspace.max_entries":      "max-entries",
+		"bash.enabled":               "bash",
+		"bash.shell":                 "shell",
+		"bash.default_timeout":       "bash-timeout",
+		"bash.max_timeout":           "bash-max-timeout",
+		"bash.max_output_bytes":      "bash-max-output-bytes",
+		"compact.enabled":            "compact",
+		"tree.enabled":               "tree",
+		"tree.max_entries":           "tree-max-entries",
+		"tree.max_depth":             "tree-max-depth",
+		"hostfs.enabled":             "hostfs",
+		"hostfs.roots":               "hostfs-root",
+		"hostfs.max_read_bytes":      "hostfs-max-read-bytes",
+		"hostfs.max_entries":         "hostfs-max-entries",
+		"hostfs.max_depth":           "hostfs-max-depth",
+		"plugins.remote":             "plugin",
+		"plugins.registry_uri":       "registry-uri",
+		"plugins.registry_namespace": "registry-namespace",
+		"registry.listen":            "listen",
+		"registry.advertise_uri":     "advertise-uri",
+		"registry.backend_uri":       "registry-backend",
+		"registry.tls_cert_file":     "tls-cert",
+		"registry.tls_key_file":      "tls-key",
+		"registry.max_message_bytes": "max-message-bytes",
+		"state.directory":            "state-dir",
+		"state.backend_uri":          "storage",
+		"state.namespace":            "state-namespace",
+		"observability.enabled":      "otel",
+		"logging.level":              "log-level",
+		"logging.format":             "log-format",
+		"logging.file":               "log-file",
+		"logging.console":            "log-console",
 	}
 	for key, name := range bindings {
 		flag := flags.Lookup(name)

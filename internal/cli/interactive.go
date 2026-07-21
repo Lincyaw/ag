@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/lincyaw/ag/gateway"
 	"github.com/lincyaw/ag/internal/tui/animation"
 	"github.com/lincyaw/ag/internal/tui/spinner"
 	"github.com/lincyaw/ag/internal/tui/statusbar"
@@ -21,9 +23,11 @@ import (
 type interactiveState int
 
 const (
-	stateInput     interactiveState = iota
+	stateInput interactiveState = iota
 	stateExecuting
 )
+
+var errInteractiveDetached = errors.New("agent view detached")
 
 type chatMessage struct {
 	role    string // "user", "assistant", "status", "error"
@@ -31,13 +35,39 @@ type chatMessage struct {
 }
 
 type executionDoneMsg struct {
-	result agentruntime.Result
-	err    error
+	requestID string
+	result    agentruntime.Result
+	err       error
+}
+
+type interactionRequestedMsg gateway.Interaction
+
+type interactionResolvedMsg gateway.Interaction
+
+type interactionResponseDoneMsg struct {
+	interactionID string
+	err           error
+}
+
+// interactiveSession is the only execution boundary the TUI model owns. The
+// concrete implementation may be an in-process runtime session or a remote
+// gateway-backed session.
+type interactiveSession interface {
+	ID() string
+	Prompt(context.Context, string) (agentruntime.Result, error)
+}
+
+type interactiveInteractionResponder interface {
+	RespondInteraction(
+		context.Context,
+		gateway.Interaction,
+		gateway.InteractionAnswer,
+	) error
 }
 
 type interactiveModel struct {
 	state      interactiveState
-	session    *agentruntime.Session
+	session    interactiveSession
 	styles     progressStyles
 	chat       []chatMessage
 	input      textarea.Model
@@ -52,7 +82,9 @@ type interactiveModel struct {
 	width  int
 	height int
 
-	execCancel context.CancelFunc
+	execCancels map[string]context.CancelCauseFunc
+	interaction *gateway.Interaction
+	initialCmds []tea.Cmd
 
 	sessionID  string
 	turn       int
@@ -60,6 +92,7 @@ type interactiveModel struct {
 	toolsTotal int
 
 	quitting bool
+	detached bool
 }
 
 type interactiveEventSink struct {
@@ -70,6 +103,20 @@ func (s *interactiveEventSink) Observe(_ context.Context, event sdk.Event) {
 	if s.program == nil {
 		return
 	}
+	switch event.Name {
+	case gateway.GatewayEventInteractionRequested:
+		var interaction gateway.Interaction
+		if json.Unmarshal(event.Payload, &interaction) == nil {
+			s.program.Send(interactionRequestedMsg(interaction))
+		}
+	case gateway.GatewayEventInteractionResolved:
+		fallthrough
+	case gateway.GatewayEventInteractionCancelled:
+		var interaction gateway.Interaction
+		if json.Unmarshal(event.Payload, &interaction) == nil {
+			s.program.Send(interactionResolvedMsg(interaction))
+		}
+	}
 	record := progressRecordFromEvent(event)
 	if record.Label != "" || record.Detail != "" {
 		s.program.Send(progressRecordMsg(record))
@@ -77,7 +124,7 @@ func (s *interactiveEventSink) Observe(_ context.Context, event sdk.Event) {
 }
 
 func newInteractiveModel(
-	session *agentruntime.Session,
+	session interactiveSession,
 	sessionID string,
 	styles progressStyles,
 ) interactiveModel {
@@ -107,11 +154,16 @@ func newInteractiveModel(
 		statusBar:    sb,
 		sessionID:    sessionID,
 		historyIndex: -1,
+		execCancels:  make(map[string]context.CancelCauseFunc),
 	}
 }
 
 func (m interactiveModel) Init() tea.Cmd {
-	return nil
+	commands := append([]tea.Cmd(nil), m.initialCmds...)
+	if m.state == stateExecuting {
+		commands = append(commands, m.spinner.Init())
+	}
+	return tea.Batch(commands...)
 }
 
 func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -120,6 +172,11 @@ func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseWheelMsg:
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(msg)
+		return m, cmd
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -143,9 +200,14 @@ func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case executionDoneMsg:
-		m.state = stateInput
-		m.execCancel = nil
-		m.spinner.Stop()
+		delete(m.execCancels, msg.requestID)
+		if len(m.execCancels) == 0 {
+			m.state = stateInput
+			m.spinner.Stop()
+			m.interaction = nil
+		} else {
+			m.state = stateExecuting
+		}
 		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 			m.chat = append(m.chat, chatMessage{
 				role:    "error",
@@ -163,55 +225,151 @@ func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				content: rendered,
 			})
 		}
-		m.statusLine = ""
-		m.turn = 0
-		m.toolsDone = 0
-		m.toolsTotal = 0
+		if len(m.execCancels) == 0 {
+			m.statusLine = ""
+			m.turn = 0
+			m.toolsDone = 0
+			m.toolsTotal = 0
+		} else {
+			m.statusLine = fmt.Sprintf(
+				"%d queued input(s) remaining",
+				len(m.execCancels),
+			)
+		}
 		m.rebuildViewport()
 		m.input.Focus()
 		return m, nil
 
-	default:
-		if m.state == stateInput {
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
-			cmds = append(cmds, cmd)
+	case interactionRequestedMsg:
+		interaction := gateway.Interaction(msg)
+		if m.interaction != nil && m.interaction.ID == interaction.ID {
+			return m, nil
 		}
+		m.interaction = &interaction
+		m.chat = append(m.chat, chatMessage{
+			role: "status", content: interactionDisplay(interaction),
+		})
+		m.statusLine = "waiting for your answer"
+		m.rebuildViewport()
+		m.input.Focus()
+		return m, nil
+
+	case interactionResolvedMsg:
+		interaction := gateway.Interaction(msg)
+		if m.interaction != nil && m.interaction.ID == interaction.ID {
+			m.interaction = nil
+		}
+		return m, nil
+
+	case interactionResponseDoneMsg:
+		if msg.err != nil {
+			m.chat = append(m.chat, chatMessage{
+				role: "error", content: msg.err.Error(),
+			})
+		} else if m.interaction != nil && m.interaction.ID == msg.interactionID {
+			m.chat = append(m.chat, chatMessage{
+				role: "status", content: "answer sent",
+			})
+			m.interaction = nil
+		}
+		m.rebuildViewport()
+		return m, nil
+
+	default:
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		cmds = append(cmds, cmd)
 		return m, tea.Batch(cmds...)
 	}
 }
 
 func (m interactiveModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "ctrl+b":
+		if m.hasBackgroundWork() {
+			m.detach()
+			return m, tea.Quit
+		}
+
 	case "ctrl+d":
-		m.quitting = true
+		if m.hasBackgroundWork() {
+			m.detach()
+		} else {
+			m.quitting = true
+		}
 		return m, tea.Quit
 
 	case "ctrl+c":
-		if m.state == stateExecuting && m.execCancel != nil {
-			m.execCancel()
+		if m.state == stateExecuting && len(m.execCancels) > 0 {
+			for _, cancel := range m.execCancels {
+				cancel(context.Canceled)
+			}
 			return m, nil
 		}
 		m.input.Reset()
 		return m, nil
 
 	case "enter":
-		if m.state == stateInput {
-			text := strings.TrimSpace(m.input.Value())
-			if text == "" {
+		text := strings.TrimSpace(m.input.Value())
+		if text == "" {
+			return m, nil
+		}
+		if m.interaction != nil {
+			interaction := *m.interaction
+			responder, ok := m.session.(interactiveInteractionResponder)
+			if !ok {
+				m.chat = append(m.chat, chatMessage{
+					role: "error", content: "this session cannot answer interactions",
+				})
+				m.rebuildViewport()
 				return m, nil
 			}
-			m.history = append(m.history, text)
-			m.historyIndex = len(m.history)
+			answer := interactionAnswer(interaction, text)
 			m.chat = append(m.chat, chatMessage{role: "user", content: text})
 			m.input.Reset()
-			m.state = stateExecuting
-			m.statusLine = "starting..."
-			m.spinner = m.spinner.Reset()
-			m.rebuildViewport()
-			m.input.Blur()
-			return m, tea.Batch(m.startExecution(text), m.spinner.Init())
+			return m, func() tea.Msg {
+				ctx, cancel := context.WithTimeout(
+					context.Background(),
+					gatewayCancelTimeout,
+				)
+				defer cancel()
+				err := responder.RespondInteraction(
+					ctx, interaction, answer,
+				)
+				return interactionResponseDoneMsg{
+					interactionID: interaction.ID, err: err,
+				}
+			}
 		}
+		wasExecuting := m.state == stateExecuting
+		m.history = append(m.history, text)
+		m.historyIndex = len(m.history)
+		m.chat = append(m.chat, chatMessage{role: "user", content: text})
+		m.input.Reset()
+		m.state = stateExecuting
+		if wasExecuting {
+			m.statusLine = fmt.Sprintf(
+				"queued — %d input(s) pending",
+				len(m.execCancels)+1,
+			)
+		} else {
+			m.statusLine = "starting..."
+		}
+		m.spinner = m.spinner.Reset()
+		m.rebuildViewport()
+		m.viewport.GotoBottom()
+		command := m.startExecution(text)
+		if wasExecuting {
+			return m, command
+		}
+		return m, tea.Batch(command, m.spinner.Init())
+
+	case "pgup":
+		m.viewport.PageUp()
+		return m, nil
+
+	case "pgdown":
+		m.viewport.PageDown()
 		return m, nil
 
 	case "up":
@@ -236,22 +394,83 @@ func (m interactiveModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if m.state == stateInput {
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		return m, cmd
-	}
-	return m, nil
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
 }
 
 func (m *interactiveModel) startExecution(prompt string) tea.Cmd {
-	ctx, cancel := context.WithCancel(context.Background())
-	m.execCancel = cancel
-	session := m.session
+	return m.trackExecution(func(ctx context.Context) (agentruntime.Result, error) {
+		return m.session.Prompt(ctx, prompt)
+	})
+}
+
+func (m *interactiveModel) trackExecution(
+	run func(context.Context) (agentruntime.Result, error),
+) tea.Cmd {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	requestID := sdk.NewID()
+	m.execCancels[requestID] = cancel
 	return func() tea.Msg {
-		result, err := session.Prompt(ctx, prompt)
-		return executionDoneMsg{result: result, err: err}
+		result, err := run(ctx)
+		return executionDoneMsg{requestID: requestID, result: result, err: err}
 	}
+}
+
+func (m *interactiveModel) hasBackgroundWork() bool {
+	return len(m.execCancels) > 0 || m.interaction != nil
+}
+
+func (m *interactiveModel) detach() {
+	m.detached = true
+	m.quitting = true
+	for _, cancel := range m.execCancels {
+		cancel(errInteractiveDetached)
+	}
+}
+
+func (m *interactiveModel) resumeExecution(
+	input gateway.AgentInput,
+	showInput bool,
+	run func(context.Context) (agentruntime.Result, error),
+) {
+	if showInput {
+		m.chat = append(m.chat, chatMessage{role: "user", content: input.Content})
+		m.history = append(m.history, input.Content)
+		m.historyIndex = len(m.history)
+	}
+	m.state = stateExecuting
+	m.statusLine = "reconnected to background input"
+	m.initialCmds = append(m.initialCmds, m.trackExecution(run))
+}
+
+func (m *interactiveModel) hydrateConversation(messages []sdk.Message) {
+	for _, message := range messages {
+		if strings.TrimSpace(message.Content) == "" {
+			continue
+		}
+		switch message.Role {
+		case sdk.RoleUser:
+			m.chat = append(m.chat, chatMessage{
+				role: "user", content: message.Content,
+			})
+			m.history = append(m.history, message.Content)
+		case sdk.RoleAssistant:
+			m.chat = append(m.chat, chatMessage{
+				role:    "assistant",
+				content: renderMarkdownContent(os.Stderr, message.Content),
+			})
+		}
+	}
+	m.historyIndex = len(m.history)
+}
+
+func (m *interactiveModel) resumeInteraction(interaction gateway.Interaction) {
+	m.interaction = &interaction
+	m.chat = append(m.chat, chatMessage{
+		role: "status", content: interactionDisplay(interaction),
+	})
+	m.statusLine = "waiting for your answer"
 }
 
 func (m *interactiveModel) applyProgressRecord(record progressRecord) {
@@ -285,6 +504,7 @@ func (m *interactiveModel) applyProgressRecord(record progressRecord) {
 }
 
 func (m *interactiveModel) recalculateLayout() {
+	wasAtBottom := m.viewport.AtBottom()
 	const editorHeight = 3
 	const separatorHeight = 1
 	const bottomBorderHeight = 1
@@ -300,10 +520,14 @@ func (m *interactiveModel) recalculateLayout() {
 	}
 	m.viewport.SetWidth(vpWidth)
 	m.viewport.SetHeight(vpHeight)
+	if wasAtBottom {
+		m.viewport.GotoBottom()
+	}
 	m.input.SetWidth(vpWidth - 4)
 }
 
 func (m *interactiveModel) rebuildViewport() {
+	wasAtBottom := m.viewport.AtBottom()
 	var lines []string
 	for _, msg := range m.chat {
 		switch msg.role {
@@ -329,7 +553,9 @@ func (m *interactiveModel) rebuildViewport() {
 
 	content := strings.Join(lines, "\n")
 	m.viewport.SetContent(content)
-	m.viewport.GotoBottom()
+	if wasAtBottom {
+		m.viewport.GotoBottom()
+	}
 }
 
 func (m interactiveModel) View() tea.View {
@@ -360,15 +586,25 @@ func (m interactiveModel) View() tea.View {
 
 	view := tea.NewView(content)
 	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
 	return view
 }
 
 func (m *interactiveModel) updateStatusBarBindings() {
 	var bindings []statusbar.HelpBinding
-	if m.state == stateExecuting {
+	if m.interaction != nil {
+		bindings = append(bindings, statusbar.HelpBinding{Key: "enter", Desc: "answer"})
+		bindings = append(bindings, statusbar.HelpBinding{Key: "ctrl+b", Desc: "background"})
+		bindings = append(bindings, statusbar.HelpBinding{Key: "ctrl+c", Desc: "cancel"})
+	} else if m.state == stateExecuting {
+		bindings = append(bindings, statusbar.HelpBinding{Key: "enter", Desc: "queue"})
+		bindings = append(bindings, statusbar.HelpBinding{Key: "ctrl+b", Desc: "background"})
 		bindings = append(bindings, statusbar.HelpBinding{Key: "ctrl+c", Desc: "cancel"})
 	} else {
 		bindings = append(bindings, statusbar.HelpBinding{Key: "enter", Desc: "send"})
+	}
+	if m.viewport.TotalLineCount() > m.viewport.Height() {
+		bindings = append(bindings, statusbar.HelpBinding{Key: "pgup/pgdn", Desc: "scroll"})
 	}
 	bindings = append(bindings, statusbar.HelpBinding{Key: "ctrl+d", Desc: "exit"})
 	m.statusBar.SetBindings(bindings)
@@ -384,4 +620,31 @@ func (m *interactiveModel) updateStatusBarBindings() {
 		rightParts = append(rightParts, shortIdentifier(m.sessionID))
 	}
 	m.statusBar.SetActivity(strings.Join(rightParts, "  "))
+}
+
+func interactionDisplay(interaction gateway.Interaction) string {
+	lines := []string{"Question: " + interaction.Prompt}
+	for index, option := range interaction.Options {
+		line := fmt.Sprintf("%d. %s", index+1, option.Label)
+		if option.Description != "" {
+			line += " — " + option.Description
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func interactionAnswer(
+	interaction gateway.Interaction,
+	value string,
+) gateway.InteractionAnswer {
+	value = strings.TrimSpace(value)
+	for index, option := range interaction.Options {
+		if value == fmt.Sprint(index+1) ||
+			strings.EqualFold(value, option.ID) ||
+			strings.EqualFold(value, option.Label) {
+			return gateway.InteractionAnswer{OptionID: option.ID}
+		}
+	}
+	return gateway.InteractionAnswer{Text: value}
 }

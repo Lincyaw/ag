@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	gatewaymanager "github.com/lincyaw/ag/gateway/manager"
 	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -22,15 +23,17 @@ const (
 )
 
 type app struct {
-	version     string
-	stdout      io.Writer
-	stderr      io.Writer
-	configFile  string
-	output      string
-	progress    string
-	color       string
-	showVersion bool
-	dumpSchema  bool
+	version       string
+	stdout        io.Writer
+	stderr        io.Writer
+	configFile    string
+	output        string
+	progress      string
+	color         string
+	showVersion   bool
+	dumpSchema    bool
+	launchGateway gatewaymanager.Launcher
+	probeGateway  gatewaymanager.Probe
 }
 
 type usageError struct{ error }
@@ -42,6 +45,16 @@ func Run(args []string, stdout, stderr io.Writer, version string) int {
 		syscall.SIGTERM,
 	)
 	defer stop()
+	childConfig, child, childErr := gatewaymanager.ChildRequestFromEnvironment()
+	if child {
+		if childErr != nil {
+			writeTextError(stderr, childErr)
+			return exitRuntime
+		}
+		return runManagedGatewayChild(
+			signalContext, args, childConfig, stdout, stderr, version,
+		)
+	}
 	command := New(stdout, stderr, version)
 	command.SetArgs(args)
 	if err := command.ExecuteContext(signalContext); err != nil {
@@ -103,7 +116,7 @@ func New(stdout, stderr io.Writer, version string) *cobra.Command {
 	root.PersistentFlags().String(
 		"state-dir",
 		"",
-		"Durable state directory for the default DuckDB backend.",
+		"Durable state directory for automatic local backend selection.",
 	)
 	root.PersistentFlags().String(
 		"storage",
@@ -161,7 +174,6 @@ func New(stdout, stderr io.Writer, version string) *cobra.Command {
 		application.configCommand(),
 		application.pluginCommand(),
 		application.registryCommand(),
-		application.gatewayCommand(),
 		application.trajectoryCommand(),
 		application.invocationCommand(),
 		application.stateCommand(),

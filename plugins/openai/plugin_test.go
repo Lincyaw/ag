@@ -78,6 +78,83 @@ func TestPluginRespectsZeroMaxRetries(t *testing.T) {
 	}
 }
 
+func TestPluginAppliesAzureRequestOptions(t *testing.T) {
+	type receivedRequest struct {
+		path       string
+		apiVersion string
+		logID      string
+		apiKey     string
+		auth       string
+	}
+	received := make(chan receivedRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		received <- receivedRequest{
+			path:       request.URL.Path,
+			apiVersion: request.URL.Query().Get("api-version"),
+			logID:      request.Header.Get("X-TT-LOGID"),
+			apiKey:     request.Header.Get("api-key"),
+			auth:       request.Header.Get("Authorization"),
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{
+			"id": "chatcmpl-azure",
+			"object": "chat.completion",
+			"created": 1,
+			"model": "gpt-test",
+			"choices": [{
+				"index": 0,
+				"message": {"role": "assistant", "content": "ok"},
+				"finish_reason": "stop",
+				"logprobs": null
+			}],
+			"usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+		}`))
+	}))
+	defer server.Close()
+
+	headers := map[string]string{"X-TT-LOGID": "agentm"}
+	registrar := &providerRegistrar{}
+	plugin := New(Config{
+		Model:          "gpt-test",
+		APIKey:         "test",
+		AzureEndpoint:  server.URL + "/api/modelhub/online/v2/crawl",
+		APIVersion:     "2024-03-01-preview",
+		DefaultHeaders: headers,
+		MaxRetries:     0,
+		HTTPClient:     server.Client(),
+	})
+	headers["X-TT-LOGID"] = "mutated"
+	if err := plugin.Install(t.Context(), registrar); err != nil {
+		t.Fatal(err)
+	}
+	provider := registrar.provider.(agentsdk.SyncProvider)
+	if _, err := provider.Complete(t.Context(), agentsdk.ModelRequest{
+		Messages: []agentsdk.Message{{Role: agentsdk.RoleUser, Content: "hello"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := <-received
+	if request.path != "/api/modelhub/online/v2/crawl/openai/deployments/gpt-test/chat/completions" {
+		t.Fatalf("request path = %q", request.path)
+	}
+	if request.apiVersion != "2024-03-01-preview" {
+		t.Fatalf("api-version = %q", request.apiVersion)
+	}
+	if request.logID != "agentm" {
+		t.Fatalf("X-TT-LOGID = %q", request.logID)
+	}
+	if request.apiKey != "test" {
+		t.Fatalf("api-key = %q", request.apiKey)
+	}
+	if request.auth != "" {
+		t.Fatalf("Authorization = %q, want empty", request.auth)
+	}
+}
+
 func TestProviderUsesOfficialSDKForTools(t *testing.T) {
 	requestBody := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(

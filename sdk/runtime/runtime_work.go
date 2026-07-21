@@ -9,6 +9,10 @@ import (
 // and cannot accept new work.
 var ErrRuntimeClosed = errors.New("runtime is closed")
 
+// ErrRuntimeDraining is returned by an active prompt after it commits the
+// current turn boundary and hands the non-terminal execution to recovery.
+var ErrRuntimeDraining = errors.New("runtime is draining")
+
 // runtimeWorkGroup tracks short-lived runtime-owned work behind the runtime
 // close gate. It only owns admission and accounting; each subsystem chooses
 // whether close waits for the group as a durable boundary or best-effort cleanup.
@@ -35,11 +39,16 @@ func (group *runtimeWorkGroup) waitStopped() {
 // prompt execution, recovery, cancellation, and rollback all mutate or project
 // trajectory state, so they share one boundary.
 func (runtime *Runtime) beginTrajectoryWork() (func(), error) {
-	release, ok := runtime.trajectoryExecution.beginWork(runtime)
-	if !ok {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.closed {
 		return nil, ErrRuntimeClosed
 	}
-	return release, nil
+	if runtime.draining {
+		return nil, ErrRuntimeDraining
+	}
+	runtime.trajectoryExecution.work.wait.Add(1)
+	return runtime.trajectoryExecution.work.wait.Done, nil
 }
 
 func (runtime *Runtime) beginOperationWork() (func(), error) {
@@ -58,7 +67,17 @@ func (runtime *Runtime) executionRecoveryHandoffActive() bool {
 	runtime.mu.Lock()
 	closed := runtime.closed
 	runtime.mu.Unlock()
-	return closed || runtime.trajectoryExecution.stopped()
+	return closed || runtime.draining || runtime.trajectoryExecution.stopped()
+}
+
+// gracefulExecutionDrainActive distinguishes a committed turn-boundary handoff
+// from forced runtime close. The former preserves the new checkpoint head so
+// recovery continues with the next model turn instead of replaying this one.
+func (runtime *Runtime) gracefulExecutionDrainActive() bool {
+	runtime.mu.Lock()
+	draining := runtime.draining && !runtime.closed
+	runtime.mu.Unlock()
+	return draining && !runtime.trajectoryExecution.stopped()
 }
 
 // operationRecoveryHandoffActive reports whether an interrupted operation await

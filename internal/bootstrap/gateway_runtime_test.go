@@ -74,6 +74,24 @@ func TestGatewayRuntimeBuilderSessionBindingOverridesLocalPlugin(t *testing.T) {
 	}
 }
 
+func TestGatewaySessionConfigOverridesDaemonWorkspace(t *testing.T) {
+	config := appconfig.Config{
+		Workspace: appconfig.Workspace{Root: "/daemon-workspace"},
+	}
+	got, err := gatewaySessionConfig(config, gateway.RuntimeBuildSpec{
+		WorkspaceRoot: "/session-workspace",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workspace.Root != "/session-workspace" {
+		t.Fatalf("workspace root = %q", got.Workspace.Root)
+	}
+	if config.Workspace.Root != "/daemon-workspace" {
+		t.Fatalf("gateway config was mutated: %q", config.Workspace.Root)
+	}
+}
+
 func fileOverridePlugin() sdk.Plugin {
 	return sdk.PluginFunc{
 		PluginManifest: sdk.Manifest{

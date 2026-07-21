@@ -37,6 +37,14 @@ func (os *operationStore) Submit(
 	var result sdk.OperationRecord
 	var created bool
 	txErr := os.store.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := os.store.lockMutationResource(
+			tx,
+			"operation:submit:"+os.store.namespace+":"+
+				string(record.Kind)+":"+record.Resource+":"+
+				record.ResourceRevision+":"+record.Operation.IdempotencyKey,
+		); err != nil {
+			return err
+		}
 		existing, err := os.loadByIdempotencyTx(tx, record)
 		if err == nil {
 			if !sameOperationSubmission(existing, record) {
@@ -176,7 +184,7 @@ func (os *operationStore) mutate(
 
 	var result sdk.OperationRecord
 	err := os.store.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		record, err := os.loadTx(tx, id)
+		record, err := os.loadTx(os.store.forUpdate(tx), id)
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return fmt.Errorf("%w: %s", sdk.ErrOperationNotFound, id)
 		}

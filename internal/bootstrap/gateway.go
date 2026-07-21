@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -30,11 +31,6 @@ func StartGateway(
 	stderr io.Writer,
 	version string,
 ) (*RunningGateway, error) {
-	if strings.TrimSpace(config.Plugins.RegistryURI) == "" {
-		return nil, errors.New(
-			"gateway requires a plugin registry; set plugins.registry_uri or --registry-uri",
-		)
-	}
 	logger, logFile, err := OpenConfiguredLogger(
 		config.Logging,
 		stderr,
@@ -54,9 +50,9 @@ func StartGateway(
 		)
 	}
 	logger = logging.WithHandler(logger, observability.LogHandler)
-	directory, err := OpenPluginDirectory(ctx, config.Plugins)
+	directory, registryURI, err := OpenGatewayPluginDirectory(ctx, config)
 	if err != nil {
-		return nil, closeGatewayStartup(ctx, err, logFile, observability, nil, nil, nil)
+		return nil, closeGatewayStartup(ctx, err, logFile, observability, nil, nil, nil, nil, nil, nil)
 	}
 	root, err := filepath.Abs(config.Gateway.Directory)
 	if err != nil {
@@ -66,6 +62,24 @@ func StartGateway(
 			logFile,
 			observability,
 			directory,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+		)
+	}
+	stateResolution, err := ResolveStateBackend(config)
+	if err != nil {
+		return nil, closeGatewayStartup(
+			ctx,
+			err,
+			logFile,
+			observability,
+			directory,
+			nil,
+			nil,
+			nil,
 			nil,
 			nil,
 		)
@@ -82,10 +96,15 @@ func StartGateway(
 			directory,
 			nil,
 			nil,
+			nil,
+			nil,
+			nil,
 		)
 	}
-	stateFactory, err := gateway.NewDuckDBSessionStateFactory(
-		filepath.Join(root, "state"),
+	eventStore, err := openGatewayEventStore(
+		ctx,
+		stateResolution.URI,
+		filepath.Join(root, "events"),
 	)
 	if err != nil {
 		return nil, closeGatewayStartup(
@@ -96,11 +115,77 @@ func StartGateway(
 			directory,
 			sessionStore,
 			nil,
+			nil,
+			nil,
+			nil,
+		)
+	}
+	interactionStore, err := gateway.NewFileInteractionStore(
+		filepath.Join(root, "interactions"),
+	)
+	if err != nil {
+		return nil, closeGatewayStartup(
+			ctx, err, logFile, observability, directory,
+			sessionStore, eventStore, nil, nil, nil,
+		)
+	}
+	interactions, err := gateway.NewInteractionManager(
+		interactionStore,
+		eventStore,
+	)
+	if err != nil {
+		return nil, closeGatewayStartup(
+			ctx,
+			errors.Join(err, interactionStore.Close(context.Background())),
+			logFile,
+			observability,
+			directory,
+			sessionStore,
+			eventStore,
+			nil,
+			nil,
+			nil,
+		)
+	}
+	inputStore, err := gateway.NewFileInputStore(
+		filepath.Join(root, "inputs"),
+	)
+	if err != nil {
+		return nil, closeGatewayStartup(
+			ctx,
+			err,
+			logFile,
+			observability,
+			directory,
+			sessionStore,
+			eventStore,
+			interactions,
+			nil,
+			nil,
+		)
+	}
+	stateFactory, err := gateway.NewStorageSessionStateFactory(
+		stateResolution.URI,
+	)
+	if err != nil {
+		return nil, closeGatewayStartup(
+			ctx,
+			err,
+			logFile,
+			observability,
+			directory,
+			sessionStore,
+			eventStore,
+			interactions,
+			inputStore,
+			nil,
 		)
 	}
 	executions, err := gateway.NewRuntimeExecutionBackend(
 		gateway.RuntimeExecutionConfig{
 			States:          stateFactory,
+			Events:          eventStore,
+			Interactions:    interactions,
 			ValidateSession: gateway.PluginBindingValidator(directory),
 			Build: GatewayRuntimeBuilder(
 				config,
@@ -120,11 +205,16 @@ func StartGateway(
 			observability,
 			directory,
 			sessionStore,
+			eventStore,
+			interactions,
+			inputStore,
 			nil,
 		)
 	}
 	service, err := gateway.NewService(gateway.ServiceConfig{
-		Store: sessionStore, Directory: directory,
+		Store: sessionStore, Events: eventStore, Inputs: inputStore,
+		Interactions:     interactions,
+		Directory:        directory,
 		Executions:       executions,
 		DefaultNamespace: config.Plugins.RegistryNamespace,
 		DefaultProvider:  config.Agent.Provider,
@@ -139,17 +229,45 @@ func StartGateway(
 			observability,
 			directory,
 			sessionStore,
+			eventStore,
+			interactions,
+			inputStore,
 			executions,
 		)
 	}
 	return &RunningGateway{
 		Service:     service,
 		Root:        root,
-		RegistryURI: config.Plugins.RegistryURI,
+		RegistryURI: registryURI,
 		Logger:      logger,
 		telemetry:   observability,
 		logFile:     logFile,
 	}, nil
+}
+
+// openGatewayEventStore keeps gateway events in the same SQL database and
+// deployment namespace as trajectory state. File storage remains only for
+// legacy state drivers which cannot host the GORM event tables.
+func openGatewayEventStore(
+	ctx context.Context,
+	rawURI string,
+	legacyDirectory string,
+) (gateway.EventStore, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURI))
+	if err != nil {
+		return nil, fmt.Errorf("parse gateway event backend URI: %w", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
+	case "sqlite", "postgres", "postgresql":
+		return gateway.NewGORMEventStore(ctx, rawURI)
+	case "duckdb", "file", "memory":
+		return gateway.NewFileEventStore(legacyDirectory)
+	default:
+		return nil, fmt.Errorf(
+			"gateway event backend does not support state URI scheme %q",
+			parsed.Scheme,
+		)
+	}
 }
 
 func (running *RunningGateway) Close(ctx context.Context) error {
@@ -176,6 +294,9 @@ func closeGatewayStartup(
 	observability *telemetry.Runtime,
 	directory gateway.PluginDirectory,
 	sessionStore gateway.SessionStore,
+	eventStore gateway.EventStore,
+	interactions *gateway.InteractionManager,
+	inputStore gateway.InputStore,
 	executions gateway.ExecutionBackend,
 ) error {
 	closeCtx, cancel := closeContext(ctx)
@@ -183,6 +304,9 @@ func closeGatewayStartup(
 	return errors.Join(
 		cause,
 		closeGatewayResource(closeCtx, executions),
+		closeGatewayResource(closeCtx, inputStore),
+		closeGatewayResource(closeCtx, interactions),
+		closeGatewayResource(closeCtx, eventStore),
 		closeGatewayResource(closeCtx, sessionStore),
 		closeGatewayResource(closeCtx, directory),
 		observability.Shutdown(closeCtx),

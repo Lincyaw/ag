@@ -90,37 +90,6 @@ func checkDuckDBIntegrity(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, "FORCE CHECKPOINT"); err != nil {
 		return fmt.Errorf("DuckDB integrity check failed: %w", err)
 	}
-	// Rebuild tables that may have corrupted indexes from unclean shutdown.
-	// CREATE TABLE AS SELECT copies data without indexes; schema init
-	// recreates them via PRIMARY KEY constraints on the fresh table.
-	tables := []string{
-		"ag_trajectory_executions",
-		"ag_trajectories",
-		"ag_trajectory_entries",
-		"ag_operations",
-		"ag_deliveries",
-		"ag_context_injections",
-	}
-	for _, table := range tables {
-		var count int
-		row := db.QueryRowContext(ctx,
-			"SELECT count(*) FROM information_schema.tables WHERE table_name = ?", table)
-		if err := row.Scan(&count); err != nil || count == 0 {
-			continue
-		}
-		backup := table + "__rebuild"
-		stmts := []string{
-			fmt.Sprintf("DROP TABLE IF EXISTS %s", backup),
-			fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM %s", backup, table),
-			fmt.Sprintf("DROP TABLE %s", table),
-			fmt.Sprintf("ALTER TABLE %s RENAME TO %s", backup, table),
-		}
-		for _, stmt := range stmts {
-			if _, err := db.ExecContext(ctx, stmt); err != nil {
-				return fmt.Errorf("DuckDB table rebuild %s: %w", table, err)
-			}
-		}
-	}
 	return nil
 }
 

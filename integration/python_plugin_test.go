@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -206,6 +207,23 @@ func TestPythonPluginProcessImplementsCrossLanguageContract(t *testing.T) {
 	})
 
 	deliveriesBefore := readPythonDeliveries(t, eventsFile)
+	gatewayHome := t.TempDir()
+	t.Setenv("HOME", gatewayHome)
+	t.Cleanup(func() {
+		readyPath := filepath.Join(
+			gatewayHome, ".ag", "gateway", "managed", "ready.json",
+		)
+		raw, err := os.ReadFile(readyPath)
+		if err != nil {
+			return
+		}
+		var ready struct {
+			PID int `json:"pid"`
+		}
+		if json.Unmarshal(raw, &ready) == nil && ready.PID > 0 {
+			_ = syscall.Kill(ready.PID, syscall.SIGTERM)
+		}
+	})
 	var stdout, stderr bytes.Buffer
 	if code := cli.Run([]string{
 		"--state-dir", filepath.Join(t.TempDir(), "cli-state"),
@@ -227,13 +245,13 @@ func TestPythonPluginProcessImplementsCrossLanguageContract(t *testing.T) {
 		)
 	}
 	var cliOutput struct {
-		SessionID string              `json:"session_id"`
-		Result    agentruntime.Result `json:"result"`
+		TrajectoryID string              `json:"trajectory_id"`
+		Result       agentruntime.Result `json:"result"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &cliOutput); err != nil {
 		t.Fatalf("decode Python CLI output: %v\n%s", err, stdout.String())
 	}
-	if cliOutput.SessionID != "python-cli" ||
+	if cliOutput.TrajectoryID != "python-cli" ||
 		cliOutput.Result.Output !=
 			"python-session-complete:python:from-python-provider" {
 		t.Fatalf("Python CLI output = %#v", cliOutput)

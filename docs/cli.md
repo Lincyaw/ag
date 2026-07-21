@@ -4,7 +4,7 @@
 representations:
 
 - `text` is the default. It presents answers, summaries, aligned tables, and
-  copyable trajectory/session identifiers.
+  copyable trajectory identifiers.
 - `json` is enabled only with `-o json` or `--output json`. It preserves stable
   field names and complete payloads for scripts, agents, and CI.
 
@@ -58,6 +58,25 @@ Overview / Timeline / Details, `j` / `k` or arrow keys move between events,
 `f` toggles following the newest event, `?` shows key help, `q` hides the
 dashboard without stopping the run, and `ctrl+c` cancels the run.
 
+Interactive `ag run` is a trajectory view backed by an Agent Manager that is
+discovered, health-checked, and started automatically. The CLI holds one gRPC
+connection and a persistent bidirectional view stream; commands, correlated
+responses, and durable events share that stream. `Enter` sends or queues
+another prompt, `ctrl+c` cancels queued/active inputs, `ctrl+b` moves active
+work to the background, and `PageUp`/`PageDown` or the mouse wheel scrolls
+history. Closing an active view with `ctrl+d` also detaches it.
+
+Use `ag run ID_OR_PREFIX` to reattach. The view first loads the active
+trajectory branch as a durable conversation snapshot, then consumes events
+after the snapshot cursor, so prior user and assistant messages remain visible
+across detach or manager restart. `ag trajectory list` prints every trajectory
+with its projected `running`, `queued`, `waiting`, `paused`, or `idle` state,
+workspace, and last activity. The related `submit`, `pause`, `resume`,
+`cancel`, and `wait` commands operate on the same ID. Scripts use `ag run
+-i=false -p PROMPT`; this still runs through the background manager. There is
+no public gateway command or endpoint flag. A remote gRPC target is selected
+only through `gateway.target` in configuration.
+
 Use `--progress plain` for append-only progress lines, `--progress always` to
 force progress even when stderr is not a terminal, `--progress tui` to prefer
 the inline terminal panel, or `--progress never` for fully quiet text output.
@@ -86,17 +105,18 @@ in minor releases; fields are not renamed or removed without a major release.
 
 | Command | JSON document |
 |---|---|
-| `ag run` | `{"session_id": string, "result": Result}` |
+| `ag run` | `{"trajectory_id": string, "result": Result}` |
 | `ag config show` | `{"file": string, "config": Config}` |
 | `ag config path` | `{"path": string}` |
 | `ag plugin list` | `PluginDescriptor[]` |
 | `ag plugin discover` | `PluginDiscovery[]` (includes the existing descriptor fields plus namespace, instance, version, lease times, revision, and epoch) |
 | `ag plugin inspect` | `Manifest` |
 | `ag registry serve` | `{"uri": string, "listen": string, "backend": string, "capabilities": RegistryCapabilities, "pid": number}` |
-| `ag trajectory list` | `TrajectorySummary[]` |
-| `ag trajectory show` | `Trajectory` |
+| `ag trajectory list` | `ManagedTrajectorySummary[]` (ID, live status, workspace, pending input/interaction projection) |
+| `ag trajectory show` | `TrajectoryInspection` (metadata plus payload-free entry summaries) |
 | `ag trajectory rollback` | `{"trajectory_id": string, "head": string, "checkpoint_id": string}` |
 | `ag trajectory rollback --dry-run` | `{"trajectory_id": string, "current_head": string, "checkpoint_id": string, "dry_run": true}` |
+| `ag trajectory submit/pause/resume/cancel/wait` | `{"trajectory_id": string, "action": string, "status": string, ...}` |
 | `ag invocation show` | `InvocationGraph` |
 | `ag state inspect` | `{"backend": string, "namespace": string, "capabilities": StorageCapabilities}` |
 | `ag state prune` | `{"operations": number, "deliveries": number, "trajectories": number}` |
@@ -104,9 +124,12 @@ in minor releases; fields are not renamed or removed without a major release.
 | `ag version` | `{"version": string}` |
 | `ag --dump-schema` | `CommandSchema` |
 
-`trajectory show` intentionally keeps complete entry payloads in JSON. The
-default text renderer summarizes high-value fields such as turn, provider,
-tool name, and tool result status.
+`trajectory show` uses a fixed-head paginated inspection read model. Entry
+summaries retain IDs, topology, indexed fields, audit/attribute counts, and
+payload byte sizes, but do not transfer repeated checkpoint or tool payloads.
+The default text renderer summarizes high-value fields such as turn, provider,
+tool name, and tool result status. Raw trajectory payload export is a separate
+storage/export concern rather than an unbounded control-plane response.
 
 ## Exit status
 
@@ -124,7 +147,11 @@ Human-oriented defaults:
 ```bash
 ag run -p "Summarize this repository"
 ag trajectory list
-ag trajectory show <session-id>
+ag run <trajectory-id>
+ag trajectory show <trajectory-id>
+ag trajectory pause <trajectory-id>
+ag trajectory submit <trajectory-id> -p "Continue in the background"
+ag trajectory wait <trajectory-id>
 ag invocation show <root-invocation-id>
 ag config show
 ag plugin discover
@@ -137,7 +164,7 @@ Program-oriented equivalents:
 ```bash
 ag run -p "Summarize this repository" -o json
 ag trajectory list -o json
-ag trajectory show <session-id> -o json
+ag trajectory show <trajectory-id> -o json
 ag invocation show <root-invocation-id> -o json
 ag config show -o json
 ag plugin discover -o json

@@ -36,10 +36,13 @@ func configuredLocalPlugins(
 	}
 	if config.OpenAI.Enabled {
 		plugins = append(plugins, openai.New(openai.Config{
-			Model:      config.OpenAI.Model,
-			APIKey:     config.OpenAI.APIKey,
-			BaseURL:    config.OpenAI.BaseURL,
-			MaxRetries: config.OpenAI.MaxRetries,
+			Model:          config.OpenAI.Model,
+			APIKey:         config.OpenAI.APIKey,
+			BaseURL:        config.OpenAI.BaseURL,
+			AzureEndpoint:  config.OpenAI.AzureEndpoint,
+			APIVersion:     config.OpenAI.APIVersion,
+			DefaultHeaders: config.OpenAI.DefaultHeaders,
+			MaxRetries:     config.OpenAI.MaxRetries,
 		}))
 	}
 	if config.Compact.Enabled {

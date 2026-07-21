@@ -35,6 +35,12 @@ func (cs *contextInjectionStore) Enqueue(
 	defer cs.store.writeMu.Unlock()
 
 	return cs.store.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := cs.store.lockMutationResource(
+			tx,
+			"context:enqueue:"+cs.store.namespace,
+		); err != nil {
+			return err
+		}
 		var maxSeq *uint64
 		if err := tx.Model(&ContextInjection{}).
 			Where("namespace = ?", cs.store.namespace).

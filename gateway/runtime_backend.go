@@ -18,12 +18,18 @@ type RuntimeBuilder func(
 ) (*agentruntime.Runtime, error)
 
 type RuntimeBuildSpec struct {
-	Plugins []PluginBinding
+	Plugins       []PluginBinding
+	WorkspaceRoot string
+	RuntimeConfig []byte
+	EventObserver func(context.Context, sdk.Event)
+	Interactions  *InteractionManager
 }
 
 type RuntimeExecutionConfig struct {
 	States          StateBackendFactory
 	Build           RuntimeBuilder
+	Events          EventStore
+	Interactions    *InteractionManager
 	ValidateSession SessionValidator
 	Logger          *slog.Logger
 }
@@ -33,6 +39,8 @@ const gatewayCancellationReason = "user requested cancellation"
 type runtimeExecutionBackend struct {
 	states          StateBackendFactory
 	build           RuntimeBuilder
+	events          EventStore
+	interactions    *InteractionManager
 	validateSession SessionValidator
 	logger          *slog.Logger
 	ctx             context.Context
@@ -56,6 +64,8 @@ func NewRuntimeExecutionBackend(
 	return &runtimeExecutionBackend{
 		states:          config.States,
 		build:           config.Build,
+		events:          config.Events,
+		interactions:    config.Interactions,
 		validateSession: config.ValidateSession,
 		logger:          config.Logger,
 		ctx:             ctx,
@@ -82,6 +92,145 @@ func (backend *runtimeExecutionBackend) CreateSession(
 		return errors.Join(err, host.CloseDetached(ctx))
 	}
 	return host.CloseDetached(ctx)
+}
+
+func (backend *runtimeExecutionBackend) LoadTrajectory(
+	ctx context.Context,
+	session Session,
+	head string,
+) (sdk.Trajectory, error) {
+	host, err := backend.openStateExecutionHost(ctx, session)
+	if err != nil {
+		return sdk.Trajectory{}, err
+	}
+	var trajectory sdk.Trajectory
+	if head == "" {
+		trajectory, err = host.State.Trajectories().Load(ctx, session.ID)
+	} else {
+		trajectory, err = host.State.Trajectories().LoadBranchView(
+			ctx, session.ID, head,
+		)
+	}
+	return trajectory, errors.Join(err, host.CloseDetached(ctx))
+}
+
+func (backend *runtimeExecutionBackend) ListTrajectoryEntries(
+	ctx context.Context,
+	session Session,
+	head string,
+	query TrajectoryEntryQuery,
+) (TrajectoryEntryPage, error) {
+	host, err := backend.openStateExecutionHost(ctx, session)
+	if err != nil {
+		return TrajectoryEntryPage{}, err
+	}
+	store := host.State.Trajectories()
+	if inspector, ok := store.(sdk.TrajectoryEntryInspector); ok {
+		metadata, entries, inspectErr := inspector.InspectTrajectoryEntries(
+			ctx,
+			session.ID,
+			head,
+		)
+		if inspectErr != nil {
+			return TrajectoryEntryPage{}, errors.Join(
+				inspectErr,
+				host.CloseDetached(ctx),
+			)
+		}
+		page, projectErr := projectInspectedTrajectoryEntryPage(
+			metadata,
+			entries,
+			query,
+		)
+		return page, errors.Join(projectErr, host.CloseDetached(ctx))
+	}
+
+	var trajectory sdk.Trajectory
+	if head == "" {
+		trajectory, err = store.Load(ctx, session.ID)
+	} else {
+		trajectory, err = store.LoadBranchView(ctx, session.ID, head)
+	}
+	if err != nil {
+		return TrajectoryEntryPage{}, errors.Join(err, host.CloseDetached(ctx))
+	}
+	page, projectErr := projectTrajectoryEntryPage(trajectory, query)
+	return page, errors.Join(projectErr, host.CloseDetached(ctx))
+}
+
+func (backend *runtimeExecutionBackend) ListConversation(
+	ctx context.Context,
+	session Session,
+	head string,
+	query ConversationQuery,
+) (ConversationPage, error) {
+	host, err := backend.openStateExecutionHost(ctx, session)
+	if err != nil {
+		return ConversationPage{}, err
+	}
+	store := host.State.Trajectories()
+	if inspector, ok := store.(sdk.TrajectoryEntryInspector); ok {
+		metadata, entries, inspectErr := inspector.InspectTrajectoryEntries(
+			ctx,
+			session.ID,
+			head,
+		)
+		if inspectErr != nil {
+			return ConversationPage{}, errors.Join(
+				inspectErr,
+				host.CloseDetached(ctx),
+			)
+		}
+		messages, projectErr := agentruntime.ProjectStoredTrajectoryMessages(
+			ctx,
+			store,
+			session.ID,
+			entries,
+		)
+		if projectErr != nil {
+			return ConversationPage{}, errors.Join(
+				projectErr,
+				host.CloseDetached(ctx),
+			)
+		}
+		page, pageErr := projectConversationMessagesPage(
+			metadata.Head,
+			metadata.Execution,
+			messages,
+			query,
+		)
+		return page, errors.Join(pageErr, host.CloseDetached(ctx))
+	}
+
+	var trajectory sdk.Trajectory
+	if head == "" {
+		trajectory, err = store.Load(ctx, session.ID)
+	} else {
+		trajectory, err = store.LoadBranchView(ctx, session.ID, head)
+	}
+	if err != nil {
+		return ConversationPage{}, errors.Join(err, host.CloseDetached(ctx))
+	}
+	page, projectErr := projectConversationPage(trajectory, query)
+	return page, errors.Join(projectErr, host.CloseDetached(ctx))
+}
+
+func (backend *runtimeExecutionBackend) RollbackTrajectory(
+	ctx context.Context,
+	session Session,
+	checkpointID string,
+) (sdk.Trajectory, error) {
+	host, err := backend.openRuntime(ctx, session)
+	if err != nil {
+		return sdk.Trajectory{}, err
+	}
+	if err := host.Runtime.RollbackTrajectory(
+		ctx, session.ID, checkpointID,
+	); err != nil {
+		return sdk.Trajectory{}, errors.Join(err, host.CloseDetached(ctx))
+	}
+	trajectory, err := host.State.Trajectories().Load(ctx, session.ID)
+	return trajectory, errors.Join(err, host.CloseDetached(ctx))
 }
 
 func (backend *runtimeExecutionBackend) Submit(
@@ -434,12 +583,18 @@ func gatewayExecutionFromView(view agentruntime.ExecutionView) Execution {
 }
 
 func (backend *runtimeExecutionBackend) Close(ctx context.Context) error {
-	runtimes, startedClose := backend.hosts.beginClose()
-	if startedClose {
-		for _, runtime := range runtimes {
-			runtime.RequestClose(ctx)
-		}
-		backend.cancel()
+	runtimes, _ := backend.hosts.beginClose()
+	for _, runtime := range runtimes {
+		runtime.RequestClose(ctx)
+	}
+	backend.cancel()
+	return backend.hosts.waitClosed(ctx)
+}
+
+func (backend *runtimeExecutionBackend) Drain(ctx context.Context) error {
+	runtimes, _ := backend.hosts.beginClose()
+	for _, runtime := range runtimes {
+		runtime.RequestDrain()
 	}
 	return backend.hosts.waitClosed(ctx)
 }
@@ -456,7 +611,10 @@ func (backend *runtimeExecutionBackend) openRuntime(
 			err,
 		)
 	}
-	runtime, err := backend.build(ctx, runtimeBuildSpec(session), state)
+	spec := runtimeBuildSpec(session)
+	spec.EventObserver = backend.eventObserver(session.ID)
+	spec.Interactions = backend.interactions
+	runtime, err := backend.build(ctx, spec, state)
 	if err != nil {
 		closeErr := closeGatewayState(ctx, state)
 		return agentruntime.ExecutionHost{}, errors.Join(err, closeErr)
@@ -476,7 +634,35 @@ func (backend *runtimeExecutionBackend) openRuntime(
 
 func runtimeBuildSpec(session Session) RuntimeBuildSpec {
 	return RuntimeBuildSpec{
-		Plugins: clonePluginBindings(session.Plugins),
+		Plugins:       clonePluginBindings(session.Plugins),
+		WorkspaceRoot: session.WorkspaceRoot,
+		RuntimeConfig: append([]byte(nil), session.RuntimeConfig...),
+	}
+}
+
+func (backend *runtimeExecutionBackend) eventObserver(
+	sessionID string,
+) func(context.Context, sdk.Event) {
+	if backend.events == nil {
+		return nil
+	}
+	return func(ctx context.Context, event sdk.Event) {
+		if _, err := backend.events.Append(
+			lifecycle.Detached(ctx),
+			sessionID,
+			event,
+		); err != nil {
+			backend.logger.WarnContext(
+				lifecycle.Detached(ctx),
+				"project gateway runtime event",
+				"session_id",
+				sessionID,
+				"event",
+				event.Name,
+				"error",
+				err,
+			)
+		}
 	}
 }
 
@@ -554,6 +740,9 @@ func (backend *runtimeExecutionBackend) observeHostCompletion(
 	err error,
 ) {
 	if err == nil || lifecycle.ExpectedCancellation(ctx, err) {
+		return
+	}
+	if errors.Is(err, agentruntime.ErrRuntimeDraining) {
 		return
 	}
 	backend.logger.WarnContext(

@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"slices"
 	"strings"
@@ -44,6 +45,9 @@ func (application *app) writeConfig(loaded appconfig.Loaded) error {
 			[2]string{"Model", config.OpenAI.Model},
 			[2]string{"API key", config.OpenAI.APIKey},
 			[2]string{"Base URL", emptyAs(config.OpenAI.BaseURL, "provider default")},
+			[2]string{"Azure endpoint", emptyAs(config.OpenAI.AzureEndpoint, "none")},
+			[2]string{"API version", emptyAs(config.OpenAI.APIVersion, "none")},
+			[2]string{"Default headers", listOrNone(slices.Sorted(maps.Keys(config.OpenAI.DefaultHeaders)))},
 			[2]string{"Max retries", fmt.Sprint(config.OpenAI.MaxRetries)},
 		); err != nil {
 			return err
@@ -84,14 +88,9 @@ func (application *app) writeConfig(loaded appconfig.Loaded) error {
 		); err != nil {
 			return err
 		}
-		if err := writeSection(writer, "Gateway service",
-			[2]string{"Listen", config.Gateway.Listen},
+		if err := writeSection(writer, "Background agent manager",
+			[2]string{"Target", emptyAs(config.Gateway.Target, "auto-managed local")},
 			[2]string{"Directory", config.Gateway.Directory},
-			[2]string{
-				"Read header timeout",
-				config.Gateway.ReadHeaderTimeout.String(),
-			},
-			[2]string{"Idle timeout", config.Gateway.IdleTimeout.String()},
 			[2]string{
 				"Shutdown timeout",
 				config.Gateway.ShutdownTimeout.String(),
@@ -100,7 +99,7 @@ func (application *app) writeConfig(loaded appconfig.Loaded) error {
 			return err
 		}
 		if err := writeSection(writer, "State",
-			[2]string{"Backend URI", emptyAs(config.State.BackendURI, "duckdb")},
+			[2]string{"Backend URI", emptyAs(config.State.BackendURI, "auto from state directory")},
 			[2]string{"Directory", config.State.Directory},
 			[2]string{"Namespace", emptyAs(config.State.Namespace, "default")},
 		); err != nil {
@@ -119,6 +118,11 @@ func (application *app) writeConfig(loaded appconfig.Loaded) error {
 func configForDisplay(config appconfig.Config) appconfig.Config {
 	config.OpenAI.APIKey = secretForDisplay(config.OpenAI.APIKey)
 	config.OpenAI.BaseURL = uriForDisplay(config.OpenAI.BaseURL)
+	config.OpenAI.AzureEndpoint = uriForDisplay(config.OpenAI.AzureEndpoint)
+	config.OpenAI.DefaultHeaders = maps.Clone(config.OpenAI.DefaultHeaders)
+	for name, value := range config.OpenAI.DefaultHeaders {
+		config.OpenAI.DefaultHeaders[name] = secretForDisplay(value)
+	}
 	config.Plugins.Remote = slices.Clone(config.Plugins.Remote)
 	for index := range config.Plugins.Remote {
 		config.Plugins.Remote[index] = pluginReferenceForDisplay(

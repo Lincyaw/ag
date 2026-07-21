@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/lincyaw/ag/gateway"
 	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
@@ -18,27 +19,8 @@ import (
 func TestHumanResourceRenderersExposeUsefulOperationalFields(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.July, 17, 9, 0, 0, 0, time.UTC)
-	trajectory := sdk.Trajectory{
-		ID:        "trajectory-1",
-		Head:      "entry-2",
-		CreatedAt: now,
-		UpdatedAt: now.Add(time.Minute),
-		Entries: []sdk.TrajectoryEntry{
-			{
-				ID: "entry-1", Kind: sdk.TrajectoryKindToolCall, Timestamp: now,
-				Payload: json.RawMessage(
-					`{"turn":0,"call":{"id":"call-1","name":"read_file","arguments":{"path":"README.md"}}}`,
-				),
-			},
-			{
-				ID: "entry-2", ParentID: "entry-1",
-				Kind: sdk.TrajectoryKindToolResult, Timestamp: now.Add(time.Second),
-				Payload: json.RawMessage(
-					`{"turn":0,"call":{"id":"call-1","name":"read_file"},"result":{"content":"ok","is_error":false}}`,
-				),
-			},
-		},
-	}
+	turn := 0
+	succeeded := false
 	cases := []struct {
 		name     string
 		render   func(*app) error
@@ -76,10 +58,25 @@ func TestHumanResourceRenderersExposeUsefulOperationalFields(t *testing.T) {
 			expected: []string{"ID", "ENTRIES", "trajectory-1", "entry-2"},
 		},
 		{
-			name:   "trajectory show",
-			render: func(application *app) error { return application.writeTrajectory(trajectory) },
+			name: "trajectory show",
+			render: func(application *app) error {
+				return application.writeTrajectoryInspection(
+					gateway.TrajectoryInspection{
+						ID: "trajectory-1", Head: "entry-2",
+						CreatedAt: now, UpdatedAt: now.Add(time.Minute),
+						EntryCount: 2,
+						Entries: []gateway.TrajectoryEntrySummary{{
+							ID: "entry-2", Kind: sdk.TrajectoryKindToolResult,
+							Timestamp: now.Add(time.Second), PayloadBytes: 42,
+							Fields: sdk.TrajectoryEntryFields{
+								Turn: &turn, ToolName: "read_file", IsError: &succeeded,
+							},
+						}},
+					},
+				)
+			},
 			expected: []string{
-				"Trajectory:", "trajectory-1", "tool=read_file", "status=ok",
+				"Trajectory:", "trajectory-1", "tool=read_file", "status=ok", "payload=42B",
 			},
 		},
 		{
@@ -225,8 +222,12 @@ func TestConfigOutputRedactsURISecretsWithoutMutation(t *testing.T) {
 	t.Parallel()
 	config := appconfig.Config{
 		OpenAI: appconfig.OpenAI{
-			APIKey:  "openai-api-key-value",
-			BaseURL: "https://openai:openai-password@example.com/v1?token=openai-token-value",
+			APIKey:        "openai-api-key-value",
+			BaseURL:       "https://openai:openai-password@example.com/v1?token=openai-token-value",
+			AzureEndpoint: "https://azure:azure-password@example.com/v1?token=azure-token-value",
+			DefaultHeaders: map[string]string{
+				"Authorization": "header-secret-value",
+			},
 		},
 		Plugins: appconfig.Plugins{
 			Remote: []string{
@@ -256,6 +257,9 @@ func TestConfigOutputRedactsURISecretsWithoutMutation(t *testing.T) {
 				"openai-api-key-value",
 				"openai-password",
 				"openai-token-value",
+				"azure-password",
+				"azure-token-value",
+				"header-secret-value",
 				"remote-password",
 				"registry-password",
 				"advertise-password",
@@ -283,6 +287,9 @@ func TestConfigOutputRedactsURISecretsWithoutMutation(t *testing.T) {
 	}
 	if config.OpenAI.APIKey != "openai-api-key-value" {
 		t.Fatalf("source API key was mutated: %q", config.OpenAI.APIKey)
+	}
+	if config.OpenAI.DefaultHeaders["Authorization"] != "header-secret-value" {
+		t.Fatalf("source default headers were mutated: %#v", config.OpenAI.DefaultHeaders)
 	}
 }
 
@@ -394,7 +401,7 @@ func TestHumanRunRendersMarkdownAnswer(t *testing.T) {
 		"first",
 		"second",
 		`fmt.Println("ok")`,
-		"Session:",
+		"Trajectory:",
 	} {
 		if !strings.Contains(rendered, expected) {
 			t.Fatalf("rendered output %q missing %q", rendered, expected)

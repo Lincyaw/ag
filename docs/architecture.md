@@ -362,18 +362,19 @@ The registry implementation is evolving, but this context boundary is stable.
 
 ### Gateway bounded context: `gateway`
 
-The gateway owns user sessions, plugin bindings, optimistic revisions, and
-asynchronous execution presentation. It invokes the runtime through an
-execution backend and does not own the agent turn loop.
-For each user session, gateway reserves active execution ownership before
+The gateway owns trajectory control records, plugin bindings, optimistic
+revisions, queued inputs, and asynchronous execution presentation. Its
+historical `Session` Go type is not a second public identity. It invokes the
+runtime through an execution backend and does not own the agent turn loop.
+For each trajectory, gateway reserves active execution ownership before
 constructing a runtime host or accepting a prompt durably. Trajectory execution
 state remains the runtime/store contract; the gateway active slot only prevents
 two presenters from hosting or accepting competing executions for the same
-session. Gateway serializes same-session composition mutations with prompt
+trajectory. Gateway serializes same-trajectory composition mutations with prompt
 submission until the execution backend has established that active slot; gateway
 idle checks then read the same execution activity model, including pre-durable
 host reservations, before allowing composition changes.
-Recovery scheduling asks the execution backend to recover each session; the
+Recovery scheduling asks the execution backend to recover each trajectory; the
 backend asks the runtime for an execution recovery candidate instead of letting
 the gateway service derive recoverability or lease-delay policy from raw
 trajectory metadata.
@@ -381,6 +382,15 @@ When gateway only has a borrowed state handle, it still goes through
 state-only `ExecutionHost` commands for execution reads, recovery candidates,
 context injection, and cancellation fences; it does not reach through
 `StateBackend` to reinterpret trajectory stores as a presenter concern.
+Hosted executions use goroutines in the long-lived gateway process, like
+request handlers in a web server. A background agent is durable trajectory and
+queue state, not a per-agent operating-system process. Process-local streams,
+cancel handles, and host slots may disappear; startup recovery reconstructs
+them from the committed execution and lease state.
+Gateway shutdown first closes admission and requests a runtime drain. Active
+prompts finish one complete model turn and its checkpoint before returning the
+execution to pending recovery. Only expiry of the configured termination
+window invokes forced runtime close and context cancellation.
 
 ## Application entry points
 
@@ -404,10 +414,12 @@ instances, opening plugin inspection catalogs, producing gateway runtime
 builders, and wrapping short-lived runtime actions. CLI command handlers should
 remain focused on arguments, confirmation, progress presentation, and rendering.
 
-Gateway serving follows the same split. `internal/cli` owns the command process,
-HTTP listener lifecycle, and ready output; `internal/bootstrap` owns the
-gateway service host, telemetry, durable stores, plugin directory, and runtime
-execution backend composition.
+Background management follows the same split. `gateway/manager` owns private
+process discovery, locking, health, and launch; `internal/cli` handles the
+private child entry and gRPC listener lifecycle; `gatewayrpc` owns the protobuf
+transport; `internal/bootstrap` owns the gateway service host, telemetry,
+durable stores, plugin directory, and runtime execution backend composition.
+No gateway command is registered in the public CLI tree.
 
 Registry serving mirrors that host split: `internal/cli` owns the gRPC listener,
 transport flags, advertise URI, and ready output; `internal/bootstrap` owns the

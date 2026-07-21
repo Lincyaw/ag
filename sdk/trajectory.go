@@ -150,6 +150,25 @@ type TrajectoryEntry struct {
 	Attributes     map[string]string     `json:"attributes,omitempty"`
 }
 
+// TrajectoryEntryInspection is the payload-free representation used by
+// control-plane listing and diagnostics. PayloadBytes describes the durable
+// payload without requiring a store to read or transport it.
+type TrajectoryEntryInspection struct {
+	ID             string                `json:"id"`
+	TrajectoryID   string                `json:"trajectory_id"`
+	ParentID       string                `json:"parent_id,omitempty"`
+	Ordinal        uint64                `json:"ordinal"`
+	Depth          uint64                `json:"depth"`
+	Kind           TrajectoryKind        `json:"kind"`
+	Timestamp      time.Time             `json:"timestamp"`
+	Generation     uint64                `json:"generation,omitempty"`
+	Fields         TrajectoryEntryFields `json:"fields"`
+	PayloadVersion uint32                `json:"payload_version"`
+	PayloadBytes   int                   `json:"payload_bytes"`
+	AuditCount     int                   `json:"audit_count,omitempty"`
+	AttributeCount int                   `json:"attribute_count,omitempty"`
+}
+
 func CloneTrajectoryEntry(entry TrajectoryEntry) TrajectoryEntry {
 	if entry.Fields.Turn != nil {
 		turn := *entry.Fields.Turn
@@ -397,6 +416,18 @@ type TrajectoryAnalyzer interface {
 		context.Context,
 		TrajectoryEntryQuery,
 	) ([]TrajectoryEntry, error)
+}
+
+// TrajectoryEntryInspector materializes branch topology and indexed entry
+// fields without loading payload blobs. It is optional so external and legacy
+// stores retain source compatibility; control planes should prefer it whenever
+// the concrete store provides it.
+type TrajectoryEntryInspector interface {
+	InspectTrajectoryEntries(
+		context.Context,
+		string,
+		string,
+	) (TrajectoryMetadata, []TrajectoryEntryInspection, error)
 }
 
 // TrajectoryStore is the only trajectory dependency accepted by Runtime.
