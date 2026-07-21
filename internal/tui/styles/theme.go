@@ -16,8 +16,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/goccy/go-yaml"
 
-	"github.com/lincyaw/ag/internal/tui/paths"
-	"github.com/lincyaw/ag/internal/tui/userconfig"
+	"github.com/lincyaw/ag/internal/cagent/paths"
+	"github.com/lincyaw/ag/internal/cagent/userconfig"
 )
 
 //go:embed themes/*.yaml

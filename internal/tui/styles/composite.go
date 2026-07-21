@@ -5,7 +5,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/lincyaw/ag/internal/tui/concurrent"
+	"github.com/lincyaw/ag/internal/cagent/concurrent"
 )
 
 // ANSI reset sequences we need to handle

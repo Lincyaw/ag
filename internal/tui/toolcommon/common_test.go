@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lincyaw/ag/internal/cagent/tools"
 	"github.com/lincyaw/ag/internal/tui/spinner"
 	"github.com/lincyaw/ag/internal/tui/styles"
-	"github.com/lincyaw/ag/internal/tui/tools"
 	"github.com/lincyaw/ag/internal/tui/types"
 )
 

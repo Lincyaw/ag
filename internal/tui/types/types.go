@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lincyaw/ag/internal/tui/tools"
+	"github.com/lincyaw/ag/internal/cagent/tools"
 )
 
 // MessageType represents different types of messages
