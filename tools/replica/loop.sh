@@ -323,6 +323,32 @@ trajectory_id() {
   fi
 }
 
+ensure_trajectory_id() {
+  local trajectory temporary
+  trajectory=$(trajectory_id)
+  if [[ -n "$trajectory" ]]; then
+    printf '%s\n' "$trajectory"
+    return
+  fi
+  trajectory=$(printf 'ag-replica:%s' "$run_id" | git hash-object --stdin)
+  temporary="$trajectory_file.tmp"
+  printf '%s\n' "$trajectory" >"$temporary"
+  mv -f "$temporary" "$trajectory_file"
+  printf '%s\n' "$trajectory"
+}
+
+trajectory_exists() {
+  local trajectory=$1 raw
+  if ! raw=$("$self_binary" --otel=false -o json trajectory list); then
+    return 2
+  fi
+  if jq -e --arg id "$trajectory" \
+    'any(.[]; .id == $id)' <<<"$raw" >/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
 write_state() {
   local iteration=$1 trajectory temporary
   trajectory=$(trajectory_id)
@@ -395,11 +421,23 @@ run_quiesce_command() {
 }
 
 quiesce_self_trajectory() {
-  local iteration_root=$1 existing_id raw pending cleanup_log
+  local iteration_root=$1 existing_id raw pending cleanup_log lookup_status
   existing_id=$(trajectory_id)
   [[ -n "$existing_id" ]] || return 0
   cleanup_log="$iteration_root/cleanup.log"
   : >"$cleanup_log"
+
+  if trajectory_exists "$existing_id"; then
+    :
+  else
+    lookup_status=$?
+    if [[ "$lookup_status" -eq 1 ]]; then
+      return 0
+    fi
+    echo "cannot inspect trajectory $existing_id before cleanup" \
+      >>"$cleanup_log"
+    return 1
+  fi
 
   # A failed foreground invocation may leave its durable input running in the
   # gateway. Never reset the worktree while that background writer is alive.
@@ -423,22 +461,30 @@ quiesce_self_trajectory() {
 }
 
 run_self_agent() {
-	local prompt_path=$1 iteration_root=$2 prompt output_id existing_id temporary
-	local cause_code cause_detail
+  local prompt_path=$1 iteration_root=$2 prompt output_id existing_id
+  local cause_code cause_detail lookup_status
   local -a arguments
   prompt=$(<"$prompt_path")
-  existing_id=$(trajectory_id)
+  existing_id=$(ensure_trajectory_id)
   arguments=(--otel=false --progress never -o json run)
-  if [[ -n "$existing_id" ]]; then
+  if trajectory_exists "$existing_id"; then
     arguments+=("$existing_id")
+  else
+    lookup_status=$?
+    if [[ "$lookup_status" -ne 1 ]]; then
+      echo "cannot inspect self-hosted trajectory $existing_id" \
+        >>"$iteration_root/agent.log"
+      return 1
+    fi
+    arguments+=(--session "$existing_id")
   fi
-	arguments+=(
+  arguments+=(
     --interactive=false
     --cwd "$worktree"
     --write
     --bash
-		--compact
-		--timeout "$agent_timeout"
+    --compact
+    --timeout "$agent_timeout"
     --prompt "$prompt"
   )
   if ! AGENTM_AGENT_SYSTEM="$agent_system" \
@@ -455,27 +501,22 @@ run_self_agent() {
       >>"$iteration_root/agent.log"
     return 1
   fi
-  if [[ -n "$existing_id" && "$output_id" != "$existing_id" ]]; then
+  if [[ "$output_id" != "$existing_id" ]]; then
     echo "trajectory changed from $existing_id to $output_id" \
       >>"$iteration_root/agent.log"
     return 1
   fi
-	if [[ -z "$existing_id" ]]; then
-    temporary="$trajectory_file.tmp"
-    printf '%s\n' "$output_id" >"$temporary"
-		mv -f "$temporary" "$trajectory_file"
-	fi
-	cause_code=$(jq -r '.result.cause.code // empty' "$iteration_root/agent.json")
-	if [[ "$cause_code" != "model_end" ]]; then
-		cause_detail=$(jq -r '.result.cause.detail // empty' \
-			"$iteration_root/agent.json")
-		agent_failure_detail="agent ended with ${cause_code:-unknown cause}"
-		if [[ -n "$cause_detail" ]]; then
-			agent_failure_detail="$agent_failure_detail: $cause_detail"
-		fi
-		printf '%s\n' "$agent_failure_detail" >>"$iteration_root/agent.log"
-		return 1
-	fi
+  cause_code=$(jq -r '.result.cause.code // empty' "$iteration_root/agent.json")
+  if [[ "$cause_code" != "model_end" ]]; then
+    cause_detail=$(jq -r '.result.cause.detail // empty' \
+      "$iteration_root/agent.json")
+    agent_failure_detail="agent ended with ${cause_code:-unknown cause}"
+    if [[ -n "$cause_detail" ]]; then
+      agent_failure_detail="$agent_failure_detail: $cause_detail"
+    fi
+    printf '%s\n' "$agent_failure_detail" >>"$iteration_root/agent.log"
+    return 1
+  fi
 }
 
 run_external_agent() {
@@ -513,6 +554,9 @@ append_progress_result "0000" "baseline" "$best_score" \
 git -C "$worktree" add "$progress_document"
 git -C "$worktree" commit -m "replica: record baseline"
 sync_progress
+if [[ -z "$agent_command" ]]; then
+  ensure_trajectory_id >/dev/null
+fi
 write_state 1
 echo "Baseline score: $best_score"
 

@@ -74,3 +74,25 @@ ID, and artifact path. Rejected code is discarded only inside the disposable
 worktree, but its attempt remains in the run artifacts and results TSV.
 
 ## Iterations
+
+### Manual maintenance — preallocate the self-hosted trajectory
+
+- Observed gap: three timed-out iterations left three trajectories marked
+  `running` because `trajectory-id` was written only after `ag run` returned a
+  successful JSON result.
+- Files changed: `tools/replica/loop.sh`, `decisions.md`, and this handoff.
+- State transition: the loop now persists a deterministic run-scoped ID before
+  the first model call, creates with that ID when absent, and attaches to the
+  same ID thereafter. Cleanup treats an ID that was allocated but never
+  created as already quiescent.
+- Evidence: the launchd loop was unloaded and trajectories
+  `efde7260406ac097a6a635f415f1c817`,
+  `3c6b6fe56fe8f9b16fabcdd05b412891`, and
+  `c077616f25b38e13d34ca00b2529bfa1` all reached `idle` after durable cancel.
+- Tests: helper lifecycle smoke (stable allocation plus existing/absent
+  lookup); `bash -n tools/replica/loop.sh`; `git diff --check`;
+  `go test ./...`.
+- Risk: a fresh bounded loop smoke test is still needed before reinstalling the
+  autonomous launchd job.
+- Next target: add a short lifecycle smoke mode that proves one ID is reused
+  across an intentionally interrupted self-hosted invocation.

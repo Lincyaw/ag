@@ -366,3 +366,9 @@
   then load only the newest legacy snapshot and subsequent message-producing
   deltas. Append-only history remains canonical without forcing every view or
   worker restart to materialize obsolete payload blobs.
+- **The replica trajectory ID is allocated before execution** (L2: durable
+  lifecycle invariant). A self-hosted run persists one stable trajectory ID
+  before its first provider call and uses that ID for both initial creation and
+  every later attach. Process success is not the source of identity: timeout,
+  cancellation, gateway restart, and compaction must still leave the loop able
+  to cancel, inspect, and resume the same trajectory without orphaning work.
