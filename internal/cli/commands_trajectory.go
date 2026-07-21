@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/lincyaw/ag/gateway"
@@ -34,8 +35,11 @@ func (application *app) trajectoryCommand() *cobra.Command {
 	var branchHead string
 	show := &cobra.Command{
 		Use:   "show <trajectory-id>",
-		Short: "Show a trajectory or one of its branches",
-		Args:  exactArgs(1),
+		Short: "Open a trajectory view or inspect one of its branches",
+		Example: `  ag trajectory show <trajectory-id>              # open the agent view
+  ag trajectory show <trajectory-id> -o json      # print an inspection
+  ag trajectory show <trajectory-id> --head <id>  # inspect a historical branch`,
+		Args: exactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			client, _, err := application.managedGatewayClient(command)
 			if err != nil {
@@ -47,6 +51,20 @@ func (application *app) trajectoryCommand() *cobra.Command {
 			)
 			if err != nil {
 				return err
+			}
+			if trajectoryShowUsesTUI(
+				application.output,
+				branchHead,
+				isReaderTerminal(os.Stdin) &&
+					isTerminal(application.stdout) &&
+					isTerminal(application.stderr),
+			) {
+				return application.runAgentView(
+					command.Context(),
+					client,
+					trajectoryID,
+					agentViewOptions{ShowContext: true},
+				)
 			}
 			trajectory, err := loadTrajectoryInspection(
 				command.Context(), client, trajectoryID, branchHead,
@@ -142,6 +160,10 @@ func (application *app) trajectoryCommand() *cobra.Command {
 		application.trajectoryWaitCommand(),
 	)
 	return command
+}
+
+func trajectoryShowUsesTUI(output, branchHead string, inputTerminal bool) bool {
+	return output == outputText && strings.TrimSpace(branchHead) == "" && inputTerminal
 }
 
 func (application *app) trajectorySubmitCommand() *cobra.Command {

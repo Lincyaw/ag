@@ -200,6 +200,41 @@ func TestInteractiveExitDetachesActiveAgent(t *testing.T) {
 	}
 }
 
+func TestInteractiveAgentViewShowsTrajectoryContextAndStatus(t *testing.T) {
+	model := newInteractiveModel(
+		stubInteractiveSession{},
+		"session",
+		newProgressStyles(false),
+	)
+	model.hydrateSession(gateway.Session{
+		ID: "trajectory-12345678", Provider: "openai",
+		WorkspaceRoot: "/workspace/project", Paused: true,
+	})
+	if model.agentStatus() != agentStatusPaused {
+		t.Fatalf("status = %q, want paused", model.agentStatus())
+	}
+	model.width = 120
+	model.height = 20
+	model.recalculateLayout()
+	view := model.View()
+	for _, expected := range []string{
+		agentStatusPaused, "openai", "/workspace/project", "trajectory-",
+	} {
+		if !strings.Contains(view.Content, expected) {
+			t.Fatalf("view %q missing %q", view.Content, expected)
+		}
+	}
+
+	model.state = stateExecuting
+	if model.agentStatus() != agentStatusRunning {
+		t.Fatalf("executing status = %q, want running", model.agentStatus())
+	}
+	model.interaction = &gateway.Interaction{ID: "question"}
+	if model.agentStatus() != agentStatusWaiting {
+		t.Fatalf("interaction status = %q, want waiting", model.agentStatus())
+	}
+}
+
 type stubInteractiveSession struct{}
 
 func (stubInteractiveSession) ID() string { return "session" }

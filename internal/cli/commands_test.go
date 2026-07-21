@@ -60,3 +60,30 @@ func TestSelectPluginInstanceRequiresExplicitReplica(t *testing.T) {
 		t.Fatalf("selected = %#v", selected)
 	}
 }
+
+func TestTrajectoryShowUsesTUIOnlyForInteractiveCurrentView(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		output        string
+		branchHead    string
+		inputTerminal bool
+		want          bool
+	}{
+		{name: "terminal text", output: outputText, inputTerminal: true, want: true},
+		{name: "json", output: outputJSON, inputTerminal: true},
+		{name: "historical branch", output: outputText, branchHead: "checkpoint", inputTerminal: true},
+		{name: "piped input", output: outputText},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := trajectoryShowUsesTUI(
+				test.output, test.branchHead, test.inputTerminal,
+			)
+			if got != test.want {
+				t.Fatalf("trajectoryShowUsesTUI() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}

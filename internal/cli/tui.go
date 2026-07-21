@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -39,7 +38,31 @@ func (application *app) runGatewayTUI(
 	if err != nil {
 		return err
 	}
+	return application.runAgentView(
+		ctx,
+		client,
+		sessionID,
+		agentViewOptions{
+			InitialPrompt: initialPrompt,
+			ShowContext:   resumeID != "",
+		},
+	)
+}
 
+type agentViewOptions struct {
+	InitialPrompt string
+	ShowContext   bool
+}
+
+// runAgentView is the shared TUI route for a durable trajectory. CLI commands
+// are only deep links into this view; the gateway remains the source of truth
+// for conversation history, work state, and live events.
+func (application *app) runAgentView(
+	ctx context.Context,
+	client *gatewayclient.Client,
+	sessionID string,
+	options agentViewOptions,
+) error {
 	styles := newProgressStyles(
 		application.colorEnabled(application.stderr) || application.colorForced(),
 	)
@@ -50,6 +73,13 @@ func (application *app) runGatewayTUI(
 		observe:   eventSink.Observe,
 	}
 	model := newInteractiveModel(session, sessionID, styles)
+	if options.ShowContext {
+		details, err := client.GetSession(ctx, sessionID)
+		if err != nil {
+			return fmt.Errorf("load trajectory %s: %w", sessionID, err)
+		}
+		model.hydrateSession(details)
+	}
 	cursor, err := session.latestEventCursor(ctx)
 	if err != nil {
 		return fmt.Errorf("read trajectory event cursor: %w", err)
@@ -62,10 +92,10 @@ func (application *app) runGatewayTUI(
 		return fmt.Errorf("open trajectory view: %w", err)
 	}
 	session.frontend = gatewayRPCFrontend{client: client, view: view}
-	if strings.TrimSpace(initialPrompt) != "" {
-		model.input.SetValue(initialPrompt)
+	if strings.TrimSpace(options.InitialPrompt) != "" {
+		model.input.SetValue(options.InitialPrompt)
 	}
-	program := tea.NewProgram(model, tea.WithOutput(os.Stderr))
+	program := tea.NewProgram(model, tea.WithOutput(application.stderr))
 	eventSink.program = program
 	observerCtx, stopObserver := context.WithCancel(ctx)
 	defer stopObserver()

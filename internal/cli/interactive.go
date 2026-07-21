@@ -14,6 +14,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/lincyaw/ag/gateway"
 	"github.com/lincyaw/ag/internal/tui/animation"
+	tuiPath "github.com/lincyaw/ag/internal/tui/path"
 	"github.com/lincyaw/ag/internal/tui/spinner"
 	"github.com/lincyaw/ag/internal/tui/statusbar"
 	"github.com/lincyaw/ag/sdk"
@@ -86,10 +87,14 @@ type interactiveModel struct {
 	interaction *gateway.Interaction
 	initialCmds []tea.Cmd
 
-	sessionID  string
-	turn       int
-	toolsDone  int
-	toolsTotal int
+	sessionID   string
+	provider    string
+	workspace   string
+	paused      bool
+	showContext bool
+	turn        int
+	toolsDone   int
+	toolsTotal  int
 
 	quitting bool
 	detached bool
@@ -465,6 +470,14 @@ func (m *interactiveModel) hydrateConversation(messages []sdk.Message) {
 	m.historyIndex = len(m.history)
 }
 
+func (m *interactiveModel) hydrateSession(session gateway.Session) {
+	m.sessionID = session.ID
+	m.provider = session.Provider
+	m.workspace = session.WorkspaceRoot
+	m.paused = session.Paused
+	m.showContext = true
+}
+
 func (m *interactiveModel) resumeInteraction(interaction gateway.Interaction) {
 	m.interaction = &interaction
 	m.chat = append(m.chat, chatMessage{
@@ -610,16 +623,48 @@ func (m *interactiveModel) updateStatusBarBindings() {
 	m.statusBar.SetBindings(bindings)
 
 	var rightParts []string
+	if m.showContext {
+		rightParts = append(rightParts, m.agentStatus())
+	}
 	if m.turn > 0 {
 		rightParts = append(rightParts, fmt.Sprintf("turn %d", m.turn))
 	}
 	if m.toolsTotal > 0 {
 		rightParts = append(rightParts, fmt.Sprintf("tools %d/%d", m.toolsDone, m.toolsTotal))
 	}
+	if m.provider != "" {
+		rightParts = append(rightParts, m.provider)
+	}
+	if m.workspace != "" {
+		rightParts = append(rightParts, compactWorkspace(m.workspace))
+	}
 	if m.sessionID != "" {
 		rightParts = append(rightParts, shortIdentifier(m.sessionID))
 	}
 	m.statusBar.SetActivity(strings.Join(rightParts, "  "))
+}
+
+func (m interactiveModel) agentStatus() string {
+	switch {
+	case m.interaction != nil:
+		return agentStatusWaiting
+	case m.state == stateExecuting:
+		return agentStatusRunning
+	case m.paused:
+		return agentStatusPaused
+	default:
+		return agentStatusIdle
+	}
+}
+
+func compactWorkspace(workspace string) string {
+	const maxRunes = 24
+	workspace = tuiPath.ShortenHome(workspace)
+	runes := []rune(workspace)
+	if len(runes) <= maxRunes {
+		return workspace
+	}
+	return "…" + string(runes[len(runes)-maxRunes+1:])
 }
 
 func interactionDisplay(interaction gateway.Interaction) string {
