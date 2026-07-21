@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -20,6 +21,8 @@ import (
 	cagenttools "github.com/lincyaw/ag/internal/cagent/tools"
 	tuimessages "github.com/lincyaw/ag/internal/tui/messages"
 	"github.com/lincyaw/ag/sdk"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const gatewayTUIAgentName = "ag"
@@ -45,6 +48,7 @@ type gatewayTUIBinding struct {
 	closeOnce sync.Once
 
 	mu             sync.Mutex
+	updateMu       sync.Mutex
 	streaming      bool
 	pendingEchoes  []string
 	totalInput     int64
@@ -108,13 +112,8 @@ func newGatewayTUIBinding(
 		mirror,
 		cagentapp.WithController(control),
 	)
-	// The gateway currently exposes one provider/model name per trajectory.
-	// Keeping this populated makes the copied model/status surfaces truthful.
-	models := []string(nil)
-	if trajectory.Provider != "" {
-		models = []string{trajectory.Provider}
-	}
-	binding.App.SetAgentInfo(nil, nil, models, trajectory.Provider)
+	binding.App.SetAgentInfo(nil, nil, trajectory.Models, trajectory.Model)
+	binding.App.TrackThinkingLevel(trajectory.ThinkingLevel)
 	return binding, nil
 }
 
@@ -127,6 +126,16 @@ func cloneGatewayCreateTemplate(
 	clone := *template
 	clone.ID = ""
 	clone.RuntimeConfig = append([]byte(nil), template.RuntimeConfig...)
+	clone.Settings.Models = slices.Clone(template.Settings.Models)
+	clone.Settings.Permissions = gateway.PermissionRules{
+		Allow: slices.Clone(template.Settings.Permissions.Allow),
+		Ask:   slices.Clone(template.Settings.Permissions.Ask),
+		Deny:  slices.Clone(template.Settings.Permissions.Deny),
+	}
+	if template.Settings.AutoCompact != nil {
+		enabled := *template.Settings.AutoCompact
+		clone.Settings.AutoCompact = &enabled
+	}
 	return &clone
 }
 
@@ -173,6 +182,22 @@ func (binding *gatewayTUIBinding) Start() {
 	if binding.pending != nil {
 		binding.emitInteraction(*binding.pending)
 	}
+	if binding.metadata.AutoCompact != nil {
+		binding.App.EmitEvent(cagentruntime.ConfigUpdate(
+			binding.Session.ID,
+			"auto_compact",
+			*binding.metadata.AutoCompact,
+			gatewayTUIAgentName,
+		))
+	}
+	if binding.metadata.ThinkingLevel != "" {
+		binding.App.EmitEvent(cagentruntime.ConfigValueUpdate(
+			binding.Session.ID,
+			"thinking_level",
+			binding.metadata.ThinkingLevel,
+			gatewayTUIAgentName,
+		))
+	}
 	go binding.pump()
 }
 
@@ -196,12 +221,25 @@ func (binding *gatewayTUIBinding) Spawner() func(
 		ctx context.Context,
 		workingDir string,
 	) (*cagentapp.App, *cagentsession.Session, func(), error) {
+		binding.mu.Lock()
+		metadata := binding.metadata
+		binding.mu.Unlock()
 		request := gatewayclient.CreateSessionRequest{
 			ID:            sdk.NewID(),
-			Provider:      binding.metadata.Provider,
-			System:        binding.metadata.System,
-			MaxTurns:      binding.metadata.MaxTurns,
+			Provider:      metadata.Provider,
+			System:        metadata.System,
+			MaxTurns:      metadata.MaxTurns,
 			WorkspaceRoot: workingDir,
+			Settings: gateway.SessionSettings{
+				Model: metadata.Model, Models: slices.Clone(metadata.Models),
+				AutoCompact:   metadata.AutoCompact,
+				ThinkingLevel: metadata.ThinkingLevel,
+				Permissions: gateway.PermissionRules{
+					Allow: slices.Clone(metadata.Permissions.Allow),
+					Ask:   slices.Clone(metadata.Permissions.Ask),
+					Deny:  slices.Clone(metadata.Permissions.Deny),
+				},
+			},
 		}
 		if binding.createTemplate != nil {
 			request = *cloneGatewayCreateTemplate(binding.createTemplate)
@@ -211,7 +249,7 @@ func (binding *gatewayTUIBinding) Spawner() func(
 			}
 		}
 		if strings.TrimSpace(request.WorkspaceRoot) == "" {
-			request.WorkspaceRoot = binding.metadata.WorkspaceRoot
+			request.WorkspaceRoot = metadata.WorkspaceRoot
 		}
 		created, err := binding.client.CreateSession(ctx, request)
 		if err != nil {
@@ -229,6 +267,71 @@ func (binding *gatewayTUIBinding) Spawner() func(
 		}
 		child.Start()
 		return child.App, child.Session, child.Close, nil
+	}
+}
+
+func (binding *gatewayTUIBinding) SessionLister() func(
+	context.Context,
+) ([]cagentsession.Summary, error) {
+	return func(ctx context.Context) ([]cagentsession.Summary, error) {
+		var (
+			after     string
+			summaries []cagentsession.Summary
+		)
+		for {
+			page, err := binding.client.ListSessions(ctx, sdk.PageRequest{
+				After: after,
+				Limit: gatewayEventPageSize,
+			})
+			if err != nil {
+				return nil, err
+			}
+			for _, item := range page.Items {
+				title := strings.TrimSpace(item.Title)
+				if title == "" {
+					title = gatewayConversationTitle(item, nil)
+				}
+				summaries = append(summaries, cagentsession.Summary{
+					ID: item.ID, Title: title, CreatedAt: item.UpdatedAt,
+				})
+			}
+			if page.Next == "" || len(page.Items) < gatewayEventPageSize {
+				break
+			}
+			after = page.Next
+		}
+		return summaries, nil
+	}
+}
+
+func (binding *gatewayTUIBinding) SessionAttacher() func(
+	context.Context,
+	string,
+) (*cagentapp.App, *cagentsession.Session, func(), error) {
+	return func(
+		ctx context.Context,
+		trajectoryID string,
+	) (*cagentapp.App, *cagentsession.Session, func(), error) {
+		resolved, err := resolveGatewaySessionPrefix(ctx, binding.client, trajectoryID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		trajectory, err := binding.client.GetSession(ctx, resolved)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		attached, err := newGatewayTUIBinding(
+			ctx,
+			binding.client,
+			trajectory,
+			"",
+			binding.createTemplate,
+		)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		attached.Start()
+		return attached.App, attached.Session, attached.Close, nil
 	}
 }
 
@@ -373,7 +476,92 @@ func (binding *gatewayTUIBinding) translate(event gateway.AgentEvent) {
 		binding.mu.Lock()
 		binding.pending = nil
 		binding.mu.Unlock()
+
+	case gateway.GatewayEventSessionUpdated:
+		var metadata gateway.Session
+		if err := json.Unmarshal(event.Payload, &metadata); err != nil {
+			binding.emitDecodeError(event, err)
+			return
+		}
+		binding.applyMetadata(metadata)
+
+	case gateway.GatewayEventSessionPaused,
+		gateway.GatewayEventSessionResumed:
+		var metadata gateway.Session
+		if err := json.Unmarshal(event.Payload, &metadata); err != nil {
+			binding.emitDecodeError(event, err)
+			return
+		}
+		binding.applyMetadata(metadata)
 	}
+}
+
+func (binding *gatewayTUIBinding) applyMetadata(metadata gateway.Session) {
+	binding.mu.Lock()
+	binding.metadata = metadata
+	binding.mu.Unlock()
+	binding.App.SetAgentInfo(nil, nil, metadata.Models, metadata.Model)
+	binding.App.TrackThinkingLevel(metadata.ThinkingLevel)
+	binding.Session.Permissions = &cagentsession.PermissionsConfig{
+		Allow: slices.Clone(metadata.Permissions.Allow),
+		Ask:   slices.Clone(metadata.Permissions.Ask),
+		Deny:  slices.Clone(metadata.Permissions.Deny),
+	}
+	if binding.Session.Title != metadata.Title {
+		binding.Session.Title = metadata.Title
+		binding.App.EmitEvent(cagentruntime.SessionTitle(
+			binding.Session.ID,
+			metadata.Title,
+		))
+	}
+	if metadata.AutoCompact != nil {
+		binding.App.EmitEvent(cagentruntime.ConfigUpdate(
+			binding.Session.ID,
+			"auto_compact",
+			*metadata.AutoCompact,
+			gatewayTUIAgentName,
+		))
+	}
+	if metadata.ThinkingLevel != "" {
+		binding.App.EmitEvent(cagentruntime.ConfigValueUpdate(
+			binding.Session.ID,
+			"thinking_level",
+			metadata.ThinkingLevel,
+			gatewayTUIAgentName,
+		))
+	}
+}
+
+func (binding *gatewayTUIBinding) updateMetadata(
+	ctx context.Context,
+	patch gateway.SessionPatch,
+) (gateway.Session, error) {
+	binding.updateMu.Lock()
+	defer binding.updateMu.Unlock()
+	for attempt := 0; attempt < 3; attempt++ {
+		binding.mu.Lock()
+		current := binding.metadata
+		binding.mu.Unlock()
+		updated, err := binding.client.UpdateSession(
+			ctx,
+			current.ID,
+			current.Revision,
+			patch,
+		)
+		if err == nil {
+			binding.applyMetadata(updated)
+			return updated, nil
+		}
+		if status.Code(err) != codes.Aborted {
+			return gateway.Session{}, err
+		}
+		refreshed, refreshErr := binding.client.GetSession(ctx, current.ID)
+		if refreshErr != nil {
+			return gateway.Session{}, errors.Join(err, refreshErr)
+		}
+		binding.applyMetadata(refreshed)
+	}
+	return gateway.Session{}, errors.New("trajectory settings changed concurrently")
 }
 
 func (binding *gatewayTUIBinding) emitDecodeError(
@@ -558,13 +746,15 @@ func gatewayConversationSession(
 		cagentsession.WithTitle(title),
 		cagentsession.WithWorkingDir(trajectory.WorkspaceRoot),
 		cagentsession.WithMaxIterations(trajectory.MaxTurns),
-		cagentsession.WithPermissions(cagentapp.LoadPermissionSettings(
-			trajectory.WorkspaceRoot,
-		)),
+		cagentsession.WithPermissions(&cagentsession.PermissionsConfig{
+			Allow: slices.Clone(trajectory.Permissions.Allow),
+			Ask:   slices.Clone(trajectory.Permissions.Ask),
+			Deny:  slices.Clone(trajectory.Permissions.Deny),
+		}),
 	)
 	mirror.CreatedAt = trajectory.CreatedAt
 	for _, message := range messages {
-		converted := gatewayConversationMessage(message, trajectory.Provider)
+		converted := gatewayConversationMessage(message, trajectory.Model)
 		if converted != nil {
 			mirror.AddMessage(converted)
 		}
@@ -576,6 +766,9 @@ func gatewayConversationTitle(
 	trajectory gateway.Session,
 	messages []sdk.Message,
 ) string {
+	if title := strings.TrimSpace(trajectory.Title); title != "" {
+		return title
+	}
 	for _, message := range messages {
 		if message.Role != sdk.RoleUser {
 			continue
@@ -778,6 +971,50 @@ func (controller *gatewayTUIController) Interrupt() {
 	}
 }
 
+func (controller *gatewayTUIController) TogglePause() (bool, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), gatewayCancelTimeout)
+	defer cancel()
+	controller.binding.updateMu.Lock()
+	defer controller.binding.updateMu.Unlock()
+	for attempt := 0; attempt < 3; attempt++ {
+		controller.binding.mu.Lock()
+		current := controller.binding.metadata
+		controller.binding.mu.Unlock()
+		var (
+			updated gateway.Session
+			err     error
+		)
+		if current.Paused {
+			updated, err = controller.binding.client.ResumeSession(
+				ctx, current.ID, current.Revision,
+			)
+		} else {
+			updated, err = controller.binding.client.PauseSession(
+				ctx, current.ID, current.Revision,
+			)
+		}
+		if err == nil {
+			controller.binding.applyMetadata(updated)
+			return updated.Paused, true
+		}
+		if status.Code(err) != codes.Aborted {
+			controller.binding.App.EmitEvent(cagentruntime.Error(
+				"toggle trajectory pause: " + err.Error(),
+			))
+			return current.Paused, true
+		}
+		refreshed, refreshErr := controller.binding.client.GetSession(ctx, current.ID)
+		if refreshErr != nil {
+			controller.binding.App.EmitEvent(cagentruntime.Error(
+				"refresh trajectory pause state: " + refreshErr.Error(),
+			))
+			return current.Paused, true
+		}
+		controller.binding.applyMetadata(refreshed)
+	}
+	return false, true
+}
+
 func (controller *gatewayTUIController) CancelBackground(taskID string) {
 	taskID = strings.TrimSpace(taskID)
 	if taskID == "" {
@@ -862,16 +1099,17 @@ func (controller *gatewayTUIController) UpdateSessionTitle(
 	ctx context.Context,
 	title string,
 ) error {
-	_ = ctx
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return errors.New("session title is empty")
 	}
-	controller.binding.Session.Title = title
-	controller.binding.App.EmitEvent(cagentruntime.SessionTitle(
-		controller.binding.Session.ID,
-		title,
-	))
+	_, err := controller.binding.updateMetadata(
+		ctx,
+		gateway.SessionPatch{Title: &title},
+	)
+	if err != nil {
+		return fmt.Errorf("update trajectory title: %w", err)
+	}
 	return nil
 }
 
@@ -954,26 +1192,37 @@ func (controller *gatewayTUIController) ClearSession() {
 
 func (controller *gatewayTUIController) SwitchModel(name string) {
 	name = strings.TrimSpace(name)
-	if name == "" || name == controller.binding.metadata.Provider {
+	controller.binding.mu.Lock()
+	current := controller.binding.metadata.Model
+	controller.binding.mu.Unlock()
+	if name == "" || name == current {
 		return
 	}
-	controller.binding.App.EmitEvent(cagentruntime.Warning(
-		"Model switching is not supported by this trajectory profile.",
-		gatewayTUIAgentName,
-	))
+	controller.updateAsync(
+		"switch trajectory model",
+		gateway.SessionPatch{Model: &name},
+	)
 }
 
 func (controller *gatewayTUIController) SetAutoCompact(enabled bool) {
-	controller.binding.App.EmitEvent(cagentruntime.ConfigUpdate(
-		controller.binding.Session.ID,
-		"auto_compact",
-		enabled,
-		gatewayTUIAgentName,
-	))
+	controller.updateAsync(
+		"set trajectory auto-compact",
+		gateway.SessionPatch{AutoCompact: &enabled},
+	)
 }
 
 func (controller *gatewayTUIController) SetPermissionRule(kind, pattern string) {
-	_, _ = kind, pattern
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return
+	}
+	controller.updateAsync(
+		"set trajectory permission",
+		gateway.SessionPatch{PermissionRule: &gateway.PermissionRule{
+			Kind: kind, Pattern: pattern,
+		}},
+	)
 }
 
 func (controller *gatewayTUIController) SetThinkingMode(enabled bool) {
@@ -985,9 +1234,29 @@ func (controller *gatewayTUIController) SetThinkingMode(enabled bool) {
 }
 
 func (controller *gatewayTUIController) SetThinkingLevel(level string) {
+	level = strings.ToLower(strings.TrimSpace(level))
 	controller.mu.Lock()
 	controller.thinking = level
 	controller.mu.Unlock()
+	controller.updateAsync(
+		"set trajectory thinking level",
+		gateway.SessionPatch{ThinkingLevel: &level},
+	)
+}
+
+func (controller *gatewayTUIController) updateAsync(
+	action string,
+	patch gateway.SessionPatch,
+) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), gatewayCancelTimeout)
+		defer cancel()
+		if _, err := controller.binding.updateMetadata(ctx, patch); err != nil {
+			controller.binding.App.EmitEvent(cagentruntime.Error(
+				action + ": " + err.Error(),
+			))
+		}
+	}()
 }
 
 func gatewayUserTranscript(

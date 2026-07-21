@@ -24,9 +24,16 @@ import (
 func (m *appModel) handleOpenSessionBrowser() (tea.Model, tea.Cmd) {
 	store := m.application.SessionStore()
 	if store == nil {
-		// Gateway mode: send bare /resume to fetch the session list from the
-		// gateway. The gateway returns a session_list outbound that the
-		// translator converts into OpenSessionBrowserWithDataMsg.
+		if m.sessionLister != nil {
+			sessions, err := m.sessionLister(context.Background())
+			if err != nil {
+				return m, notification.ErrorCmd(fmt.Sprintf(
+					"Failed to load trajectories: %v",
+					err,
+				))
+			}
+			return m.handleOpenSessionBrowserWithData(sessions)
+		}
 		return m, core.CmdHandler(messages.SendMsg{Content: "/resume", BypassQueue: true})
 	}
 
@@ -75,7 +82,33 @@ func (m *appModel) settleSessionBrowserControlCmd() tea.Cmd {
 func (m *appModel) handleLoadSession(sessionID string) (tea.Model, tea.Cmd) {
 	store := m.application.SessionStore()
 	if store == nil {
-		// Gateway mode: send /resume <id> to switch sessions server-side.
+		if m.sessionAttacher != nil {
+			if tabID := m.findTabByPersistedID(sessionID); tabID != "" {
+				return m.handleSwitchTab(tabID)
+			}
+			ctx := context.Background()
+			attachedApp, attachedSession, cleanup, err := m.sessionAttacher(ctx, sessionID)
+			if err != nil {
+				return m, notification.ErrorCmd(fmt.Sprintf(
+					"Failed to attach trajectory: %v",
+					err,
+				))
+			}
+			workingDir := attachedSession.WorkingDir
+			runtimeID := m.supervisor.AddSession(
+				ctx,
+				attachedApp,
+				attachedSession,
+				workingDir,
+				cleanup,
+			)
+			if m.tuiStore != nil {
+				if err := m.tuiStore.AddTab(ctx, attachedSession.ID, workingDir); err != nil {
+					slog.WarnContext(ctx, "Failed to persist attached trajectory tab", "error", err)
+				}
+			}
+			return m.handleSwitchTab(runtimeID)
+		}
 		return m, core.CmdHandler(messages.SendMsg{
 			Content:     "/resume " + sessionID,
 			BypassQueue: true,
@@ -222,10 +255,25 @@ func (m *appModel) handleClearSession() (tea.Model, tea.Cmd) {
 		workingDir = oldSess.WorkingDir
 		toolsApproved = oldSess.ToolsApproved
 	}
-	m.application.ClearSession()
+	var newSess *session.Session
+	if m.application.HasController() && m.supervisor.Spawner() != nil {
+		ctx := context.Background()
+		newApp, spawned, cleanup, err := m.supervisor.Spawner()(ctx, workingDir)
+		if err != nil {
+			return m, notification.ErrorCmd("Failed to clear trajectory: " + err.Error())
+		}
+		m.supervisor.ReplaceRunnerApp(ctx, activeID, newApp, workingDir, cleanup)
+		m.application = newApp
+		newSess = spawned
+	} else {
+		m.application.ClearSession()
+		newSess = session.New(
+			session.WithWorkingDir(workingDir),
+			session.WithToolsApproved(toolsApproved),
+		)
+		m.application.SetSession(newSess)
+	}
 	m.suppressClearNoticeUntil = time.Now().Add(2 * time.Second)
-	newSess := session.New(session.WithWorkingDir(workingDir), session.WithToolsApproved(toolsApproved))
-	m.application.SetSession(newSess)
 
 	// Rebuild all per-session UI components.
 	m.initSessionComponents(activeID, m.application, newSess)

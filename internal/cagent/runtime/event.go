@@ -557,6 +557,17 @@ type ConfigUpdateEvent struct {
 	SessionID string `json:"session_id,omitempty"`
 	Key       string `json:"key"`
 	Enabled   bool   `json:"enabled"`
+	Value     string `json:"value,omitempty"`
+}
+
+func ConfigValueUpdate(sessionID, key, value, agentName string) Event {
+	return &ConfigUpdateEvent{
+		Type:         "config_update",
+		SessionID:    sessionID,
+		Key:          key,
+		Value:        value,
+		AgentContext: newAgentContext(agentName),
+	}
 }
 
 func ConfigUpdate(sessionID, key string, enabled bool, agentName string) Event {

@@ -35,17 +35,57 @@ type PluginBinding struct {
 	Epoch      uint64            `json:"epoch"`
 }
 
+type PermissionRules struct {
+	Allow []string `json:"allow,omitempty"`
+	Ask   []string `json:"ask,omitempty"`
+	Deny  []string `json:"deny,omitempty"`
+}
+
+// SessionSettings are the durable, user-facing controls captured atomically
+// when a trajectory is created. Runtime credentials remain process-owned and
+// never cross this boundary.
+type SessionSettings struct {
+	Title         string          `json:"title,omitempty"`
+	Model         string          `json:"model,omitempty"`
+	Models        []string        `json:"models,omitempty"`
+	AutoCompact   *bool           `json:"auto_compact,omitempty"`
+	ThinkingLevel string          `json:"thinking_level,omitempty"`
+	Permissions   PermissionRules `json:"permissions,omitempty"`
+}
+
+// SessionPatch is the CAS-protected mutable control surface of one durable
+// trajectory. Pointer fields distinguish "leave unchanged" from a deliberate
+// empty/false value.
+type SessionPatch struct {
+	Title          *string         `json:"title,omitempty"`
+	Model          *string         `json:"model,omitempty"`
+	AutoCompact    *bool           `json:"auto_compact,omitempty"`
+	ThinkingLevel  *string         `json:"thinking_level,omitempty"`
+	PermissionRule *PermissionRule `json:"permission_rule,omitempty"`
+}
+
+type PermissionRule struct {
+	Kind    string `json:"kind"`
+	Pattern string `json:"pattern"`
+}
+
 type Session struct {
-	ID            string `json:"id"`
-	UserID        string `json:"user_id"`
-	Provider      string `json:"provider,omitempty"`
-	System        string `json:"system,omitempty"`
-	MaxTurns      int    `json:"max_turns"`
-	WorkspaceRoot string `json:"workspace_root,omitempty"`
+	ID            string   `json:"id"`
+	UserID        string   `json:"user_id"`
+	Title         string   `json:"title,omitempty"`
+	Provider      string   `json:"provider,omitempty"`
+	Model         string   `json:"model,omitempty"`
+	Models        []string `json:"models,omitempty"`
+	System        string   `json:"system,omitempty"`
+	MaxTurns      int      `json:"max_turns"`
+	WorkspaceRoot string   `json:"workspace_root,omitempty"`
 	// RuntimeConfig is a private, durable execution profile supplied when the
 	// trajectory is created. It is deliberately excluded from API JSON so
 	// listing or attaching to a trajectory cannot disclose tool configuration.
 	RuntimeConfig json.RawMessage `json:"-"`
+	AutoCompact   *bool           `json:"auto_compact,omitempty"`
+	ThinkingLevel string          `json:"thinking_level,omitempty"`
+	Permissions   PermissionRules `json:"permissions,omitempty"`
 	Paused        bool            `json:"paused,omitempty"`
 	Revision      uint64          `json:"revision"`
 	Plugins       []PluginBinding `json:"plugins"`
@@ -76,7 +116,10 @@ type SessionStore interface {
 
 func normalizeSession(session Session) (Session, error) {
 	session.ID = strings.TrimSpace(session.ID)
+	session.Title = strings.TrimSpace(session.Title)
 	session.Provider = strings.TrimSpace(session.Provider)
+	session.Model = strings.TrimSpace(session.Model)
+	session.ThinkingLevel = strings.ToLower(strings.TrimSpace(session.ThinkingLevel))
 	session.WorkspaceRoot = strings.TrimSpace(session.WorkspaceRoot)
 	if err := sdk.ValidateResourceName("gateway session", session.ID); err != nil {
 		return Session{}, err
@@ -90,6 +133,30 @@ func normalizeSession(session Session) (Session, error) {
 		if err := sdk.ValidateResourceName("provider", session.Provider); err != nil {
 			return Session{}, err
 		}
+	}
+	if len([]rune(session.Title)) > 256 {
+		return Session{}, errors.New("gateway session title exceeds 256 characters")
+	}
+	models, err := normalizeStringSet("gateway session model", session.Models, 128)
+	if err != nil {
+		return Session{}, err
+	}
+	session.Models = models
+	if session.Model != "" && !slices.Contains(session.Models, session.Model) {
+		session.Models = append(session.Models, session.Model)
+		slices.Sort(session.Models)
+	}
+	switch session.ThinkingLevel {
+	case "", "off", "low", "medium", "high":
+	default:
+		return Session{}, fmt.Errorf(
+			"gateway session thinking level %q is invalid",
+			session.ThinkingLevel,
+		)
+	}
+	session.Permissions, err = normalizePermissionRules(session.Permissions)
+	if err != nil {
+		return Session{}, err
 	}
 	if session.MaxTurns < 0 {
 		return Session{}, errors.New("gateway session max turns cannot be negative")
@@ -223,10 +290,69 @@ func normalizeUserID(value string) (string, error) {
 
 func cloneSession(session Session) Session {
 	session.Plugins = clonePluginBindings(session.Plugins)
+	session.Models = slices.Clone(session.Models)
+	session.Permissions = clonePermissionRules(session.Permissions)
+	if session.AutoCompact != nil {
+		enabled := *session.AutoCompact
+		session.AutoCompact = &enabled
+	}
 	session.RuntimeConfig = append(
 		json.RawMessage(nil), session.RuntimeConfig...,
 	)
 	return session
+}
+
+func normalizePermissionRules(rules PermissionRules) (PermissionRules, error) {
+	var err error
+	rules.Allow, err = normalizeStringSet("allow permission rule", rules.Allow, 512)
+	if err != nil {
+		return PermissionRules{}, err
+	}
+	rules.Ask, err = normalizeStringSet("ask permission rule", rules.Ask, 512)
+	if err != nil {
+		return PermissionRules{}, err
+	}
+	rules.Deny, err = normalizeStringSet("deny permission rule", rules.Deny, 512)
+	if err != nil {
+		return PermissionRules{}, err
+	}
+	return rules, nil
+}
+
+func normalizeStringSet(kind string, values []string, maxRunes int) ([]string, error) {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if len([]rune(value)) > maxRunes {
+			return nil, fmt.Errorf("%s exceeds %d characters", kind, maxRunes)
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	slices.Sort(result)
+	return result, nil
+}
+
+func clonePermissionRules(rules PermissionRules) PermissionRules {
+	rules.Allow = slices.Clone(rules.Allow)
+	rules.Ask = slices.Clone(rules.Ask)
+	rules.Deny = slices.Clone(rules.Deny)
+	return rules
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func clonePluginBindings(bindings []PluginBinding) []PluginBinding {

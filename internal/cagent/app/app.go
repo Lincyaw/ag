@@ -65,6 +65,8 @@ type Controller interface {
 	Resume(req runtime.ResumeRequest)
 	// Interrupt asks the backend to stop the active turn.
 	Interrupt()
+	// TogglePause changes whether queued inputs may begin executing.
+	TogglePause() (paused, supported bool)
 	// CancelBackground asks the backend to stop a detached background task.
 	CancelBackground(taskID string)
 	// UpdateSessionTitle sets and persists the session title.
@@ -115,12 +117,13 @@ type App struct {
 	// (tool/command names, model list, active model). The translator writes it
 	// from the wire-reader goroutine; the TUI reads it from the bubbletea
 	// goroutine when opening /tools, /skills (commands) and the model picker.
-	agentInfoMu  sync.Mutex
-	toolNames    []string
-	commandNames []string
-	modelNames   []string
-	activeModel  string
-	skills       []skills.Skill
+	agentInfoMu   sync.Mutex
+	toolNames     []string
+	commandNames  []string
+	modelNames    []string
+	activeModel   string
+	thinkingLevel string
+	skills        []skills.Skill
 
 	// events is the raw event stream the backend pushes into via EmitEvent;
 	// startFanOut drains it and scatters every event to each SubscribeWith
@@ -231,6 +234,15 @@ func (a *App) SetAutoCompact(enabled bool) {
 
 // SetThinkingMode toggles extended thinking for subsequent submitted turns.
 func (a *App) SetThinkingMode(enabled bool) {
+	a.agentInfoMu.Lock()
+	if enabled {
+		if a.thinkingLevel == "" || a.thinkingLevel == "off" {
+			a.thinkingLevel = "high"
+		}
+	} else {
+		a.thinkingLevel = "off"
+	}
+	a.agentInfoMu.Unlock()
 	if a.controller != nil {
 		a.controller.SetThinkingMode(enabled)
 	}
@@ -238,9 +250,20 @@ func (a *App) SetThinkingMode(enabled bool) {
 
 // SetThinkingLevel sets the thinking level for subsequent submitted turns.
 func (a *App) SetThinkingLevel(level string) {
+	a.agentInfoMu.Lock()
+	a.thinkingLevel = strings.ToLower(strings.TrimSpace(level))
+	a.agentInfoMu.Unlock()
 	if a.controller != nil {
 		a.controller.SetThinkingLevel(level)
 	}
+}
+
+// TrackThinkingLevel refreshes the frontend projection without issuing a
+// backend mutation (for attach/reconnect events).
+func (a *App) TrackThinkingLevel(level string) {
+	a.agentInfoMu.Lock()
+	a.thinkingLevel = strings.ToLower(strings.TrimSpace(level))
+	a.agentInfoMu.Unlock()
 }
 
 // Interrupt asks the backend to stop the active turn.
@@ -473,7 +496,10 @@ func (a *App) Resume(req runtime.ResumeRequest) {
 // TogglePause toggles the runtime pause state. Stub: reports not paused and
 // not supported until the adapter takes over.
 func (a *App) TogglePause() (paused, supported bool) {
-	return false, false
+	if a.controller == nil {
+		return false, false
+	}
+	return a.controller.TogglePause()
 }
 
 // NewSession starts a fresh session. Delegates to the wire-backed controller.
@@ -524,7 +550,19 @@ func (a *App) SupportsModelSwitching() bool {
 // Stub: returns the zero level and nil until the adapter takes over.
 func (a *App) CycleAgentThinkingLevel(ctx context.Context) (string, error) {
 	_ = ctx
-	return "", nil
+	a.agentInfoMu.Lock()
+	levels := []string{"off", "low", "medium", "high"}
+	index := slices.Index(levels, a.thinkingLevel)
+	if index < 0 {
+		index = 0
+	}
+	next := levels[(index+1)%len(levels)]
+	a.thinkingLevel = next
+	a.agentInfoMu.Unlock()
+	if a.controller != nil {
+		a.controller.SetThinkingLevel(next)
+	}
+	return next, nil
 }
 
 // AvailableModels lists the models selectable for the current agent, sourced

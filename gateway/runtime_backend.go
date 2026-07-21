@@ -21,6 +21,10 @@ type RuntimeBuildSpec struct {
 	Plugins       []PluginBinding
 	WorkspaceRoot string
 	RuntimeConfig []byte
+	Model         string
+	AutoCompact   *bool
+	ThinkingLevel string
+	Permissions   PermissionRules
 	EventObserver func(context.Context, sdk.Event)
 	Interactions  *InteractionManager
 }
@@ -88,6 +92,7 @@ func (backend *runtimeExecutionBackend) CreateSession(
 	if _, err := host.Runtime.NewSession(ctx, agentruntime.SessionConfig{
 		ID: session.ID, Provider: session.Provider,
 		System: session.System, MaxTurns: session.MaxTurns,
+		ReasoningEffort: session.ThinkingLevel,
 	}); err != nil {
 		return errors.Join(err, host.CloseDetached(ctx))
 	}
@@ -270,8 +275,9 @@ func (backend *runtimeExecutionBackend) Submit(
 		session.ID,
 		agentruntime.SessionConfig{
 			Provider: session.Provider, System: session.System,
-			MaxTurns:     session.MaxTurns,
-			ResumePolicy: agentruntime.ResumeCurrent,
+			MaxTurns:        session.MaxTurns,
+			ReasoningEffort: session.ThinkingLevel,
+			ResumePolicy:    agentruntime.ResumeCurrent,
 		},
 		content,
 	)
@@ -637,6 +643,10 @@ func runtimeBuildSpec(session Session) RuntimeBuildSpec {
 		Plugins:       clonePluginBindings(session.Plugins),
 		WorkspaceRoot: session.WorkspaceRoot,
 		RuntimeConfig: append([]byte(nil), session.RuntimeConfig...),
+		Model:         session.Model,
+		AutoCompact:   cloneBool(session.AutoCompact),
+		ThinkingLevel: session.ThinkingLevel,
+		Permissions:   clonePermissionRules(session.Permissions),
 	}
 }
 

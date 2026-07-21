@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
+	"github.com/lincyaw/ag/gateway"
 	gatewayclient "github.com/lincyaw/ag/gateway/client"
+	cagentapp "github.com/lincyaw/ag/internal/cagent/app"
 	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/lincyaw/ag/sdk"
 	"github.com/spf13/cobra"
@@ -201,10 +204,37 @@ func gatewayCreateSessionRequest(
 			err,
 		)
 	}
+	autoCompact := config.Compact.Enabled
+	permissions := cagentapp.LoadPermissionSettings(config.Workspace.Root)
+	permissionRules := gateway.PermissionRules{}
+	if permissions != nil {
+		permissionRules = gateway.PermissionRules{
+			Allow: slices.Clone(permissions.Allow),
+			Ask:   slices.Clone(permissions.Ask),
+			Deny:  slices.Clone(permissions.Deny),
+		}
+	}
+	models := make([]string, 0, len(config.Models)+1)
+	if model := strings.TrimSpace(config.OpenAI.Model); model != "" {
+		models = append(models, model)
+	}
+	for name := range config.Models {
+		if name = strings.TrimSpace(name); name != "" && !slices.Contains(models, name) {
+			models = append(models, name)
+		}
+	}
+	slices.Sort(models)
 	return gatewayclient.CreateSessionRequest{
 		ID: id, Provider: config.Agent.Provider,
 		System: config.Agent.System, MaxTurns: config.Agent.MaxTurns,
 		WorkspaceRoot: config.Workspace.Root,
 		RuntimeConfig: runtimeConfig,
+		Settings: gateway.SessionSettings{
+			Model:         config.OpenAI.Model,
+			Models:        models,
+			AutoCompact:   &autoCompact,
+			ThinkingLevel: "off",
+			Permissions:   permissionRules,
+		},
 	}, nil
 }

@@ -219,6 +219,7 @@ func TestProviderUsesOfficialSDKForTools(t *testing.T) {
 				"type": "object",
 			},
 		}},
+		ReasoningEffort: "high",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -227,6 +228,9 @@ func TestProviderUsesOfficialSDKForTools(t *testing.T) {
 	body := <-requestBody
 	if body["model"] != "test-model" {
 		t.Fatalf("model = %v", body["model"])
+	}
+	if body["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort = %#v", body["reasoning_effort"])
 	}
 	tools, ok := body["tools"].([]any)
 	if !ok || len(tools) != 1 {

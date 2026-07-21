@@ -20,6 +20,7 @@ const (
 	GatewayEventInputCompleted   = "gateway_input_completed"
 	GatewayEventSessionPaused    = "gateway_session_paused"
 	GatewayEventSessionResumed   = "gateway_session_resumed"
+	GatewayEventSessionUpdated   = "gateway_session_updated"
 	defaultInputPoll             = 100 * time.Millisecond
 )
 

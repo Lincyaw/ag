@@ -379,6 +379,43 @@ func (c *Config) resolveModelProfile() {
 	}
 }
 
+// ApplyModelReference switches the effective OpenAI configuration to either a
+// named model profile or a literal model identifier. It is used by durable
+// gateway trajectories after the initial config load, so model changes do not
+// require restarting the managed gateway.
+func (c *Config) ApplyModelReference(reference string) {
+	reference = strings.TrimSpace(reference)
+	if reference == "" {
+		return
+	}
+	profile, ok := c.Models[reference]
+	if !ok {
+		c.OpenAI.Model = reference
+		return
+	}
+	if profile.Model != "" {
+		c.OpenAI.Model = profile.Model
+	}
+	if profile.BaseURL != "" {
+		c.OpenAI.BaseURL = profile.BaseURL
+	}
+	if profile.AzureEndpoint != "" {
+		c.OpenAI.AzureEndpoint = profile.AzureEndpoint
+	}
+	if profile.APIVersion != "" {
+		c.OpenAI.APIVersion = profile.APIVersion
+	}
+	if profile.DefaultHeaders != nil {
+		c.OpenAI.DefaultHeaders = maps.Clone(profile.DefaultHeaders)
+	}
+	if profile.APIKey != "" {
+		c.OpenAI.APIKey = profile.APIKey
+	}
+	if profile.MaxRetries > 0 {
+		c.OpenAI.MaxRetries = profile.MaxRetries
+	}
+}
+
 func (l Loaded) Path() string {
 	if l.File != "" {
 		return l.File

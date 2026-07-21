@@ -54,6 +54,7 @@ type CreateSessionRequest struct {
 	MaxTurns      int
 	WorkspaceRoot string
 	RuntimeConfig []byte
+	Settings      gateway.SessionSettings
 }
 
 func New(config Config) (*Client, error) {
@@ -174,6 +175,10 @@ func (client *Client) CreateSession(
 	if err != nil {
 		return gateway.Session{}, err
 	}
+	settings, err := json.Marshal(request.Settings)
+	if err != nil {
+		return gateway.Session{}, fmt.Errorf("encode trajectory settings: %w", err)
+	}
 	response, err := client.remote.CreateTrajectory(
 		ctx,
 		&gatewayv1.CreateTrajectoryRequest{
@@ -181,9 +186,35 @@ func (client *Client) CreateSession(
 			Provider: request.Provider, System: request.System,
 			MaxTurns: maxTurns, WorkspaceRoot: request.WorkspaceRoot,
 			RuntimeConfigJson: request.RuntimeConfig,
+			SettingsJson:      settings,
 		},
 	)
 	return decodeResponse[gateway.Session]("create trajectory", response, err)
+}
+
+// UpdateSession applies one CAS-protected control-plane patch. Callers should
+// refresh and retry on ErrSessionConflict rather than overwriting another
+// attached frontend's change.
+func (client *Client) UpdateSession(
+	ctx context.Context,
+	trajectoryID string,
+	expectedRevision uint64,
+	patch gateway.SessionPatch,
+) (gateway.Session, error) {
+	payload, err := json.Marshal(patch)
+	if err != nil {
+		return gateway.Session{}, fmt.Errorf("encode trajectory patch: %w", err)
+	}
+	response, err := client.remote.UpdateTrajectory(
+		ctx,
+		&gatewayv1.UpdateTrajectoryRequest{
+			UserId:           client.userID,
+			TrajectoryId:     trajectoryID,
+			ExpectedRevision: expectedRevision,
+			PatchJson:        payload,
+		},
+	)
+	return decodeResponse[gateway.Session]("update trajectory", response, err)
 }
 
 func (client *Client) GetSession(

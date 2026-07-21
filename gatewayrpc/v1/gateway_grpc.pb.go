@@ -22,6 +22,7 @@ const (
 	GatewayService_Health_FullMethodName                  = "/gatewayrpc.v1.GatewayService/Health"
 	GatewayService_CreateTrajectory_FullMethodName        = "/gatewayrpc.v1.GatewayService/CreateTrajectory"
 	GatewayService_GetTrajectory_FullMethodName           = "/gatewayrpc.v1.GatewayService/GetTrajectory"
+	GatewayService_UpdateTrajectory_FullMethodName        = "/gatewayrpc.v1.GatewayService/UpdateTrajectory"
 	GatewayService_ListTrajectories_FullMethodName        = "/gatewayrpc.v1.GatewayService/ListTrajectories"
 	GatewayService_LoadTrajectory_FullMethodName          = "/gatewayrpc.v1.GatewayService/LoadTrajectory"
 	GatewayService_ListConversation_FullMethodName        = "/gatewayrpc.v1.GatewayService/ListConversation"
@@ -57,6 +58,7 @@ type GatewayServiceClient interface {
 	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
 	CreateTrajectory(ctx context.Context, in *CreateTrajectoryRequest, opts ...grpc.CallOption) (*JsonValue, error)
 	GetTrajectory(ctx context.Context, in *GetTrajectoryRequest, opts ...grpc.CallOption) (*JsonValue, error)
+	UpdateTrajectory(ctx context.Context, in *UpdateTrajectoryRequest, opts ...grpc.CallOption) (*JsonValue, error)
 	ListTrajectories(ctx context.Context, in *ListTrajectoriesRequest, opts ...grpc.CallOption) (*JsonValue, error)
 	LoadTrajectory(ctx context.Context, in *LoadTrajectoryRequest, opts ...grpc.CallOption) (*JsonValue, error)
 	ListConversation(ctx context.Context, in *ListConversationRequest, opts ...grpc.CallOption) (*JsonValue, error)
@@ -116,6 +118,16 @@ func (c *gatewayServiceClient) GetTrajectory(ctx context.Context, in *GetTraject
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(JsonValue)
 	err := c.cc.Invoke(ctx, GatewayService_GetTrajectory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayServiceClient) UpdateTrajectory(ctx context.Context, in *UpdateTrajectoryRequest, opts ...grpc.CallOption) (*JsonValue, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(JsonValue)
+	err := c.cc.Invoke(ctx, GatewayService_UpdateTrajectory_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -356,6 +368,7 @@ type GatewayServiceServer interface {
 	Health(context.Context, *HealthRequest) (*HealthResponse, error)
 	CreateTrajectory(context.Context, *CreateTrajectoryRequest) (*JsonValue, error)
 	GetTrajectory(context.Context, *GetTrajectoryRequest) (*JsonValue, error)
+	UpdateTrajectory(context.Context, *UpdateTrajectoryRequest) (*JsonValue, error)
 	ListTrajectories(context.Context, *ListTrajectoriesRequest) (*JsonValue, error)
 	LoadTrajectory(context.Context, *LoadTrajectoryRequest) (*JsonValue, error)
 	ListConversation(context.Context, *ListConversationRequest) (*JsonValue, error)
@@ -399,6 +412,9 @@ func (UnimplementedGatewayServiceServer) CreateTrajectory(context.Context, *Crea
 }
 func (UnimplementedGatewayServiceServer) GetTrajectory(context.Context, *GetTrajectoryRequest) (*JsonValue, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetTrajectory not implemented")
+}
+func (UnimplementedGatewayServiceServer) UpdateTrajectory(context.Context, *UpdateTrajectoryRequest) (*JsonValue, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateTrajectory not implemented")
 }
 func (UnimplementedGatewayServiceServer) ListTrajectories(context.Context, *ListTrajectoriesRequest) (*JsonValue, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListTrajectories not implemented")
@@ -537,6 +553,24 @@ func _GatewayService_GetTrajectory_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(GatewayServiceServer).GetTrajectory(ctx, req.(*GetTrajectoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayService_UpdateTrajectory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateTrajectoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayServiceServer).UpdateTrajectory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayService_UpdateTrajectory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayServiceServer).UpdateTrajectory(ctx, req.(*UpdateTrajectoryRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -944,6 +978,10 @@ var GatewayService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetTrajectory",
 			Handler:    _GatewayService_GetTrajectory_Handler,
+		},
+		{
+			MethodName: "UpdateTrajectory",
+			Handler:    _GatewayService_UpdateTrajectory_Handler,
 		},
 		{
 			MethodName: "ListTrajectories",

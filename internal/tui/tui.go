@@ -46,6 +46,14 @@ import (
 // This is an alias to the supervisor package's SessionSpawner type.
 type SessionSpawner = supervisor.SessionSpawner
 
+// SessionLister and SessionAttacher let a remote durable backend power the
+// copied /resume browser without pretending to be the local SQLite store.
+type SessionLister func(context.Context) ([]session.Summary, error)
+type SessionAttacher func(
+	context.Context,
+	string,
+) (*app.App, *session.Session, func(), error)
+
 // FocusedPanel represents which panel is currently focused
 type FocusedPanel string
 
@@ -76,10 +84,12 @@ type appModel struct {
 	editors map[string]editor.Editor
 
 	// Active session (convenience pointers to the currently visible session)
-	application  *app.App
-	sessionState *service.SessionState
-	chatPage     chat.Page
-	editor       editor.Editor
+	application     *app.App
+	sessionState    *service.SessionState
+	chatPage        chat.Page
+	editor          editor.Editor
+	sessionLister   SessionLister
+	sessionAttacher SessionAttacher
 
 	// history is the active tab's workspace-scoped prompt history.
 	history   *history.History
@@ -289,6 +299,15 @@ type Transcriber interface {
 
 // Option configures the TUI.
 type Option func(*appModel)
+
+// WithSessionNavigator connects /resume to a remote session catalog and
+// attachment factory.
+func WithSessionNavigator(lister SessionLister, attacher SessionAttacher) Option {
+	return func(m *appModel) {
+		m.sessionLister = lister
+		m.sessionAttacher = attacher
+	}
+}
 
 // WithHideSidebar hides the chat sidebar. The rest of the chrome (tab bar,
 // status bar, dialogs) remains visible. The user cannot bring the sidebar

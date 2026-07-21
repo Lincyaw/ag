@@ -92,6 +92,29 @@ func TestGatewaySessionConfigOverridesDaemonWorkspace(t *testing.T) {
 	}
 }
 
+func TestGatewaySessionConfigAppliesDurableRuntimeControls(t *testing.T) {
+	enabled := false
+	config := appconfig.Config{
+		Models: map[string]appconfig.ModelProfile{
+			"pro": {Model: "model-pro", BaseURL: "https://models.example/v1"},
+		},
+		OpenAI:  appconfig.OpenAI{Model: "model-fast", BaseURL: "https://fast.example/v1"},
+		Compact: appconfig.Compact{Enabled: true},
+	}
+	got, err := gatewaySessionConfig(config, gateway.RuntimeBuildSpec{
+		Model: "pro", AutoCompact: &enabled,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OpenAI.Model != "model-pro" || got.OpenAI.BaseURL != "https://models.example/v1" {
+		t.Fatalf("selected model config = %#v", got.OpenAI)
+	}
+	if got.Compact.Enabled {
+		t.Fatal("durable auto-compact override was ignored")
+	}
+}
+
 func fileOverridePlugin() sdk.Plugin {
 	return sdk.PluginFunc{
 		PluginManifest: sdk.Manifest{

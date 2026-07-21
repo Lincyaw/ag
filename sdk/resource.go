@@ -49,8 +49,9 @@ type Usage struct {
 }
 
 type ModelRequest struct {
-	Messages []Message  `json:"messages"`
-	Tools    []ToolSpec `json:"tools"`
+	Messages        []Message  `json:"messages"`
+	Tools           []ToolSpec `json:"tools"`
+	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
 }
 
 type ModelResponse struct {

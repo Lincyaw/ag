@@ -165,6 +165,7 @@ type CreateTrajectoryRequest struct {
 	MaxTurns          int32                  `protobuf:"varint,5,opt,name=max_turns,json=maxTurns,proto3" json:"max_turns,omitempty"`
 	WorkspaceRoot     string                 `protobuf:"bytes,6,opt,name=workspace_root,json=workspaceRoot,proto3" json:"workspace_root,omitempty"`
 	RuntimeConfigJson []byte                 `protobuf:"bytes,7,opt,name=runtime_config_json,json=runtimeConfigJson,proto3" json:"runtime_config_json,omitempty"`
+	SettingsJson      []byte                 `protobuf:"bytes,8,opt,name=settings_json,json=settingsJson,proto3" json:"settings_json,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -248,6 +249,13 @@ func (x *CreateTrajectoryRequest) GetRuntimeConfigJson() []byte {
 	return nil
 }
 
+func (x *CreateTrajectoryRequest) GetSettingsJson() []byte {
+	if x != nil {
+		return x.SettingsJson
+	}
+	return nil
+}
+
 type GetTrajectoryRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -300,6 +308,74 @@ func (x *GetTrajectoryRequest) GetTrajectoryId() string {
 	return ""
 }
 
+type UpdateTrajectoryRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	UserId           string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	TrajectoryId     string                 `protobuf:"bytes,2,opt,name=trajectory_id,json=trajectoryId,proto3" json:"trajectory_id,omitempty"`
+	ExpectedRevision uint64                 `protobuf:"varint,3,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	PatchJson        []byte                 `protobuf:"bytes,4,opt,name=patch_json,json=patchJson,proto3" json:"patch_json,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *UpdateTrajectoryRequest) Reset() {
+	*x = UpdateTrajectoryRequest{}
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateTrajectoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateTrajectoryRequest) ProtoMessage() {}
+
+func (x *UpdateTrajectoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateTrajectoryRequest.ProtoReflect.Descriptor instead.
+func (*UpdateTrajectoryRequest) Descriptor() ([]byte, []int) {
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *UpdateTrajectoryRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *UpdateTrajectoryRequest) GetTrajectoryId() string {
+	if x != nil {
+		return x.TrajectoryId
+	}
+	return ""
+}
+
+func (x *UpdateTrajectoryRequest) GetExpectedRevision() uint64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
+func (x *UpdateTrajectoryRequest) GetPatchJson() []byte {
+	if x != nil {
+		return x.PatchJson
+	}
+	return nil
+}
+
 type ListTrajectoriesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -311,7 +387,7 @@ type ListTrajectoriesRequest struct {
 
 func (x *ListTrajectoriesRequest) Reset() {
 	*x = ListTrajectoriesRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[5]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -323,7 +399,7 @@ func (x *ListTrajectoriesRequest) String() string {
 func (*ListTrajectoriesRequest) ProtoMessage() {}
 
 func (x *ListTrajectoriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[5]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -336,7 +412,7 @@ func (x *ListTrajectoriesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTrajectoriesRequest.ProtoReflect.Descriptor instead.
 func (*ListTrajectoriesRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{5}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ListTrajectoriesRequest) GetUserId() string {
@@ -371,7 +447,7 @@ type LoadTrajectoryRequest struct {
 
 func (x *LoadTrajectoryRequest) Reset() {
 	*x = LoadTrajectoryRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[6]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -383,7 +459,7 @@ func (x *LoadTrajectoryRequest) String() string {
 func (*LoadTrajectoryRequest) ProtoMessage() {}
 
 func (x *LoadTrajectoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[6]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -396,7 +472,7 @@ func (x *LoadTrajectoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoadTrajectoryRequest.ProtoReflect.Descriptor instead.
 func (*LoadTrajectoryRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{6}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *LoadTrajectoryRequest) GetUserId() string {
@@ -433,7 +509,7 @@ type ListConversationRequest struct {
 
 func (x *ListConversationRequest) Reset() {
 	*x = ListConversationRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[7]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -445,7 +521,7 @@ func (x *ListConversationRequest) String() string {
 func (*ListConversationRequest) ProtoMessage() {}
 
 func (x *ListConversationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[7]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -458,7 +534,7 @@ func (x *ListConversationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListConversationRequest.ProtoReflect.Descriptor instead.
 func (*ListConversationRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{7}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ListConversationRequest) GetUserId() string {
@@ -509,7 +585,7 @@ type ListTrajectoryEntriesRequest struct {
 
 func (x *ListTrajectoryEntriesRequest) Reset() {
 	*x = ListTrajectoryEntriesRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[8]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -521,7 +597,7 @@ func (x *ListTrajectoryEntriesRequest) String() string {
 func (*ListTrajectoryEntriesRequest) ProtoMessage() {}
 
 func (x *ListTrajectoryEntriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[8]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -534,7 +610,7 @@ func (x *ListTrajectoryEntriesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTrajectoryEntriesRequest.ProtoReflect.Descriptor instead.
 func (*ListTrajectoryEntriesRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{8}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ListTrajectoryEntriesRequest) GetUserId() string {
@@ -583,7 +659,7 @@ type RollbackTrajectoryRequest struct {
 
 func (x *RollbackTrajectoryRequest) Reset() {
 	*x = RollbackTrajectoryRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[9]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -595,7 +671,7 @@ func (x *RollbackTrajectoryRequest) String() string {
 func (*RollbackTrajectoryRequest) ProtoMessage() {}
 
 func (x *RollbackTrajectoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[9]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -608,7 +684,7 @@ func (x *RollbackTrajectoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RollbackTrajectoryRequest.ProtoReflect.Descriptor instead.
 func (*RollbackTrajectoryRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{9}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *RollbackTrajectoryRequest) GetUserId() string {
@@ -644,7 +720,7 @@ type AttachPluginRequest struct {
 
 func (x *AttachPluginRequest) Reset() {
 	*x = AttachPluginRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[10]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -656,7 +732,7 @@ func (x *AttachPluginRequest) String() string {
 func (*AttachPluginRequest) ProtoMessage() {}
 
 func (x *AttachPluginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[10]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -669,7 +745,7 @@ func (x *AttachPluginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachPluginRequest.ProtoReflect.Descriptor instead.
 func (*AttachPluginRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{10}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *AttachPluginRequest) GetUserId() string {
@@ -712,7 +788,7 @@ type DetachPluginRequest struct {
 
 func (x *DetachPluginRequest) Reset() {
 	*x = DetachPluginRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[11]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -724,7 +800,7 @@ func (x *DetachPluginRequest) String() string {
 func (*DetachPluginRequest) ProtoMessage() {}
 
 func (x *DetachPluginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[11]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -737,7 +813,7 @@ func (x *DetachPluginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DetachPluginRequest.ProtoReflect.Descriptor instead.
 func (*DetachPluginRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{11}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *DetachPluginRequest) GetUserId() string {
@@ -779,7 +855,7 @@ type SubmitMessageRequest struct {
 
 func (x *SubmitMessageRequest) Reset() {
 	*x = SubmitMessageRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[12]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -791,7 +867,7 @@ func (x *SubmitMessageRequest) String() string {
 func (*SubmitMessageRequest) ProtoMessage() {}
 
 func (x *SubmitMessageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[12]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -804,7 +880,7 @@ func (x *SubmitMessageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitMessageRequest.ProtoReflect.Descriptor instead.
 func (*SubmitMessageRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{12}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *SubmitMessageRequest) GetUserId() string {
@@ -840,7 +916,7 @@ type EnqueueContextInjectionRequest struct {
 
 func (x *EnqueueContextInjectionRequest) Reset() {
 	*x = EnqueueContextInjectionRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[13]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -852,7 +928,7 @@ func (x *EnqueueContextInjectionRequest) String() string {
 func (*EnqueueContextInjectionRequest) ProtoMessage() {}
 
 func (x *EnqueueContextInjectionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[13]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -865,7 +941,7 @@ func (x *EnqueueContextInjectionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnqueueContextInjectionRequest.ProtoReflect.Descriptor instead.
 func (*EnqueueContextInjectionRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{13}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *EnqueueContextInjectionRequest) GetUserId() string {
@@ -908,7 +984,7 @@ type EnqueueInputRequest struct {
 
 func (x *EnqueueInputRequest) Reset() {
 	*x = EnqueueInputRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[14]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -920,7 +996,7 @@ func (x *EnqueueInputRequest) String() string {
 func (*EnqueueInputRequest) ProtoMessage() {}
 
 func (x *EnqueueInputRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[14]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -933,7 +1009,7 @@ func (x *EnqueueInputRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnqueueInputRequest.ProtoReflect.Descriptor instead.
 func (*EnqueueInputRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{14}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *EnqueueInputRequest) GetUserId() string {
@@ -975,7 +1051,7 @@ type GetInputRequest struct {
 
 func (x *GetInputRequest) Reset() {
 	*x = GetInputRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[15]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -987,7 +1063,7 @@ func (x *GetInputRequest) String() string {
 func (*GetInputRequest) ProtoMessage() {}
 
 func (x *GetInputRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[15]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1000,7 +1076,7 @@ func (x *GetInputRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetInputRequest.ProtoReflect.Descriptor instead.
 func (*GetInputRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{15}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *GetInputRequest) GetUserId() string {
@@ -1036,7 +1112,7 @@ type ListInputsRequest struct {
 
 func (x *ListInputsRequest) Reset() {
 	*x = ListInputsRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[16]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1048,7 +1124,7 @@ func (x *ListInputsRequest) String() string {
 func (*ListInputsRequest) ProtoMessage() {}
 
 func (x *ListInputsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[16]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1061,7 +1137,7 @@ func (x *ListInputsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListInputsRequest.ProtoReflect.Descriptor instead.
 func (*ListInputsRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{16}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ListInputsRequest) GetUserId() string {
@@ -1104,7 +1180,7 @@ type CancelInputRequest struct {
 
 func (x *CancelInputRequest) Reset() {
 	*x = CancelInputRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[17]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1116,7 +1192,7 @@ func (x *CancelInputRequest) String() string {
 func (*CancelInputRequest) ProtoMessage() {}
 
 func (x *CancelInputRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[17]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1129,7 +1205,7 @@ func (x *CancelInputRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelInputRequest.ProtoReflect.Descriptor instead.
 func (*CancelInputRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{17}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CancelInputRequest) GetUserId() string {
@@ -1172,7 +1248,7 @@ type SetPausedRequest struct {
 
 func (x *SetPausedRequest) Reset() {
 	*x = SetPausedRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[18]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1184,7 +1260,7 @@ func (x *SetPausedRequest) String() string {
 func (*SetPausedRequest) ProtoMessage() {}
 
 func (x *SetPausedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[18]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1197,7 +1273,7 @@ func (x *SetPausedRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetPausedRequest.ProtoReflect.Descriptor instead.
 func (*SetPausedRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{18}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *SetPausedRequest) GetUserId() string {
@@ -1240,7 +1316,7 @@ type ListEventsRequest struct {
 
 func (x *ListEventsRequest) Reset() {
 	*x = ListEventsRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[19]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1252,7 +1328,7 @@ func (x *ListEventsRequest) String() string {
 func (*ListEventsRequest) ProtoMessage() {}
 
 func (x *ListEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[19]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1265,7 +1341,7 @@ func (x *ListEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListEventsRequest.ProtoReflect.Descriptor instead.
 func (*ListEventsRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{19}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ListEventsRequest) GetUserId() string {
@@ -1306,7 +1382,7 @@ type GetEventCursorRequest struct {
 
 func (x *GetEventCursorRequest) Reset() {
 	*x = GetEventCursorRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[20]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1318,7 +1394,7 @@ func (x *GetEventCursorRequest) String() string {
 func (*GetEventCursorRequest) ProtoMessage() {}
 
 func (x *GetEventCursorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[20]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1331,7 +1407,7 @@ func (x *GetEventCursorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEventCursorRequest.ProtoReflect.Descriptor instead.
 func (*GetEventCursorRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{20}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *GetEventCursorRequest) GetUserId() string {
@@ -1359,7 +1435,7 @@ type GetInteractionRequest struct {
 
 func (x *GetInteractionRequest) Reset() {
 	*x = GetInteractionRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[21]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1371,7 +1447,7 @@ func (x *GetInteractionRequest) String() string {
 func (*GetInteractionRequest) ProtoMessage() {}
 
 func (x *GetInteractionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[21]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1384,7 +1460,7 @@ func (x *GetInteractionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetInteractionRequest.ProtoReflect.Descriptor instead.
 func (*GetInteractionRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{21}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *GetInteractionRequest) GetUserId() string {
@@ -1421,7 +1497,7 @@ type ListInteractionsRequest struct {
 
 func (x *ListInteractionsRequest) Reset() {
 	*x = ListInteractionsRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[22]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1433,7 +1509,7 @@ func (x *ListInteractionsRequest) String() string {
 func (*ListInteractionsRequest) ProtoMessage() {}
 
 func (x *ListInteractionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[22]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1446,7 +1522,7 @@ func (x *ListInteractionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListInteractionsRequest.ProtoReflect.Descriptor instead.
 func (*ListInteractionsRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{22}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ListInteractionsRequest) GetUserId() string {
@@ -1498,7 +1574,7 @@ type ResolveInteractionRequest struct {
 
 func (x *ResolveInteractionRequest) Reset() {
 	*x = ResolveInteractionRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[23]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1510,7 +1586,7 @@ func (x *ResolveInteractionRequest) String() string {
 func (*ResolveInteractionRequest) ProtoMessage() {}
 
 func (x *ResolveInteractionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[23]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1523,7 +1599,7 @@ func (x *ResolveInteractionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveInteractionRequest.ProtoReflect.Descriptor instead.
 func (*ResolveInteractionRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{23}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ResolveInteractionRequest) GetUserId() string {
@@ -1579,7 +1655,7 @@ type GetExecutionRequest struct {
 
 func (x *GetExecutionRequest) Reset() {
 	*x = GetExecutionRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[24]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1591,7 +1667,7 @@ func (x *GetExecutionRequest) String() string {
 func (*GetExecutionRequest) ProtoMessage() {}
 
 func (x *GetExecutionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[24]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1604,7 +1680,7 @@ func (x *GetExecutionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetExecutionRequest.ProtoReflect.Descriptor instead.
 func (*GetExecutionRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{24}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetExecutionRequest) GetUserId() string {
@@ -1639,7 +1715,7 @@ type CancelExecutionRequest struct {
 
 func (x *CancelExecutionRequest) Reset() {
 	*x = CancelExecutionRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[25]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1651,7 +1727,7 @@ func (x *CancelExecutionRequest) String() string {
 func (*CancelExecutionRequest) ProtoMessage() {}
 
 func (x *CancelExecutionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[25]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1664,7 +1740,7 @@ func (x *CancelExecutionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelExecutionRequest.ProtoReflect.Descriptor instead.
 func (*CancelExecutionRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{25}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CancelExecutionRequest) GetUserId() string {
@@ -1701,7 +1777,7 @@ type ViewRequest struct {
 
 func (x *ViewRequest) Reset() {
 	*x = ViewRequest{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[26]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1713,7 +1789,7 @@ func (x *ViewRequest) String() string {
 func (*ViewRequest) ProtoMessage() {}
 
 func (x *ViewRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[26]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1726,7 +1802,7 @@ func (x *ViewRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ViewRequest.ProtoReflect.Descriptor instead.
 func (*ViewRequest) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{26}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ViewRequest) GetFrame() isViewRequest_Frame {
@@ -1781,7 +1857,7 @@ type OpenView struct {
 
 func (x *OpenView) Reset() {
 	*x = OpenView{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[27]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1793,7 +1869,7 @@ func (x *OpenView) String() string {
 func (*OpenView) ProtoMessage() {}
 
 func (x *OpenView) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[27]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1806,7 +1882,7 @@ func (x *OpenView) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenView.ProtoReflect.Descriptor instead.
 func (*OpenView) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{27}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *OpenView) GetUserId() string {
@@ -1847,7 +1923,7 @@ type ViewCommand struct {
 
 func (x *ViewCommand) Reset() {
 	*x = ViewCommand{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[28]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1859,7 +1935,7 @@ func (x *ViewCommand) String() string {
 func (*ViewCommand) ProtoMessage() {}
 
 func (x *ViewCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[28]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1872,7 +1948,7 @@ func (x *ViewCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ViewCommand.ProtoReflect.Descriptor instead.
 func (*ViewCommand) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{28}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ViewCommand) GetRequestId() string {
@@ -1978,7 +2054,7 @@ type ViewEnqueueInput struct {
 
 func (x *ViewEnqueueInput) Reset() {
 	*x = ViewEnqueueInput{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[29]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1990,7 +2066,7 @@ func (x *ViewEnqueueInput) String() string {
 func (*ViewEnqueueInput) ProtoMessage() {}
 
 func (x *ViewEnqueueInput) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[29]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2003,7 +2079,7 @@ func (x *ViewEnqueueInput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ViewEnqueueInput.ProtoReflect.Descriptor instead.
 func (*ViewEnqueueInput) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{29}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ViewEnqueueInput) GetInputId() string {
@@ -2030,7 +2106,7 @@ type ViewCancelInput struct {
 
 func (x *ViewCancelInput) Reset() {
 	*x = ViewCancelInput{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[30]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2042,7 +2118,7 @@ func (x *ViewCancelInput) String() string {
 func (*ViewCancelInput) ProtoMessage() {}
 
 func (x *ViewCancelInput) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[30]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2055,7 +2131,7 @@ func (x *ViewCancelInput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ViewCancelInput.ProtoReflect.Descriptor instead.
 func (*ViewCancelInput) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{30}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ViewCancelInput) GetInputId() string {
@@ -2084,7 +2160,7 @@ type ViewResolveInteraction struct {
 
 func (x *ViewResolveInteraction) Reset() {
 	*x = ViewResolveInteraction{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[31]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2096,7 +2172,7 @@ func (x *ViewResolveInteraction) String() string {
 func (*ViewResolveInteraction) ProtoMessage() {}
 
 func (x *ViewResolveInteraction) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[31]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2109,7 +2185,7 @@ func (x *ViewResolveInteraction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ViewResolveInteraction.ProtoReflect.Descriptor instead.
 func (*ViewResolveInteraction) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{31}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ViewResolveInteraction) GetInteractionId() string {
@@ -2150,7 +2226,7 @@ type ViewSetPaused struct {
 
 func (x *ViewSetPaused) Reset() {
 	*x = ViewSetPaused{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[32]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2162,7 +2238,7 @@ func (x *ViewSetPaused) String() string {
 func (*ViewSetPaused) ProtoMessage() {}
 
 func (x *ViewSetPaused) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[32]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2175,7 +2251,7 @@ func (x *ViewSetPaused) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ViewSetPaused.ProtoReflect.Descriptor instead.
 func (*ViewSetPaused) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{32}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ViewSetPaused) GetPaused() bool {
@@ -2201,7 +2277,7 @@ type ViewCancelExecution struct {
 
 func (x *ViewCancelExecution) Reset() {
 	*x = ViewCancelExecution{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[33]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2213,7 +2289,7 @@ func (x *ViewCancelExecution) String() string {
 func (*ViewCancelExecution) ProtoMessage() {}
 
 func (x *ViewCancelExecution) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[33]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2226,7 +2302,7 @@ func (x *ViewCancelExecution) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ViewCancelExecution.ProtoReflect.Descriptor instead.
 func (*ViewCancelExecution) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{33}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ViewCancelExecution) GetExecutionId() string {
@@ -2251,7 +2327,7 @@ type ViewResponse struct {
 
 func (x *ViewResponse) Reset() {
 	*x = ViewResponse{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[34]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2263,7 +2339,7 @@ func (x *ViewResponse) String() string {
 func (*ViewResponse) ProtoMessage() {}
 
 func (x *ViewResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[34]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2276,7 +2352,7 @@ func (x *ViewResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ViewResponse.ProtoReflect.Descriptor instead.
 func (*ViewResponse) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{34}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ViewResponse) GetFrame() isViewResponse_Frame {
@@ -2360,7 +2436,7 @@ type ViewReady struct {
 
 func (x *ViewReady) Reset() {
 	*x = ViewReady{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[35]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2372,7 +2448,7 @@ func (x *ViewReady) String() string {
 func (*ViewReady) ProtoMessage() {}
 
 func (x *ViewReady) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[35]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2385,7 +2461,7 @@ func (x *ViewReady) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ViewReady.ProtoReflect.Descriptor instead.
 func (*ViewReady) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{35}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ViewReady) GetTrajectory() *JsonValue {
@@ -2411,7 +2487,7 @@ type ViewEvent struct {
 
 func (x *ViewEvent) Reset() {
 	*x = ViewEvent{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[36]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2423,7 +2499,7 @@ func (x *ViewEvent) String() string {
 func (*ViewEvent) ProtoMessage() {}
 
 func (x *ViewEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[36]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2436,7 +2512,7 @@ func (x *ViewEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ViewEvent.ProtoReflect.Descriptor instead.
 func (*ViewEvent) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{36}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ViewEvent) GetEvent() *JsonValue {
@@ -2456,7 +2532,7 @@ type ViewResult struct {
 
 func (x *ViewResult) Reset() {
 	*x = ViewResult{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[37]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2468,7 +2544,7 @@ func (x *ViewResult) String() string {
 func (*ViewResult) ProtoMessage() {}
 
 func (x *ViewResult) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[37]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2481,7 +2557,7 @@ func (x *ViewResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ViewResult.ProtoReflect.Descriptor instead.
 func (*ViewResult) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{37}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ViewResult) GetRequestId() string {
@@ -2509,7 +2585,7 @@ type ViewFailure struct {
 
 func (x *ViewFailure) Reset() {
 	*x = ViewFailure{}
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[38]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2521,7 +2597,7 @@ func (x *ViewFailure) String() string {
 func (*ViewFailure) ProtoMessage() {}
 
 func (x *ViewFailure) ProtoReflect() protoreflect.Message {
-	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[38]
+	mi := &file_gatewayrpc_v1_gateway_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2534,7 +2610,7 @@ func (x *ViewFailure) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ViewFailure.ProtoReflect.Descriptor instead.
 func (*ViewFailure) Descriptor() ([]byte, []int) {
-	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{38}
+	return file_gatewayrpc_v1_gateway_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ViewFailure) GetRequestId() string {
@@ -2568,7 +2644,7 @@ const file_gatewayrpc_v1_gateway_proto_rawDesc = "" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12)\n" +
 	"\x10protocol_version\x18\x02 \x01(\tR\x0fprotocolVersion\"\x1f\n" +
 	"\tJsonValue\x12\x12\n" +
-	"\x04json\x18\x01 \x01(\fR\x04json\"\xea\x01\n" +
+	"\x04json\x18\x01 \x01(\fR\x04json\"\x8f\x02\n" +
 	"\x17CreateTrajectoryRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x1a\n" +
@@ -2576,10 +2652,17 @@ const file_gatewayrpc_v1_gateway_proto_rawDesc = "" +
 	"\x06system\x18\x04 \x01(\tR\x06system\x12\x1b\n" +
 	"\tmax_turns\x18\x05 \x01(\x05R\bmaxTurns\x12%\n" +
 	"\x0eworkspace_root\x18\x06 \x01(\tR\rworkspaceRoot\x12.\n" +
-	"\x13runtime_config_json\x18\a \x01(\fR\x11runtimeConfigJson\"T\n" +
+	"\x13runtime_config_json\x18\a \x01(\fR\x11runtimeConfigJson\x12#\n" +
+	"\rsettings_json\x18\b \x01(\fR\fsettingsJson\"T\n" +
 	"\x14GetTrajectoryRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12#\n" +
-	"\rtrajectory_id\x18\x02 \x01(\tR\ftrajectoryId\"^\n" +
+	"\rtrajectory_id\x18\x02 \x01(\tR\ftrajectoryId\"\xa3\x01\n" +
+	"\x17UpdateTrajectoryRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12#\n" +
+	"\rtrajectory_id\x18\x02 \x01(\tR\ftrajectoryId\x12+\n" +
+	"\x11expected_revision\x18\x03 \x01(\x04R\x10expectedRevision\x12\x1d\n" +
+	"\n" +
+	"patch_json\x18\x04 \x01(\fR\tpatchJson\"^\n" +
 	"\x17ListTrajectoriesRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x14\n" +
 	"\x05after\x18\x02 \x01(\tR\x05after\x12\x14\n" +
@@ -2737,11 +2820,12 @@ const file_gatewayrpc_v1_gateway_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
 	"\x04code\x18\x02 \x01(\tR\x04code\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage2\xff\x0f\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage2\xd5\x10\n" +
 	"\x0eGatewayService\x12E\n" +
 	"\x06Health\x12\x1c.gatewayrpc.v1.HealthRequest\x1a\x1d.gatewayrpc.v1.HealthResponse\x12T\n" +
 	"\x10CreateTrajectory\x12&.gatewayrpc.v1.CreateTrajectoryRequest\x1a\x18.gatewayrpc.v1.JsonValue\x12N\n" +
 	"\rGetTrajectory\x12#.gatewayrpc.v1.GetTrajectoryRequest\x1a\x18.gatewayrpc.v1.JsonValue\x12T\n" +
+	"\x10UpdateTrajectory\x12&.gatewayrpc.v1.UpdateTrajectoryRequest\x1a\x18.gatewayrpc.v1.JsonValue\x12T\n" +
 	"\x10ListTrajectories\x12&.gatewayrpc.v1.ListTrajectoriesRequest\x1a\x18.gatewayrpc.v1.JsonValue\x12P\n" +
 	"\x0eLoadTrajectory\x12$.gatewayrpc.v1.LoadTrajectoryRequest\x1a\x18.gatewayrpc.v1.JsonValue\x12T\n" +
 	"\x10ListConversation\x12&.gatewayrpc.v1.ListConversationRequest\x1a\x18.gatewayrpc.v1.JsonValue\x12^\n" +
@@ -2779,115 +2863,118 @@ func file_gatewayrpc_v1_gateway_proto_rawDescGZIP() []byte {
 	return file_gatewayrpc_v1_gateway_proto_rawDescData
 }
 
-var file_gatewayrpc_v1_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 39)
+var file_gatewayrpc_v1_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
 var file_gatewayrpc_v1_gateway_proto_goTypes = []any{
 	(*HealthRequest)(nil),                  // 0: gatewayrpc.v1.HealthRequest
 	(*HealthResponse)(nil),                 // 1: gatewayrpc.v1.HealthResponse
 	(*JsonValue)(nil),                      // 2: gatewayrpc.v1.JsonValue
 	(*CreateTrajectoryRequest)(nil),        // 3: gatewayrpc.v1.CreateTrajectoryRequest
 	(*GetTrajectoryRequest)(nil),           // 4: gatewayrpc.v1.GetTrajectoryRequest
-	(*ListTrajectoriesRequest)(nil),        // 5: gatewayrpc.v1.ListTrajectoriesRequest
-	(*LoadTrajectoryRequest)(nil),          // 6: gatewayrpc.v1.LoadTrajectoryRequest
-	(*ListConversationRequest)(nil),        // 7: gatewayrpc.v1.ListConversationRequest
-	(*ListTrajectoryEntriesRequest)(nil),   // 8: gatewayrpc.v1.ListTrajectoryEntriesRequest
-	(*RollbackTrajectoryRequest)(nil),      // 9: gatewayrpc.v1.RollbackTrajectoryRequest
-	(*AttachPluginRequest)(nil),            // 10: gatewayrpc.v1.AttachPluginRequest
-	(*DetachPluginRequest)(nil),            // 11: gatewayrpc.v1.DetachPluginRequest
-	(*SubmitMessageRequest)(nil),           // 12: gatewayrpc.v1.SubmitMessageRequest
-	(*EnqueueContextInjectionRequest)(nil), // 13: gatewayrpc.v1.EnqueueContextInjectionRequest
-	(*EnqueueInputRequest)(nil),            // 14: gatewayrpc.v1.EnqueueInputRequest
-	(*GetInputRequest)(nil),                // 15: gatewayrpc.v1.GetInputRequest
-	(*ListInputsRequest)(nil),              // 16: gatewayrpc.v1.ListInputsRequest
-	(*CancelInputRequest)(nil),             // 17: gatewayrpc.v1.CancelInputRequest
-	(*SetPausedRequest)(nil),               // 18: gatewayrpc.v1.SetPausedRequest
-	(*ListEventsRequest)(nil),              // 19: gatewayrpc.v1.ListEventsRequest
-	(*GetEventCursorRequest)(nil),          // 20: gatewayrpc.v1.GetEventCursorRequest
-	(*GetInteractionRequest)(nil),          // 21: gatewayrpc.v1.GetInteractionRequest
-	(*ListInteractionsRequest)(nil),        // 22: gatewayrpc.v1.ListInteractionsRequest
-	(*ResolveInteractionRequest)(nil),      // 23: gatewayrpc.v1.ResolveInteractionRequest
-	(*GetExecutionRequest)(nil),            // 24: gatewayrpc.v1.GetExecutionRequest
-	(*CancelExecutionRequest)(nil),         // 25: gatewayrpc.v1.CancelExecutionRequest
-	(*ViewRequest)(nil),                    // 26: gatewayrpc.v1.ViewRequest
-	(*OpenView)(nil),                       // 27: gatewayrpc.v1.OpenView
-	(*ViewCommand)(nil),                    // 28: gatewayrpc.v1.ViewCommand
-	(*ViewEnqueueInput)(nil),               // 29: gatewayrpc.v1.ViewEnqueueInput
-	(*ViewCancelInput)(nil),                // 30: gatewayrpc.v1.ViewCancelInput
-	(*ViewResolveInteraction)(nil),         // 31: gatewayrpc.v1.ViewResolveInteraction
-	(*ViewSetPaused)(nil),                  // 32: gatewayrpc.v1.ViewSetPaused
-	(*ViewCancelExecution)(nil),            // 33: gatewayrpc.v1.ViewCancelExecution
-	(*ViewResponse)(nil),                   // 34: gatewayrpc.v1.ViewResponse
-	(*ViewReady)(nil),                      // 35: gatewayrpc.v1.ViewReady
-	(*ViewEvent)(nil),                      // 36: gatewayrpc.v1.ViewEvent
-	(*ViewResult)(nil),                     // 37: gatewayrpc.v1.ViewResult
-	(*ViewFailure)(nil),                    // 38: gatewayrpc.v1.ViewFailure
+	(*UpdateTrajectoryRequest)(nil),        // 5: gatewayrpc.v1.UpdateTrajectoryRequest
+	(*ListTrajectoriesRequest)(nil),        // 6: gatewayrpc.v1.ListTrajectoriesRequest
+	(*LoadTrajectoryRequest)(nil),          // 7: gatewayrpc.v1.LoadTrajectoryRequest
+	(*ListConversationRequest)(nil),        // 8: gatewayrpc.v1.ListConversationRequest
+	(*ListTrajectoryEntriesRequest)(nil),   // 9: gatewayrpc.v1.ListTrajectoryEntriesRequest
+	(*RollbackTrajectoryRequest)(nil),      // 10: gatewayrpc.v1.RollbackTrajectoryRequest
+	(*AttachPluginRequest)(nil),            // 11: gatewayrpc.v1.AttachPluginRequest
+	(*DetachPluginRequest)(nil),            // 12: gatewayrpc.v1.DetachPluginRequest
+	(*SubmitMessageRequest)(nil),           // 13: gatewayrpc.v1.SubmitMessageRequest
+	(*EnqueueContextInjectionRequest)(nil), // 14: gatewayrpc.v1.EnqueueContextInjectionRequest
+	(*EnqueueInputRequest)(nil),            // 15: gatewayrpc.v1.EnqueueInputRequest
+	(*GetInputRequest)(nil),                // 16: gatewayrpc.v1.GetInputRequest
+	(*ListInputsRequest)(nil),              // 17: gatewayrpc.v1.ListInputsRequest
+	(*CancelInputRequest)(nil),             // 18: gatewayrpc.v1.CancelInputRequest
+	(*SetPausedRequest)(nil),               // 19: gatewayrpc.v1.SetPausedRequest
+	(*ListEventsRequest)(nil),              // 20: gatewayrpc.v1.ListEventsRequest
+	(*GetEventCursorRequest)(nil),          // 21: gatewayrpc.v1.GetEventCursorRequest
+	(*GetInteractionRequest)(nil),          // 22: gatewayrpc.v1.GetInteractionRequest
+	(*ListInteractionsRequest)(nil),        // 23: gatewayrpc.v1.ListInteractionsRequest
+	(*ResolveInteractionRequest)(nil),      // 24: gatewayrpc.v1.ResolveInteractionRequest
+	(*GetExecutionRequest)(nil),            // 25: gatewayrpc.v1.GetExecutionRequest
+	(*CancelExecutionRequest)(nil),         // 26: gatewayrpc.v1.CancelExecutionRequest
+	(*ViewRequest)(nil),                    // 27: gatewayrpc.v1.ViewRequest
+	(*OpenView)(nil),                       // 28: gatewayrpc.v1.OpenView
+	(*ViewCommand)(nil),                    // 29: gatewayrpc.v1.ViewCommand
+	(*ViewEnqueueInput)(nil),               // 30: gatewayrpc.v1.ViewEnqueueInput
+	(*ViewCancelInput)(nil),                // 31: gatewayrpc.v1.ViewCancelInput
+	(*ViewResolveInteraction)(nil),         // 32: gatewayrpc.v1.ViewResolveInteraction
+	(*ViewSetPaused)(nil),                  // 33: gatewayrpc.v1.ViewSetPaused
+	(*ViewCancelExecution)(nil),            // 34: gatewayrpc.v1.ViewCancelExecution
+	(*ViewResponse)(nil),                   // 35: gatewayrpc.v1.ViewResponse
+	(*ViewReady)(nil),                      // 36: gatewayrpc.v1.ViewReady
+	(*ViewEvent)(nil),                      // 37: gatewayrpc.v1.ViewEvent
+	(*ViewResult)(nil),                     // 38: gatewayrpc.v1.ViewResult
+	(*ViewFailure)(nil),                    // 39: gatewayrpc.v1.ViewFailure
 }
 var file_gatewayrpc_v1_gateway_proto_depIdxs = []int32{
-	27, // 0: gatewayrpc.v1.ViewRequest.open:type_name -> gatewayrpc.v1.OpenView
-	28, // 1: gatewayrpc.v1.ViewRequest.command:type_name -> gatewayrpc.v1.ViewCommand
-	29, // 2: gatewayrpc.v1.ViewCommand.enqueue_input:type_name -> gatewayrpc.v1.ViewEnqueueInput
-	30, // 3: gatewayrpc.v1.ViewCommand.cancel_input:type_name -> gatewayrpc.v1.ViewCancelInput
-	31, // 4: gatewayrpc.v1.ViewCommand.resolve_interaction:type_name -> gatewayrpc.v1.ViewResolveInteraction
-	32, // 5: gatewayrpc.v1.ViewCommand.set_paused:type_name -> gatewayrpc.v1.ViewSetPaused
-	33, // 6: gatewayrpc.v1.ViewCommand.cancel_execution:type_name -> gatewayrpc.v1.ViewCancelExecution
-	35, // 7: gatewayrpc.v1.ViewResponse.ready:type_name -> gatewayrpc.v1.ViewReady
-	36, // 8: gatewayrpc.v1.ViewResponse.event:type_name -> gatewayrpc.v1.ViewEvent
-	37, // 9: gatewayrpc.v1.ViewResponse.result:type_name -> gatewayrpc.v1.ViewResult
-	38, // 10: gatewayrpc.v1.ViewResponse.failure:type_name -> gatewayrpc.v1.ViewFailure
+	28, // 0: gatewayrpc.v1.ViewRequest.open:type_name -> gatewayrpc.v1.OpenView
+	29, // 1: gatewayrpc.v1.ViewRequest.command:type_name -> gatewayrpc.v1.ViewCommand
+	30, // 2: gatewayrpc.v1.ViewCommand.enqueue_input:type_name -> gatewayrpc.v1.ViewEnqueueInput
+	31, // 3: gatewayrpc.v1.ViewCommand.cancel_input:type_name -> gatewayrpc.v1.ViewCancelInput
+	32, // 4: gatewayrpc.v1.ViewCommand.resolve_interaction:type_name -> gatewayrpc.v1.ViewResolveInteraction
+	33, // 5: gatewayrpc.v1.ViewCommand.set_paused:type_name -> gatewayrpc.v1.ViewSetPaused
+	34, // 6: gatewayrpc.v1.ViewCommand.cancel_execution:type_name -> gatewayrpc.v1.ViewCancelExecution
+	36, // 7: gatewayrpc.v1.ViewResponse.ready:type_name -> gatewayrpc.v1.ViewReady
+	37, // 8: gatewayrpc.v1.ViewResponse.event:type_name -> gatewayrpc.v1.ViewEvent
+	38, // 9: gatewayrpc.v1.ViewResponse.result:type_name -> gatewayrpc.v1.ViewResult
+	39, // 10: gatewayrpc.v1.ViewResponse.failure:type_name -> gatewayrpc.v1.ViewFailure
 	2,  // 11: gatewayrpc.v1.ViewReady.trajectory:type_name -> gatewayrpc.v1.JsonValue
 	2,  // 12: gatewayrpc.v1.ViewEvent.event:type_name -> gatewayrpc.v1.JsonValue
 	2,  // 13: gatewayrpc.v1.ViewResult.value:type_name -> gatewayrpc.v1.JsonValue
 	0,  // 14: gatewayrpc.v1.GatewayService.Health:input_type -> gatewayrpc.v1.HealthRequest
 	3,  // 15: gatewayrpc.v1.GatewayService.CreateTrajectory:input_type -> gatewayrpc.v1.CreateTrajectoryRequest
 	4,  // 16: gatewayrpc.v1.GatewayService.GetTrajectory:input_type -> gatewayrpc.v1.GetTrajectoryRequest
-	5,  // 17: gatewayrpc.v1.GatewayService.ListTrajectories:input_type -> gatewayrpc.v1.ListTrajectoriesRequest
-	6,  // 18: gatewayrpc.v1.GatewayService.LoadTrajectory:input_type -> gatewayrpc.v1.LoadTrajectoryRequest
-	7,  // 19: gatewayrpc.v1.GatewayService.ListConversation:input_type -> gatewayrpc.v1.ListConversationRequest
-	8,  // 20: gatewayrpc.v1.GatewayService.ListTrajectoryEntries:input_type -> gatewayrpc.v1.ListTrajectoryEntriesRequest
-	9,  // 21: gatewayrpc.v1.GatewayService.RollbackTrajectory:input_type -> gatewayrpc.v1.RollbackTrajectoryRequest
-	10, // 22: gatewayrpc.v1.GatewayService.AttachPlugin:input_type -> gatewayrpc.v1.AttachPluginRequest
-	11, // 23: gatewayrpc.v1.GatewayService.DetachPlugin:input_type -> gatewayrpc.v1.DetachPluginRequest
-	12, // 24: gatewayrpc.v1.GatewayService.SubmitMessage:input_type -> gatewayrpc.v1.SubmitMessageRequest
-	13, // 25: gatewayrpc.v1.GatewayService.EnqueueContextInjection:input_type -> gatewayrpc.v1.EnqueueContextInjectionRequest
-	14, // 26: gatewayrpc.v1.GatewayService.EnqueueInput:input_type -> gatewayrpc.v1.EnqueueInputRequest
-	15, // 27: gatewayrpc.v1.GatewayService.GetInput:input_type -> gatewayrpc.v1.GetInputRequest
-	16, // 28: gatewayrpc.v1.GatewayService.ListInputs:input_type -> gatewayrpc.v1.ListInputsRequest
-	17, // 29: gatewayrpc.v1.GatewayService.CancelInput:input_type -> gatewayrpc.v1.CancelInputRequest
-	18, // 30: gatewayrpc.v1.GatewayService.SetPaused:input_type -> gatewayrpc.v1.SetPausedRequest
-	19, // 31: gatewayrpc.v1.GatewayService.ListEvents:input_type -> gatewayrpc.v1.ListEventsRequest
-	20, // 32: gatewayrpc.v1.GatewayService.GetEventCursor:input_type -> gatewayrpc.v1.GetEventCursorRequest
-	21, // 33: gatewayrpc.v1.GatewayService.GetInteraction:input_type -> gatewayrpc.v1.GetInteractionRequest
-	22, // 34: gatewayrpc.v1.GatewayService.ListInteractions:input_type -> gatewayrpc.v1.ListInteractionsRequest
-	23, // 35: gatewayrpc.v1.GatewayService.ResolveInteraction:input_type -> gatewayrpc.v1.ResolveInteractionRequest
-	24, // 36: gatewayrpc.v1.GatewayService.GetExecution:input_type -> gatewayrpc.v1.GetExecutionRequest
-	25, // 37: gatewayrpc.v1.GatewayService.CancelExecution:input_type -> gatewayrpc.v1.CancelExecutionRequest
-	26, // 38: gatewayrpc.v1.GatewayService.Connect:input_type -> gatewayrpc.v1.ViewRequest
-	1,  // 39: gatewayrpc.v1.GatewayService.Health:output_type -> gatewayrpc.v1.HealthResponse
-	2,  // 40: gatewayrpc.v1.GatewayService.CreateTrajectory:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 41: gatewayrpc.v1.GatewayService.GetTrajectory:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 42: gatewayrpc.v1.GatewayService.ListTrajectories:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 43: gatewayrpc.v1.GatewayService.LoadTrajectory:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 44: gatewayrpc.v1.GatewayService.ListConversation:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 45: gatewayrpc.v1.GatewayService.ListTrajectoryEntries:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 46: gatewayrpc.v1.GatewayService.RollbackTrajectory:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 47: gatewayrpc.v1.GatewayService.AttachPlugin:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 48: gatewayrpc.v1.GatewayService.DetachPlugin:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 49: gatewayrpc.v1.GatewayService.SubmitMessage:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 50: gatewayrpc.v1.GatewayService.EnqueueContextInjection:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 51: gatewayrpc.v1.GatewayService.EnqueueInput:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 52: gatewayrpc.v1.GatewayService.GetInput:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 53: gatewayrpc.v1.GatewayService.ListInputs:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 54: gatewayrpc.v1.GatewayService.CancelInput:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 55: gatewayrpc.v1.GatewayService.SetPaused:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 56: gatewayrpc.v1.GatewayService.ListEvents:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 57: gatewayrpc.v1.GatewayService.GetEventCursor:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 58: gatewayrpc.v1.GatewayService.GetInteraction:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 59: gatewayrpc.v1.GatewayService.ListInteractions:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 60: gatewayrpc.v1.GatewayService.ResolveInteraction:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 61: gatewayrpc.v1.GatewayService.GetExecution:output_type -> gatewayrpc.v1.JsonValue
-	2,  // 62: gatewayrpc.v1.GatewayService.CancelExecution:output_type -> gatewayrpc.v1.JsonValue
-	34, // 63: gatewayrpc.v1.GatewayService.Connect:output_type -> gatewayrpc.v1.ViewResponse
-	39, // [39:64] is the sub-list for method output_type
-	14, // [14:39] is the sub-list for method input_type
+	5,  // 17: gatewayrpc.v1.GatewayService.UpdateTrajectory:input_type -> gatewayrpc.v1.UpdateTrajectoryRequest
+	6,  // 18: gatewayrpc.v1.GatewayService.ListTrajectories:input_type -> gatewayrpc.v1.ListTrajectoriesRequest
+	7,  // 19: gatewayrpc.v1.GatewayService.LoadTrajectory:input_type -> gatewayrpc.v1.LoadTrajectoryRequest
+	8,  // 20: gatewayrpc.v1.GatewayService.ListConversation:input_type -> gatewayrpc.v1.ListConversationRequest
+	9,  // 21: gatewayrpc.v1.GatewayService.ListTrajectoryEntries:input_type -> gatewayrpc.v1.ListTrajectoryEntriesRequest
+	10, // 22: gatewayrpc.v1.GatewayService.RollbackTrajectory:input_type -> gatewayrpc.v1.RollbackTrajectoryRequest
+	11, // 23: gatewayrpc.v1.GatewayService.AttachPlugin:input_type -> gatewayrpc.v1.AttachPluginRequest
+	12, // 24: gatewayrpc.v1.GatewayService.DetachPlugin:input_type -> gatewayrpc.v1.DetachPluginRequest
+	13, // 25: gatewayrpc.v1.GatewayService.SubmitMessage:input_type -> gatewayrpc.v1.SubmitMessageRequest
+	14, // 26: gatewayrpc.v1.GatewayService.EnqueueContextInjection:input_type -> gatewayrpc.v1.EnqueueContextInjectionRequest
+	15, // 27: gatewayrpc.v1.GatewayService.EnqueueInput:input_type -> gatewayrpc.v1.EnqueueInputRequest
+	16, // 28: gatewayrpc.v1.GatewayService.GetInput:input_type -> gatewayrpc.v1.GetInputRequest
+	17, // 29: gatewayrpc.v1.GatewayService.ListInputs:input_type -> gatewayrpc.v1.ListInputsRequest
+	18, // 30: gatewayrpc.v1.GatewayService.CancelInput:input_type -> gatewayrpc.v1.CancelInputRequest
+	19, // 31: gatewayrpc.v1.GatewayService.SetPaused:input_type -> gatewayrpc.v1.SetPausedRequest
+	20, // 32: gatewayrpc.v1.GatewayService.ListEvents:input_type -> gatewayrpc.v1.ListEventsRequest
+	21, // 33: gatewayrpc.v1.GatewayService.GetEventCursor:input_type -> gatewayrpc.v1.GetEventCursorRequest
+	22, // 34: gatewayrpc.v1.GatewayService.GetInteraction:input_type -> gatewayrpc.v1.GetInteractionRequest
+	23, // 35: gatewayrpc.v1.GatewayService.ListInteractions:input_type -> gatewayrpc.v1.ListInteractionsRequest
+	24, // 36: gatewayrpc.v1.GatewayService.ResolveInteraction:input_type -> gatewayrpc.v1.ResolveInteractionRequest
+	25, // 37: gatewayrpc.v1.GatewayService.GetExecution:input_type -> gatewayrpc.v1.GetExecutionRequest
+	26, // 38: gatewayrpc.v1.GatewayService.CancelExecution:input_type -> gatewayrpc.v1.CancelExecutionRequest
+	27, // 39: gatewayrpc.v1.GatewayService.Connect:input_type -> gatewayrpc.v1.ViewRequest
+	1,  // 40: gatewayrpc.v1.GatewayService.Health:output_type -> gatewayrpc.v1.HealthResponse
+	2,  // 41: gatewayrpc.v1.GatewayService.CreateTrajectory:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 42: gatewayrpc.v1.GatewayService.GetTrajectory:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 43: gatewayrpc.v1.GatewayService.UpdateTrajectory:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 44: gatewayrpc.v1.GatewayService.ListTrajectories:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 45: gatewayrpc.v1.GatewayService.LoadTrajectory:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 46: gatewayrpc.v1.GatewayService.ListConversation:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 47: gatewayrpc.v1.GatewayService.ListTrajectoryEntries:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 48: gatewayrpc.v1.GatewayService.RollbackTrajectory:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 49: gatewayrpc.v1.GatewayService.AttachPlugin:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 50: gatewayrpc.v1.GatewayService.DetachPlugin:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 51: gatewayrpc.v1.GatewayService.SubmitMessage:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 52: gatewayrpc.v1.GatewayService.EnqueueContextInjection:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 53: gatewayrpc.v1.GatewayService.EnqueueInput:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 54: gatewayrpc.v1.GatewayService.GetInput:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 55: gatewayrpc.v1.GatewayService.ListInputs:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 56: gatewayrpc.v1.GatewayService.CancelInput:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 57: gatewayrpc.v1.GatewayService.SetPaused:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 58: gatewayrpc.v1.GatewayService.ListEvents:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 59: gatewayrpc.v1.GatewayService.GetEventCursor:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 60: gatewayrpc.v1.GatewayService.GetInteraction:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 61: gatewayrpc.v1.GatewayService.ListInteractions:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 62: gatewayrpc.v1.GatewayService.ResolveInteraction:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 63: gatewayrpc.v1.GatewayService.GetExecution:output_type -> gatewayrpc.v1.JsonValue
+	2,  // 64: gatewayrpc.v1.GatewayService.CancelExecution:output_type -> gatewayrpc.v1.JsonValue
+	35, // 65: gatewayrpc.v1.GatewayService.Connect:output_type -> gatewayrpc.v1.ViewResponse
+	40, // [40:66] is the sub-list for method output_type
+	14, // [14:40] is the sub-list for method input_type
 	14, // [14:14] is the sub-list for extension type_name
 	14, // [14:14] is the sub-list for extension extendee
 	0,  // [0:14] is the sub-list for field type_name
@@ -2898,18 +2985,18 @@ func file_gatewayrpc_v1_gateway_proto_init() {
 	if File_gatewayrpc_v1_gateway_proto != nil {
 		return
 	}
-	file_gatewayrpc_v1_gateway_proto_msgTypes[26].OneofWrappers = []any{
+	file_gatewayrpc_v1_gateway_proto_msgTypes[27].OneofWrappers = []any{
 		(*ViewRequest_Open)(nil),
 		(*ViewRequest_Command)(nil),
 	}
-	file_gatewayrpc_v1_gateway_proto_msgTypes[28].OneofWrappers = []any{
+	file_gatewayrpc_v1_gateway_proto_msgTypes[29].OneofWrappers = []any{
 		(*ViewCommand_EnqueueInput)(nil),
 		(*ViewCommand_CancelInput)(nil),
 		(*ViewCommand_ResolveInteraction)(nil),
 		(*ViewCommand_SetPaused)(nil),
 		(*ViewCommand_CancelExecution)(nil),
 	}
-	file_gatewayrpc_v1_gateway_proto_msgTypes[34].OneofWrappers = []any{
+	file_gatewayrpc_v1_gateway_proto_msgTypes[35].OneofWrappers = []any{
 		(*ViewResponse_Ready)(nil),
 		(*ViewResponse_Event)(nil),
 		(*ViewResponse_Result)(nil),
@@ -2921,7 +3008,7 @@ func file_gatewayrpc_v1_gateway_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gatewayrpc_v1_gateway_proto_rawDesc), len(file_gatewayrpc_v1_gateway_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   39,
+			NumMessages:   40,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

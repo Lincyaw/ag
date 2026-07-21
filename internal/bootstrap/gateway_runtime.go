@@ -55,6 +55,15 @@ func GatewayRuntimeBuilder(
 			); err != nil {
 				return fail(err)
 			}
+			if _, err := runtime.Mount(
+				ctx,
+				sdk.Local(gateway.NewPermissionPlugin(
+					spec.Interactions,
+					spec.Permissions,
+				)),
+			); err != nil {
+				return fail(err)
+			}
 		}
 		sessionConfig, err := gatewaySessionConfig(config, spec)
 		if err != nil {
@@ -123,6 +132,12 @@ func gatewaySessionConfig(
 	}
 	if spec.WorkspaceRoot != "" {
 		config.Workspace.Root = spec.WorkspaceRoot
+	}
+	if spec.Model != "" {
+		config.ApplyModelReference(spec.Model)
+	}
+	if spec.AutoCompact != nil {
+		config.Compact.Enabled = *spec.AutoCompact
 	}
 	return config, nil
 }

@@ -93,12 +93,28 @@ func (server *Server) CreateTrajectory(
 	ctx context.Context,
 	request *gatewayv1.CreateTrajectoryRequest,
 ) (*gatewayv1.JsonValue, error) {
+	var settings gateway.SessionSettings
+	if len(request.GetSettingsJson()) > 0 {
+		decoder := json.NewDecoder(strings.NewReader(string(request.GetSettingsJson())))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&settings); err != nil {
+			return nil, rpcError(fmt.Errorf(
+				"%w: decode trajectory settings: %v",
+				gateway.ErrInvalidRequest,
+				err,
+			))
+		}
+	}
 	created, err := server.service.CreateSession(ctx, gateway.Session{
 		ID: request.GetId(), UserID: request.GetUserId(),
+		Title:    settings.Title,
 		Provider: request.GetProvider(), System: request.GetSystem(),
+		Model: settings.Model, Models: settings.Models,
 		MaxTurns:      int(request.GetMaxTurns()),
 		WorkspaceRoot: request.GetWorkspaceRoot(),
 		RuntimeConfig: request.GetRuntimeConfigJson(),
+		AutoCompact:   settings.AutoCompact, ThinkingLevel: settings.ThinkingLevel,
+		Permissions: settings.Permissions,
 	})
 	return rpcValue(created, err)
 }
@@ -109,6 +125,30 @@ func (server *Server) GetTrajectory(
 ) (*gatewayv1.JsonValue, error) {
 	value, err := server.service.GetSession(
 		ctx, request.GetUserId(), request.GetTrajectoryId(),
+	)
+	return rpcValue(value, err)
+}
+
+func (server *Server) UpdateTrajectory(
+	ctx context.Context,
+	request *gatewayv1.UpdateTrajectoryRequest,
+) (*gatewayv1.JsonValue, error) {
+	var patch gateway.SessionPatch
+	decoder := json.NewDecoder(strings.NewReader(string(request.GetPatchJson())))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&patch); err != nil {
+		return nil, rpcError(fmt.Errorf(
+			"%w: decode trajectory patch: %v",
+			gateway.ErrInvalidRequest,
+			err,
+		))
+	}
+	value, err := server.service.UpdateSession(
+		ctx,
+		request.GetUserId(),
+		request.GetTrajectoryId(),
+		request.GetExpectedRevision(),
+		patch,
 	)
 	return rpcValue(value, err)
 }

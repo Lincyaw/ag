@@ -98,6 +98,10 @@ func (application *app) runAgentView(
 		terminaltui.WithAppName("ag"),
 		terminaltui.WithVersion(application.version),
 		terminaltui.WithHideSidebar(),
+		terminaltui.WithSessionNavigator(
+			binding.SessionLister(),
+			binding.SessionAttacher(),
+		),
 	)
 	coalescer := tuiinput.NewWheelCoalescer()
 	filter := func(_ tea.Model, message tea.Msg) tea.Msg {

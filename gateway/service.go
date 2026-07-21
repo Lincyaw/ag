@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -328,6 +329,114 @@ func (service *Service) GetSession(
 	id string,
 ) (Session, error) {
 	return service.manager.ownedSession(ctx, userID, id)
+}
+
+func (service *Service) UpdateSession(
+	ctx context.Context,
+	userID string,
+	id string,
+	expectedRevision uint64,
+	patch SessionPatch,
+) (Session, error) {
+	unlock, err := service.lockSession(ctx, id)
+	if err != nil {
+		return Session{}, err
+	}
+	defer unlock()
+	session, err := service.manager.ownedSession(ctx, userID, id)
+	if err != nil {
+		return Session{}, err
+	}
+	if session.Revision != expectedRevision {
+		return Session{}, fmt.Errorf(
+			"%w: session %s has revision %d, expected %d",
+			ErrSessionConflict,
+			session.ID,
+			session.Revision,
+			expectedRevision,
+		)
+	}
+	updated, changed, err := applySessionPatch(session, patch)
+	if err != nil {
+		return Session{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
+	if !changed {
+		return session, nil
+	}
+	updated, err = service.store.Save(ctx, updated, expectedRevision)
+	if err != nil {
+		return Session{}, err
+	}
+	service.supervisor.managerEvent(
+		session.ID,
+		GatewayEventSessionUpdated,
+		updated,
+	)
+	return updated, nil
+}
+
+func applySessionPatch(session Session, patch SessionPatch) (Session, bool, error) {
+	changed := false
+	if patch.Title != nil {
+		value := strings.TrimSpace(*patch.Title)
+		if session.Title != value {
+			session.Title = value
+			changed = true
+		}
+	}
+	if patch.Model != nil {
+		value := strings.TrimSpace(*patch.Model)
+		if value == "" {
+			return Session{}, false, errors.New("gateway session model is empty")
+		}
+		if session.Model != value {
+			session.Model = value
+			changed = true
+		}
+	}
+	if patch.AutoCompact != nil &&
+		(session.AutoCompact == nil || *session.AutoCompact != *patch.AutoCompact) {
+		enabled := *patch.AutoCompact
+		session.AutoCompact = &enabled
+		changed = true
+	}
+	if patch.ThinkingLevel != nil {
+		value := strings.ToLower(strings.TrimSpace(*patch.ThinkingLevel))
+		if session.ThinkingLevel != value {
+			session.ThinkingLevel = value
+			changed = true
+		}
+	}
+	if patch.PermissionRule != nil {
+		kind := strings.ToLower(strings.TrimSpace(patch.PermissionRule.Kind))
+		pattern := strings.TrimSpace(patch.PermissionRule.Pattern)
+		if pattern == "" {
+			return Session{}, false, errors.New("gateway permission pattern is empty")
+		}
+		var target *[]string
+		switch kind {
+		case "allow":
+			target = &session.Permissions.Allow
+		case "ask":
+			target = &session.Permissions.Ask
+		case "deny":
+			target = &session.Permissions.Deny
+		default:
+			return Session{}, false, fmt.Errorf(
+				"gateway permission rule kind %q is invalid",
+				kind,
+			)
+		}
+		if !slices.Contains(*target, pattern) {
+			*target = append(*target, pattern)
+			changed = true
+		}
+	}
+	normalized, err := normalizeSession(session)
+	if err != nil {
+		return Session{}, false, err
+	}
+	return normalized, changed, nil
 }
 
 func (service *Service) ListSessions(

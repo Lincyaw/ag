@@ -185,13 +185,17 @@ func (p *provider) Complete(
 		))
 	}
 
+	params := openaisdk.ChatCompletionNewParams{
+		Model:    openaisdk.ChatModel(p.model),
+		Messages: messages,
+		Tools:    tools,
+	}
+	if request.ReasoningEffort != "" {
+		params.ReasoningEffort = shared.ReasoningEffort(request.ReasoningEffort)
+	}
 	completion, err := p.client.Chat.Completions.New(
 		ctx,
-		openaisdk.ChatCompletionNewParams{
-			Model:    openaisdk.ChatModel(p.model),
-			Messages: messages,
-			Tools:    tools,
-		},
+		params,
 	)
 	if err != nil {
 		return agentsdk.ModelResponse{}, err

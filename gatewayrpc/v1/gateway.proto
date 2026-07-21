@@ -12,6 +12,7 @@ service GatewayService {
 
   rpc CreateTrajectory(CreateTrajectoryRequest) returns (JsonValue);
   rpc GetTrajectory(GetTrajectoryRequest) returns (JsonValue);
+  rpc UpdateTrajectory(UpdateTrajectoryRequest) returns (JsonValue);
   rpc ListTrajectories(ListTrajectoriesRequest) returns (JsonValue);
   rpc LoadTrajectory(LoadTrajectoryRequest) returns (JsonValue);
   rpc ListConversation(ListConversationRequest) returns (JsonValue);
@@ -67,11 +68,19 @@ message CreateTrajectoryRequest {
   int32 max_turns = 5;
   string workspace_root = 6;
   bytes runtime_config_json = 7;
+  bytes settings_json = 8;
 }
 
 message GetTrajectoryRequest {
   string user_id = 1;
   string trajectory_id = 2;
+}
+
+message UpdateTrajectoryRequest {
+  string user_id = 1;
+  string trajectory_id = 2;
+  uint64 expected_revision = 3;
+  bytes patch_json = 4;
 }
 
 message ListTrajectoriesRequest {

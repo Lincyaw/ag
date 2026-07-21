@@ -334,11 +334,17 @@ func (m *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.forwardChat(msg)
 
 	case *runtime.ConfigUpdateEvent:
-		if msg.Key == "auto_compact" {
+		switch msg.Key {
+		case "auto_compact":
 			m.autoCompactEnabled = msg.Enabled
 			if m.localPanelOpen && m.localSettingsTab == settingsTabConfig {
 				return m, m.updateLocalSystemPanel(m.localSettingsContent())
 			}
+		case "thinking_level":
+			m.thinkingLevel = normalizeThinkingLevel(msg.Value)
+			m.thinkingModeEnabled = m.thinkingLevel != "off"
+			m.syncWelcomeModelLine()
+			m.statusBar.InvalidateCache()
 		}
 		return m, nil
 

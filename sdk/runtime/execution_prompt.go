@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/lincyaw/ag/sdk"
 	"github.com/lincyaw/ag/sdk/runtime/internal/durability"
@@ -485,8 +486,9 @@ func (execution *promptExecution) prepareProviderCall(
 		provider:   ownedProvider.value,
 		invocation: invocation,
 		request: sdk.ModelRequest{
-			Messages: requestMessages,
-			Tools:    advertisedTools,
+			Messages:        requestMessages,
+			Tools:           advertisedTools,
+			ReasoningEffort: providerReasoningEffort(session.config.ReasoningEffort),
 		},
 		tools: toolIndex,
 	}
@@ -510,6 +512,19 @@ func (execution *promptExecution) prepareProviderCall(
 		return providerCall{}, err
 	}
 	return call, nil
+}
+
+func providerReasoningEffort(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high":
+		return "high"
+	default:
+		return ""
+	}
 }
 
 func (execution *promptExecution) callProvider(

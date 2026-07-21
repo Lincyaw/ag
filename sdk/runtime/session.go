@@ -11,11 +11,12 @@ import (
 )
 
 type SessionConfig struct {
-	ID           string
-	Provider     string
-	System       string
-	MaxTurns     int
-	ResumePolicy ResumePolicy
+	ID              string
+	Provider        string
+	System          string
+	MaxTurns        int
+	ReasoningEffort string
+	ResumePolicy    ResumePolicy
 }
 
 type ResumePolicy string

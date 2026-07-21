@@ -31,6 +31,9 @@ func TestClientUsesGRPCAndMultiplexesViewCommandsWithEvents(t *testing.T) {
 	created, err := client.CreateSession(t.Context(), CreateSessionRequest{
 		ID: "trajectory-a", Provider: "openai", MaxTurns: 8,
 		WorkspaceRoot: "/workspace", RuntimeConfig: []byte(`{"tree":true}`),
+		Settings: gateway.SessionSettings{
+			Model: "model-a", Models: []string{"model-a", "model-b"},
+		},
 	})
 	if err != nil || created.ID != "trajectory-a" {
 		t.Fatalf("created = %#v, %v", created, err)
@@ -39,6 +42,18 @@ func TestClientUsesGRPCAndMultiplexesViewCommandsWithEvents(t *testing.T) {
 		remote.created.GetWorkspaceRoot() != "/workspace" ||
 		string(remote.created.GetRuntimeConfigJson()) != `{"tree":true}` {
 		t.Fatalf("create request = %#v", remote.created)
+	}
+	var settings gateway.SessionSettings
+	if err := json.Unmarshal(remote.created.GetSettingsJson(), &settings); err != nil ||
+		settings.Model != "model-a" || len(settings.Models) != 2 {
+		t.Fatalf("create settings = %#v, %v", settings, err)
+	}
+	title := "renamed"
+	updated, err := client.UpdateSession(
+		t.Context(), created.ID, 1, gateway.SessionPatch{Title: &title},
+	)
+	if err != nil || updated.Title != title || remote.updated.GetExpectedRevision() != 1 {
+		t.Fatalf("updated = %#v request=%#v error=%v", updated, remote.updated, err)
 	}
 	conversation, err := client.ListConversation(
 		t.Context(), created.ID, "head-a",
@@ -121,6 +136,7 @@ func TestClientRejectsIncompatibleGatewayProtocol(t *testing.T) {
 type fakeGatewayServer struct {
 	gatewayv1.UnimplementedGatewayServiceServer
 	created         *gatewayv1.CreateTrajectoryRequest
+	updated         *gatewayv1.UpdateTrajectoryRequest
 	conversation    *gatewayv1.ListConversationRequest
 	entries         *gatewayv1.ListTrajectoryEntriesRequest
 	getError        error
@@ -185,6 +201,25 @@ func (server *fakeGatewayServer) GetTrajectory(
 		return nil, server.getError
 	}
 	return testJSON(gateway.Session{ID: "trajectory-a", UserID: "user-a"})
+}
+
+func (server *fakeGatewayServer) UpdateTrajectory(
+	_ context.Context,
+	request *gatewayv1.UpdateTrajectoryRequest,
+) (*gatewayv1.JsonValue, error) {
+	server.updated = request
+	var patch gateway.SessionPatch
+	if err := json.Unmarshal(request.GetPatchJson(), &patch); err != nil {
+		return nil, err
+	}
+	title := ""
+	if patch.Title != nil {
+		title = *patch.Title
+	}
+	return testJSON(gateway.Session{
+		ID: request.GetTrajectoryId(), UserID: request.GetUserId(),
+		Title: title, Revision: request.GetExpectedRevision() + 1,
+	})
 }
 
 func (*fakeGatewayServer) Connect(

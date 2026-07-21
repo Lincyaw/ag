@@ -372,3 +372,15 @@
   every later attach. Process success is not the source of identity: timeout,
   cancellation, gateway restart, and compaction must still leave the loop able
   to cancel, inspect, and resume the same trajectory without orphaning work.
+- **Trajectory settings are one CAS-protected gateway control surface** (L2:
+  state ownership). Title, model selection, auto-compaction, thinking effort,
+  pause state, and tool permission rules live on the durable trajectory rather
+  than in a TUI-local shadow. The gRPC API applies generic typed patches by
+  revision, broadcasts the updated projection to every attached view, and each
+  new execution builds from the latest settings. This keeps the TUI a frontend
+  and preserves controls across detach, daemon restart, and remote attach.
+- **The gateway session catalog powers `/resume` directly** (L2: frontend
+  boundary). The copied TUI receives narrow list/attach callbacks instead of a
+  fake local SQLite session store. Attaching opens another long-lived gRPC view
+  over the same durable trajectory; `/clear` creates a new trajectory and
+  replaces only the active frontend tab.
