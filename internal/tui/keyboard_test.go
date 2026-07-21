@@ -32,3 +32,28 @@ func TestIsTranscriptPageKey(t *testing.T) {
 		})
 	}
 }
+
+func TestIsContentInteractionKey(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []string{"j", "k", "c", "e", "g", "G"} {
+		value := value
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			key := tea.KeyPressMsg{Code: []rune(value)[0], Text: value}
+			if !isContentInteractionKey(key) {
+				t.Fatalf("isContentInteractionKey(%q) = false, want true", value)
+			}
+		})
+	}
+
+	for _, key := range []tea.KeyPressMsg{
+		{Code: 'x', Text: "x"},
+		{Code: ' ', Text: " "},
+		{Code: tea.KeyEnter},
+	} {
+		if isContentInteractionKey(key) {
+			t.Fatalf("isContentInteractionKey(%q) = true, want false", key.String())
+		}
+	}
+}

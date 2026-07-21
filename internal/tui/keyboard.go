@@ -59,7 +59,6 @@ func (m *appModel) AllBindings() []key.Binding {
 	)
 
 	bindings := []key.Binding{
-		sendBinding,
 		interruptBinding,
 		shortcutsBinding,
 		commandsBinding,
@@ -67,6 +66,9 @@ func (m *appModel) AllBindings() []key.Binding {
 		agentsBinding,
 		quitBinding,
 		tabBinding,
+	}
+	if m.focusedPanel == PanelEditor {
+		bindings = append([]key.Binding{sendBinding}, bindings...)
 	}
 	bindings = append(bindings, m.tabBar.Bindings()...)
 
@@ -166,6 +168,7 @@ func (m *appModel) Bindings() []key.Binding {
 		"@":           true, // files
 		"left":        true, // agents
 		"ctrl+c":      true, // quit
+		"tab":         true, // switch composer/transcript focus
 		"ctrl+k":      true, // commands
 		"ctrl+t":      true, // contextual: new tab, tasks, or activity
 		"ctrl+o":      true, // detailed transcript
@@ -601,19 +604,14 @@ func (m *appModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab", "btab"))):
 		return m.handleCyclePermissionMode()
 
-	// Plain Tab should not steal editor focus. Claude Code keeps the composer
-	// active, while completion popups handle Tab earlier in this function.
+	// Completion popups consume Tab above. Without an active completion, Tab
+	// switches between the composer and transcript so every advertised message
+	// action is keyboard-reachable.
 	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
 		if cmd := m.editor.AcceptSuggestion(); cmd != nil {
 			return m, cmd
 		}
-		if m.focusedPanel == PanelContent {
-			m.focusedPanel = PanelEditor
-			m.statusBar.InvalidateCache()
-			m.chatPage.BlurMessages()
-			return m, m.editor.Focus()
-		}
-		return m, nil
+		return m.switchFocus()
 
 	// Esc: interrupt/cancel. Sending while the agent is busy is handled by
 	// Enter via QueueIfBusy, so Esc never silently submits editor content.
@@ -666,7 +664,7 @@ func (m *appModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case PanelEditor:
 		return m.forwardEditor(msg)
 	case PanelContent:
-		if shouldReturnToEditorForTextInput(msg) {
+		if shouldReturnToEditorForTextInput(msg) && !isContentInteractionKey(msg) {
 			m.focusedPanel = PanelEditor
 			return m, tea.Batch(m.editor.Focus(), m.updateEditorCmd(msg), m.resizeAll())
 		}
@@ -679,6 +677,15 @@ func (m *appModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func isTranscriptPageKey(msg tea.KeyPressMsg) bool {
 	switch msg.String() {
 	case "pgup", "pgdown":
+		return true
+	default:
+		return false
+	}
+}
+
+func isContentInteractionKey(msg tea.KeyPressMsg) bool {
+	switch msg.String() {
+	case "j", "k", "c", "e", "g", "G":
 		return true
 	default:
 		return false

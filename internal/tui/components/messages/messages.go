@@ -529,18 +529,27 @@ func (m *model) handleKeyPress(msg tea.KeyPressMsg) (layout.Model, tea.Cmd) {
 	case "esc":
 		m.clearSelection()
 		return m, nil
+	case "enter":
+		m.toggleSelectedMessage()
+		return m, nil
 	case "up", "k":
 		if m.focused {
-			cmd := m.selectPreviousMessage()
-			return m, cmd
+			if m.findPreviousSelectableMessage(m.selectedMessageIndex) >= 0 {
+				cmd := m.selectPreviousMessage()
+				return m, cmd
+			}
+			m.scrollUp()
 		} else {
 			m.scrollUp()
 		}
 		return m, nil
 	case "down", "j":
 		if m.focused {
-			cmd := m.selectNextMessage()
-			return m, cmd
+			if m.findNextSelectableMessage(m.selectedMessageIndex) >= 0 {
+				cmd := m.selectNextMessage()
+				return m, cmd
+			}
+			m.scrollDown()
 		} else {
 			m.scrollDown()
 		}
@@ -809,6 +818,12 @@ func (m *model) Bindings() []key.Binding {
 		key.NewBinding(key.WithKeys("down"), key.WithHelp("↓", "select next")),
 		key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy message")),
 	}
+	if _, ok := m.selectedToggleableView(); ok {
+		bindings = append(bindings, key.NewBinding(
+			key.WithKeys("enter"),
+			key.WithHelp("Enter", "expand/collapse"),
+		))
+	}
 
 	// Only show edit binding when a user message with session position is selected
 	if m.selectedMessageIndex >= 0 && m.selectedMessageIndex < len(m.messages) {
@@ -929,8 +944,9 @@ func (m *model) isSelectableMessage(index int) bool {
 	case types.MessageTypeAssistant, types.MessageTypeAssistantReasoningBlock:
 		return true
 	case types.MessageTypeUser:
-		// User messages are selectable only if they have a session position (editable)
-		return msg.SessionPosition != nil
+		// A backend may not expose an editable session position, but long user
+		// prompts still need to be selectable for keyboard expansion.
+		return true
 	default:
 		return false
 	}
@@ -943,6 +959,42 @@ func (m *model) findLastSelectableMessage() int {
 		}
 	}
 	return -1
+}
+
+func (m *model) selectedToggleableView() (toggleableView, bool) {
+	if !m.focused || m.selectedMessageIndex < 0 || m.selectedMessageIndex >= len(m.views) {
+		return nil, false
+	}
+	toggleable, ok := m.views[m.selectedMessageIndex].(toggleableView)
+	if !ok {
+		return nil, false
+	}
+	item := m.renderItem(m.selectedMessageIndex, m.views[m.selectedMessageIndex])
+	// Current toggle affordances live either in a block header or in the final
+	// three lines of a collapsed/expanded message. Avoid scanning an arbitrarily
+	// large expanded prompt just to build the footer bindings.
+	candidateStart := max(1, item.height-3)
+	if toggleable.IsToggleLine(0) {
+		return toggleable, true
+	}
+	for line := candidateStart; line < item.height; line++ {
+		if toggleable.IsToggleLine(line) {
+			return toggleable, true
+		}
+	}
+	return nil, false
+}
+
+func (m *model) toggleSelectedMessage() bool {
+	toggleable, ok := m.selectedToggleableView()
+	if !ok {
+		return false
+	}
+	toggleable.Toggle()
+	m.bottomSlack = 0
+	m.invalidateItem(m.selectedMessageIndex)
+	m.scrollToSelectedMessage()
+	return true
 }
 
 // findLastAssistantMessage finds the last assistant or reasoning block message.

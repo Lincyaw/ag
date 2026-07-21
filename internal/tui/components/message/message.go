@@ -288,20 +288,28 @@ func (mv *messageModel) render(width int) string {
 
 			totalLines := strings.Count(c, "\n") + 1
 			if totalLines > maxUserMessageLines {
+				indicatorStyle := styles.MutedStyle
+				if mv.selected {
+					indicatorStyle = styles.ActiveStyle
+				}
 				if !mv.expanded {
 					parts := strings.SplitN(c, "\n", collapsedUserMessageLines+1)
 					visibleLines := strings.Join(parts[:collapsedUserMessageLines], "\n")
 					hiddenCount := totalLines - collapsedUserMessageLines
-					indicator := "\n\n" + styles.MutedStyle.Render(fmt.Sprintf("[+] expand %d more lines", hiddenCount))
+					indicator := "\n\n" + indicatorStyle.Render(fmt.Sprintf("[+] expand %d more lines", hiddenCount))
 					return visibleLines + indicator
 				}
-				indicator := "\n\n" + styles.MutedStyle.Render("[-] collapse")
+				indicator := "\n\n" + indicatorStyle.Render("[-] collapse")
 				return c + indicator
 			}
 			return c
 		}
 
-		return formatClaudeUserTranscript(formatUserContent(msg.Content), width+4)
+		rendered := formatClaudeUserTranscript(formatUserContent(msg.Content), width+4)
+		if mv.selected {
+			rendered = strings.Replace(rendered, "❯", styles.ActiveStyle.Render("❯"), 1)
+		}
+		return rendered
 	case types.MessageTypeAssistant:
 		if msg.Content == "" {
 			return "\n" + renderClaudeWorking()
