@@ -10,6 +10,8 @@ import (
 	"github.com/lincyaw/ag/gateway"
 	gatewayclient "github.com/lincyaw/ag/gateway/client"
 	appconfig "github.com/lincyaw/ag/internal/config"
+	terminaltui "github.com/lincyaw/ag/internal/tui"
+	tuiinput "github.com/lincyaw/ag/internal/tui/input"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 )
@@ -38,20 +40,24 @@ func (application *app) runGatewayTUI(
 	if err != nil {
 		return err
 	}
+	createTemplate, err := gatewayCreateSessionRequest(config, "")
+	if err != nil {
+		return err
+	}
 	return application.runAgentView(
 		ctx,
 		client,
 		sessionID,
 		agentViewOptions{
-			InitialPrompt: initialPrompt,
-			ShowContext:   resumeID != "",
+			InitialPrompt:  initialPrompt,
+			CreateTemplate: &createTemplate,
 		},
 	)
 }
 
 type agentViewOptions struct {
-	InitialPrompt string
-	ShowContext   bool
+	InitialPrompt  string
+	CreateTemplate *gatewayclient.CreateSessionRequest
 }
 
 // runAgentView is the shared TUI route for a durable trajectory. CLI commands
@@ -63,62 +69,57 @@ func (application *app) runAgentView(
 	sessionID string,
 	options agentViewOptions,
 ) error {
-	styles := newProgressStyles(
-		application.colorEnabled(application.stderr) || application.colorForced(),
-	)
-	eventSink := &interactiveEventSink{}
-	session := &gatewayInteractiveSession{
-		frontend:  gatewayRPCFrontend{client: client},
-		sessionID: sessionID,
-		observe:   eventSink.Observe,
-	}
-	model := newInteractiveModel(session, sessionID, styles)
-	if options.ShowContext {
-		details, err := client.GetSession(ctx, sessionID)
-		if err != nil {
-			return fmt.Errorf("load trajectory %s: %w", sessionID, err)
-		}
-		model.hydrateSession(details)
-	}
-	cursor, err := session.latestEventCursor(ctx)
+	trajectory, err := client.GetSession(ctx, sessionID)
 	if err != nil {
-		return fmt.Errorf("read trajectory event cursor: %w", err)
+		return fmt.Errorf("load trajectory %s: %w", sessionID, err)
 	}
-	if err := hydrateGatewayModel(ctx, client, session, &model); err != nil {
+	binding, err := newGatewayTUIBinding(
+		ctx,
+		client,
+		trajectory,
+		options.InitialPrompt,
+		options.CreateTemplate,
+	)
+	if err != nil {
 		return err
 	}
-	view, err := client.OpenView(ctx, sessionID, cursor)
-	if err != nil {
-		return fmt.Errorf("open trajectory view: %w", err)
+	defer binding.Close()
+
+	workingDir := trajectory.WorkspaceRoot
+	if strings.TrimSpace(workingDir) == "" {
+		workingDir = "."
 	}
-	session.frontend = gatewayRPCFrontend{client: client, view: view}
-	if strings.TrimSpace(options.InitialPrompt) != "" {
-		model.input.SetValue(options.InitialPrompt)
-	}
-	program := tea.NewProgram(model, tea.WithOutput(application.stderr))
-	eventSink.program = program
-	observerCtx, stopObserver := context.WithCancel(ctx)
-	defer stopObserver()
-	subscription, err := session.frontend.SubscribeEvents(
-		observerCtx,
-		sessionID,
-		cursor,
+	model := terminaltui.New(
+		ctx,
+		binding.Spawner(),
+		binding.App,
+		workingDir,
+		binding.Close,
+		terminaltui.WithAppName("ag"),
+		terminaltui.WithVersion(application.version),
+		terminaltui.WithHideSidebar(),
 	)
-	if err != nil {
-		return fmt.Errorf("subscribe to trajectory events: %w", err)
+	coalescer := tuiinput.NewWheelCoalescer()
+	filter := func(_ tea.Model, message tea.Msg) tea.Msg {
+		if wheel, ok := message.(tea.MouseWheelMsg); ok && coalescer.Handle(wheel) {
+			return nil
+		}
+		return message
 	}
-	go session.observeEvents(observerCtx, subscription)
-	finalModel, err := program.Run()
+	program := tea.NewProgram(
+		model,
+		tea.WithContext(ctx),
+		tea.WithOutput(application.stderr),
+		tea.WithFilter(filter),
+	)
+	coalescer.SetSender(program.Send)
+	if settable, ok := model.(interface{ SetProgram(*tea.Program) }); ok {
+		settable.SetProgram(program)
+	}
+	binding.Start()
+	_, err = program.Run()
 	if err != nil {
 		return fmt.Errorf("trajectory TUI view: %w", err)
-	}
-	if model, ok := finalModel.(interactiveModel); ok && model.detached {
-		_, _ = fmt.Fprintf(
-			application.stderr,
-			"Trajectory %s is in the background. Reattach with: ag run %s\n",
-			sessionID,
-			sessionID,
-		)
 	}
 	return nil
 }

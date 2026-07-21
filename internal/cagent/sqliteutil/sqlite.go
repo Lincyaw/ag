@@ -9,8 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"modernc.org/sqlite"
-	sqlite3 "modernc.org/sqlite/lib"
+	sqlite "github.com/glebarez/go-sqlite"
 )
 
 // OpenDB opens a SQLite database with recommended pragmas for concurrency and foreign key support.
@@ -56,7 +55,9 @@ func OpenDB(path string) (*sql.DB, error) {
 // IsCantOpenError checks if the error is a SQLite CANTOPEN error (code 14).
 func IsCantOpenError(err error) bool {
 	if sqliteErr, ok := errors.AsType[*sqlite.Error](err); ok {
-		return sqliteErr.Code() == sqlite3.SQLITE_CANTOPEN
+		// SQLite primary result code 14 is SQLITE_CANTOPEN. Mask extended
+		// result codes so both drivers report the same condition.
+		return sqliteErr.Code()&0xff == 14
 	}
 	return false
 }

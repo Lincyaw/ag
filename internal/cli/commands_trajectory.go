@@ -9,6 +9,7 @@ import (
 
 	"github.com/lincyaw/ag/gateway"
 	gatewayclient "github.com/lincyaw/ag/gateway/client"
+	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/lincyaw/ag/sdk"
 	"github.com/spf13/cobra"
 )
@@ -41,7 +42,7 @@ func (application *app) trajectoryCommand() *cobra.Command {
   ag trajectory show <trajectory-id> --head <id>  # inspect a historical branch`,
 		Args: exactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			client, _, err := application.managedGatewayClient(command)
+			client, config, err := application.managedGatewayClient(command)
 			if err != nil {
 				return err
 			}
@@ -59,11 +60,15 @@ func (application *app) trajectoryCommand() *cobra.Command {
 					isTerminal(application.stdout) &&
 					isTerminal(application.stderr),
 			) {
+				createTemplate, err := gatewayCreateSessionRequest(config, "")
+				if err != nil {
+					return err
+				}
 				return application.runAgentView(
 					command.Context(),
 					client,
 					trajectoryID,
-					agentViewOptions{ShowContext: true},
+					agentViewOptions{CreateTemplate: &createTemplate},
 				)
 			}
 			trajectory, err := loadTrajectoryInspection(
@@ -372,28 +377,28 @@ func (application *app) trajectoryWaitCommand() *cobra.Command {
 
 func (application *app) managedGatewayClient(
 	command *cobra.Command,
-) (*gatewayclient.Client, string, error) {
+) (*gatewayclient.Client, appconfig.Config, error) {
 	loaded, err := application.load(command)
 	if err != nil {
-		return nil, "", fmt.Errorf("load config: %w", err)
+		return nil, appconfig.Config{}, fmt.Errorf("load config: %w", err)
 	}
 	loaded.Config, err = normalizeAgentViewConfig(loaded.Config)
 	if err != nil {
-		return nil, "", err
+		return nil, appconfig.Config{}, err
 	}
 	target, err := application.ensureManagedGateway(
 		command.Context(), loaded.Config,
 	)
 	if err != nil {
-		return nil, "", err
+		return nil, appconfig.Config{}, err
 	}
 	client, err := gatewayclient.New(gatewayclient.Config{
 		Target: target, UserID: localGatewayUserID,
 	})
 	if err != nil {
-		return nil, "", err
+		return nil, appconfig.Config{}, err
 	}
-	return client, target, nil
+	return client, loaded.Config, nil
 }
 
 func requireTrajectoryCheckpoint(

@@ -177,20 +177,34 @@ func openGatewayTrajectory(
 	if newID == "" {
 		newID = sdk.NewID()
 	}
-	runtimeConfig, err := json.Marshal(
-		appconfig.NewTrajectoryRuntimeProfile(config),
-	)
+	request, err := gatewayCreateSessionRequest(config, newID)
 	if err != nil {
-		return "", fmt.Errorf("encode trajectory runtime profile: %w", err)
+		return "", err
 	}
-	created, err := client.CreateSession(ctx, gatewayclient.CreateSessionRequest{
-		ID: newID, Provider: config.Agent.Provider,
-		System: config.Agent.System, MaxTurns: config.Agent.MaxTurns,
-		WorkspaceRoot: config.Workspace.Root,
-		RuntimeConfig: runtimeConfig,
-	})
+	created, err := client.CreateSession(ctx, request)
 	if err != nil {
 		return "", fmt.Errorf("create trajectory %s: %w", newID, err)
 	}
 	return created.ID, nil
+}
+
+func gatewayCreateSessionRequest(
+	config appconfig.Config,
+	id string,
+) (gatewayclient.CreateSessionRequest, error) {
+	runtimeConfig, err := json.Marshal(
+		appconfig.NewTrajectoryRuntimeProfile(config),
+	)
+	if err != nil {
+		return gatewayclient.CreateSessionRequest{}, fmt.Errorf(
+			"encode trajectory runtime profile: %w",
+			err,
+		)
+	}
+	return gatewayclient.CreateSessionRequest{
+		ID: id, Provider: config.Agent.Provider,
+		System: config.Agent.System, MaxTurns: config.Agent.MaxTurns,
+		WorkspaceRoot: config.Workspace.Root,
+		RuntimeConfig: runtimeConfig,
+	}, nil
 }
