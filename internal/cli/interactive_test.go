@@ -9,6 +9,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/lincyaw/ag/gateway"
+	"github.com/lincyaw/ag/internal/tui/types"
+	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 )
 
@@ -16,38 +18,38 @@ func TestInteractiveViewportPagesThroughLongContent(t *testing.T) {
 	t.Parallel()
 	model := longInteractiveModel()
 
-	bottom := model.viewport.YOffset()
+	bottom := model.transcript.YOffset()
 	if bottom == 0 {
 		t.Fatal("test content did not overflow the viewport")
 	}
-	if !strings.Contains(model.viewport.GetContent(), "line 00") {
+	if !strings.Contains(model.transcript.Content(), "line 00") {
 		t.Fatal("viewport discarded content above the visible region")
 	}
 
 	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	model = updated.(interactiveModel)
-	if model.viewport.YOffset() >= bottom {
-		t.Fatalf("PageUp offset = %d, want less than %d", model.viewport.YOffset(), bottom)
+	if model.transcript.YOffset() >= bottom {
+		t.Fatalf("PageUp offset = %d, want less than %d", model.transcript.YOffset(), bottom)
 	}
 
 	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	model = updated.(interactiveModel)
-	if !model.viewport.AtBottom() {
-		t.Fatalf("PageDown offset = %d, want bottom", model.viewport.YOffset())
+	if !model.transcript.AtBottom() {
+		t.Fatalf("PageDown offset = %d, want bottom", model.transcript.YOffset())
 	}
 }
 
 func TestInteractiveViewportKeepsManualScrollPositionOnRefresh(t *testing.T) {
 	t.Parallel()
 	model := longInteractiveModel()
-	model.viewport.PageUp()
-	want := model.viewport.YOffset()
+	model.transcript.PageUp()
+	want := model.transcript.YOffset()
 
 	model.statusLine = "still working"
 	model.state = stateExecuting
 	model.rebuildViewport()
 
-	if got := model.viewport.YOffset(); got != want {
+	if got := model.transcript.YOffset(); got != want {
 		t.Fatalf("refresh offset = %d, want %d", got, want)
 	}
 }
@@ -55,46 +57,49 @@ func TestInteractiveViewportKeepsManualScrollPositionOnRefresh(t *testing.T) {
 func TestInteractiveViewportFollowsNewContentFromBottom(t *testing.T) {
 	t.Parallel()
 	model := longInteractiveModel()
-	if !model.viewport.AtBottom() {
+	if !model.transcript.AtBottom() {
 		t.Fatal("viewport should start at bottom")
 	}
 
-	model.chat = append(model.chat, chatMessage{role: "status", content: "new content"})
+	model.transcript.Append(types.Notice("new content"))
 	model.rebuildViewport()
 
-	if !model.viewport.AtBottom() {
-		t.Fatalf("refresh offset = %d, want bottom", model.viewport.YOffset())
+	if !model.transcript.AtBottom() {
+		t.Fatalf("refresh offset = %d, want bottom", model.transcript.YOffset())
 	}
 }
 
 func TestInteractiveSubmitReturnsViewportToBottom(t *testing.T) {
 	t.Parallel()
 	model := longInteractiveModel()
-	model.viewport.PageUp()
+	model.transcript.PageUp()
 	model.input.SetValue("next message")
 
 	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	model = updated.(interactiveModel)
 
-	if !model.viewport.AtBottom() {
-		t.Fatalf("submit offset = %d, want bottom", model.viewport.YOffset())
+	if !model.transcript.AtBottom() {
+		t.Fatalf("submit offset = %d, want bottom", model.transcript.YOffset())
 	}
 }
 
-func TestInteractiveViewEnablesMouseWheel(t *testing.T) {
+func TestInteractiveViewEnablesMouseAndKeepsTerminalHistory(t *testing.T) {
 	t.Parallel()
 	model := longInteractiveModel()
 
 	view := model.View()
-	if view.MouseMode != tea.MouseModeCellMotion {
-		t.Fatalf("mouse mode = %v, want cell motion", view.MouseMode)
+	if view.MouseMode != tea.MouseModeAllMotion {
+		t.Fatalf("mouse mode = %v, want all motion", view.MouseMode)
+	}
+	if view.AltScreen {
+		t.Fatal("agent view isolated the transcript in the alternate screen")
 	}
 
-	bottom := model.viewport.YOffset()
+	bottom := model.transcript.YOffset()
 	updated, _ := model.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	model = updated.(interactiveModel)
-	if model.viewport.YOffset() >= bottom {
-		t.Fatalf("wheel-up offset = %d, want less than %d", model.viewport.YOffset(), bottom)
+	if model.transcript.YOffset() >= bottom {
+		t.Fatalf("wheel-up offset = %d, want less than %d", model.transcript.YOffset(), bottom)
 	}
 }
 
@@ -131,6 +136,39 @@ func TestInteractiveQueuesMoreInputWhileExecutionRuns(t *testing.T) {
 	}
 	if !strings.Contains(model.statusLine, "2 input(s) pending") {
 		t.Fatalf("status line = %q", model.statusLine)
+	}
+}
+
+func TestInteractiveHydratesToolOnlyTurnsIntoHistory(t *testing.T) {
+	t.Parallel()
+	model := newInteractiveModel(
+		stubInteractiveSession{},
+		"session",
+		newProgressStyles(false),
+	)
+	model.hydrateConversation([]sdk.Message{
+		{Role: sdk.RoleUser, Content: "inspect the repository"},
+		{
+			Role:      sdk.RoleAssistant,
+			ToolCalls: []sdk.ToolCall{{ID: "call-1", Name: "read_file"}},
+		},
+		{
+			Role: sdk.RoleTool, ToolCallID: "call-1",
+			Content: "42 lines",
+		},
+		{Role: sdk.RoleAssistant, Content: "Inspection complete."},
+	})
+
+	got := model.transcript.Messages()
+	if len(got) != 3 {
+		t.Fatalf("messages = %#v", got)
+	}
+	if got[1].Type != types.MessageTypeNotice ||
+		got[1].Content != "read_file — 42 lines" {
+		t.Fatalf("tool history = %#v", got[1])
+	}
+	if !strings.Contains(model.transcript.Content(), "Inspection complete") {
+		t.Fatalf("transcript = %q", model.transcript.Content())
 	}
 }
 
@@ -256,7 +294,11 @@ func longInteractiveModel() interactiveModel {
 	for i := range lines {
 		lines[i] = fmt.Sprintf("line %02d", i)
 	}
-	model.chat = []chatMessage{{role: "assistant", content: strings.Join(lines, "\n")}}
+	model.transcript.Load([]*types.Message{types.Agent(
+		types.MessageTypeAssistant,
+		"ag",
+		strings.Join(lines, "\n"),
+	)})
 	model.rebuildViewport()
 	return model
 }

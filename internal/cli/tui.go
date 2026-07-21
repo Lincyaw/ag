@@ -237,7 +237,11 @@ func loadGatewayConversation(
 				continue
 			}
 			messages = append(messages, sdk.Message{
-				Role: item.Role, Content: item.Content,
+				Role:       item.Role,
+				Content:    item.Content,
+				ToolCalls:  sdkToolCalls(item.ToolCalls),
+				ToolCallID: item.ToolCallID,
+				IsError:    item.IsError,
 			})
 		}
 		if page.Next == 0 {
@@ -245,6 +249,17 @@ func loadGatewayConversation(
 		}
 		query.After = page.Next
 	}
+}
+
+func sdkToolCalls(calls []gateway.ConversationToolCall) []sdk.ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	result := make([]sdk.ToolCall, len(calls))
+	for index, call := range calls {
+		result[index] = sdk.ToolCall{ID: call.ID, Name: call.Name}
+	}
+	return result
 }
 
 func conversationContainsExecution(

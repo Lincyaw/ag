@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/lincyaw/ag/gateway"
@@ -17,6 +15,8 @@ import (
 	tuiPath "github.com/lincyaw/ag/internal/tui/path"
 	"github.com/lincyaw/ag/internal/tui/spinner"
 	"github.com/lincyaw/ag/internal/tui/statusbar"
+	"github.com/lincyaw/ag/internal/tui/transcript"
+	"github.com/lincyaw/ag/internal/tui/types"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 )
@@ -29,11 +29,6 @@ const (
 )
 
 var errInteractiveDetached = errors.New("agent view detached")
-
-type chatMessage struct {
-	role    string // "user", "assistant", "status", "error"
-	content string
-}
 
 type executionDoneMsg struct {
 	requestID string
@@ -70,9 +65,8 @@ type interactiveModel struct {
 	state      interactiveState
 	session    interactiveSession
 	styles     progressStyles
-	chat       []chatMessage
 	input      textarea.Model
-	viewport   viewport.Model
+	transcript *transcript.Model
 	spinner    spinner.Spinner
 	statusBar  *statusbar.StatusBar
 	statusLine string
@@ -143,9 +137,6 @@ func newInteractiveModel(
 	ta.KeyMap.InsertNewline.SetEnabled(false)
 	ta.Focus()
 
-	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
-	vp.SetContent("")
-
 	sp := spinner.New(spinner.ModeBoth, spinner.DotsStyle)
 	sb := statusbar.New(statusbar.WithTitle("ag"))
 
@@ -154,7 +145,7 @@ func newInteractiveModel(
 		session:      session,
 		styles:       styles,
 		input:        ta,
-		viewport:     vp,
+		transcript:   transcript.New(),
 		spinner:      sp,
 		statusBar:    sb,
 		sessionID:    sessionID,
@@ -165,6 +156,9 @@ func newInteractiveModel(
 
 func (m interactiveModel) Init() tea.Cmd {
 	commands := append([]tea.Cmd(nil), m.initialCmds...)
+	if command := m.transcript.Init(); command != nil {
+		commands = append(commands, command)
+	}
 	if m.state == stateExecuting {
 		commands = append(commands, m.spinner.Init())
 	}
@@ -178,10 +172,17 @@ func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
-	case tea.MouseWheelMsg:
-		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
-		return m, cmd
+	case tea.MouseWheelMsg,
+		tea.MouseClickMsg,
+		tea.MouseMotionMsg,
+		tea.MouseReleaseMsg:
+		handled, transcriptCmd := m.transcript.Update(msg)
+		if handled {
+			return m, transcriptCmd
+		}
+		var inputCmd tea.Cmd
+		m.input, inputCmd = m.input.Update(msg)
+		return m, tea.Batch(transcriptCmd, inputCmd)
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -214,21 +215,15 @@ func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = stateExecuting
 		}
 		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
-			m.chat = append(m.chat, chatMessage{
-				role:    "error",
-				content: msg.err.Error(),
-			})
+			m.transcript.Append(types.Error(msg.err.Error()))
 		} else if msg.err != nil {
-			m.chat = append(m.chat, chatMessage{
-				role:    "status",
-				content: "interrupted",
-			})
+			m.transcript.Append(types.Notice("interrupted"))
 		} else if msg.result.Output != "" {
-			rendered := renderMarkdownContent(os.Stderr, msg.result.Output)
-			m.chat = append(m.chat, chatMessage{
-				role:    "assistant",
-				content: rendered,
-			})
+			m.transcript.Append(types.Agent(
+				types.MessageTypeAssistant,
+				"ag",
+				msg.result.Output,
+			))
 		}
 		if len(m.execCancels) == 0 {
 			m.statusLine = ""
@@ -251,9 +246,7 @@ func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.interaction = &interaction
-		m.chat = append(m.chat, chatMessage{
-			role: "status", content: interactionDisplay(interaction),
-		})
+		m.transcript.Append(types.Notice(interactionDisplay(interaction)))
 		m.statusLine = "waiting for your answer"
 		m.rebuildViewport()
 		m.input.Focus()
@@ -268,13 +261,9 @@ func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case interactionResponseDoneMsg:
 		if msg.err != nil {
-			m.chat = append(m.chat, chatMessage{
-				role: "error", content: msg.err.Error(),
-			})
+			m.transcript.Append(types.Error(msg.err.Error()))
 		} else if m.interaction != nil && m.interaction.ID == msg.interactionID {
-			m.chat = append(m.chat, chatMessage{
-				role: "status", content: "answer sent",
-			})
+			m.transcript.Append(types.Notice("answer sent"))
 			m.interaction = nil
 		}
 		m.rebuildViewport()
@@ -323,14 +312,14 @@ func (m interactiveModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			interaction := *m.interaction
 			responder, ok := m.session.(interactiveInteractionResponder)
 			if !ok {
-				m.chat = append(m.chat, chatMessage{
-					role: "error", content: "this session cannot answer interactions",
-				})
+				m.transcript.Append(types.Error(
+					"this session cannot answer interactions",
+				))
 				m.rebuildViewport()
 				return m, nil
 			}
 			answer := interactionAnswer(interaction, text)
-			m.chat = append(m.chat, chatMessage{role: "user", content: text})
+			m.transcript.Append(types.User(text))
 			m.input.Reset()
 			return m, func() tea.Msg {
 				ctx, cancel := context.WithTimeout(
@@ -349,7 +338,7 @@ func (m interactiveModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		wasExecuting := m.state == stateExecuting
 		m.history = append(m.history, text)
 		m.historyIndex = len(m.history)
-		m.chat = append(m.chat, chatMessage{role: "user", content: text})
+		m.transcript.Append(types.User(text))
 		m.input.Reset()
 		m.state = stateExecuting
 		if wasExecuting {
@@ -362,7 +351,7 @@ func (m interactiveModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.spinner = m.spinner.Reset()
 		m.rebuildViewport()
-		m.viewport.GotoBottom()
+		m.transcript.GotoBottom()
 		command := m.startExecution(text)
 		if wasExecuting {
 			return m, command
@@ -370,11 +359,11 @@ func (m interactiveModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(command, m.spinner.Init())
 
 	case "pgup":
-		m.viewport.PageUp()
+		m.transcript.PageUp()
 		return m, nil
 
 	case "pgdown":
-		m.viewport.PageDown()
+		m.transcript.PageDown()
 		return m, nil
 
 	case "up":
@@ -440,7 +429,7 @@ func (m *interactiveModel) resumeExecution(
 	run func(context.Context) (agentruntime.Result, error),
 ) {
 	if showInput {
-		m.chat = append(m.chat, chatMessage{role: "user", content: input.Content})
+		m.transcript.Append(types.User(input.Content))
 		m.history = append(m.history, input.Content)
 		m.historyIndex = len(m.history)
 	}
@@ -450,24 +439,70 @@ func (m *interactiveModel) resumeExecution(
 }
 
 func (m *interactiveModel) hydrateConversation(messages []sdk.Message) {
+	transcriptMessages := make([]*types.Message, 0, len(messages))
+	pendingTools := make(map[string]string)
+	var pendingToolIDs []string
 	for _, message := range messages {
-		if strings.TrimSpace(message.Content) == "" {
-			continue
-		}
 		switch message.Role {
 		case sdk.RoleUser:
-			m.chat = append(m.chat, chatMessage{
-				role: "user", content: message.Content,
-			})
+			if strings.TrimSpace(message.Content) == "" {
+				continue
+			}
+			transcriptMessages = append(
+				transcriptMessages,
+				types.User(message.Content),
+			)
 			m.history = append(m.history, message.Content)
 		case sdk.RoleAssistant:
-			m.chat = append(m.chat, chatMessage{
-				role:    "assistant",
-				content: renderMarkdownContent(os.Stderr, message.Content),
-			})
+			if strings.TrimSpace(message.Content) != "" {
+				transcriptMessages = append(
+					transcriptMessages,
+					types.Agent(types.MessageTypeAssistant, "ag", message.Content),
+				)
+			}
+			for _, call := range message.ToolCalls {
+				if call.ID == "" {
+					continue
+				}
+				if _, exists := pendingTools[call.ID]; !exists {
+					pendingToolIDs = append(pendingToolIDs, call.ID)
+				}
+				pendingTools[call.ID] = emptyAs(call.Name, "tool")
+			}
+		case sdk.RoleTool:
+			name := emptyAs(pendingTools[message.ToolCallID], "tool")
+			content := historicalToolResult(name, message.Content, false)
+			if message.IsError {
+				transcriptMessages = append(transcriptMessages, types.Error(content))
+			} else {
+				transcriptMessages = append(transcriptMessages, types.Notice(content))
+			}
+			delete(pendingTools, message.ToolCallID)
 		}
 	}
+	for _, id := range pendingToolIDs {
+		name, exists := pendingTools[id]
+		if !exists {
+			continue
+		}
+		transcriptMessages = append(
+			transcriptMessages,
+			types.Notice(historicalToolResult(name, "", true)),
+		)
+	}
+	_ = m.transcript.Load(transcriptMessages)
 	m.historyIndex = len(m.history)
+}
+
+func historicalToolResult(name, content string, pending bool) string {
+	if pending {
+		return name + " — pending"
+	}
+	summary := summarizeText(content, 160)
+	if summary == "" {
+		summary = "completed"
+	}
+	return name + " — " + summary
 }
 
 func (m *interactiveModel) hydrateSession(session gateway.Session) {
@@ -480,9 +515,7 @@ func (m *interactiveModel) hydrateSession(session gateway.Session) {
 
 func (m *interactiveModel) resumeInteraction(interaction gateway.Interaction) {
 	m.interaction = &interaction
-	m.chat = append(m.chat, chatMessage{
-		role: "status", content: interactionDisplay(interaction),
-	})
+	m.transcript.Append(types.Notice(interactionDisplay(interaction)))
 	m.statusLine = "waiting for your answer"
 }
 
@@ -503,10 +536,7 @@ func (m *interactiveModel) applyProgressRecord(record progressRecord) {
 	}
 
 	if record.Status == progressStatusError {
-		m.chat = append(m.chat, chatMessage{
-			role:    "error",
-			content: record.display(),
-		})
+		m.transcript.Append(types.Error(record.display()))
 	}
 
 	label := record.Label
@@ -517,7 +547,6 @@ func (m *interactiveModel) applyProgressRecord(record progressRecord) {
 }
 
 func (m *interactiveModel) recalculateLayout() {
-	wasAtBottom := m.viewport.AtBottom()
 	const editorHeight = 3
 	const separatorHeight = 1
 	const bottomBorderHeight = 1
@@ -531,44 +560,17 @@ func (m *interactiveModel) recalculateLayout() {
 	if vpWidth < 20 {
 		vpWidth = 80
 	}
-	m.viewport.SetWidth(vpWidth)
-	m.viewport.SetHeight(vpHeight)
-	if wasAtBottom {
-		m.viewport.GotoBottom()
-	}
+	m.transcript.SetSize(vpWidth, vpHeight)
 	m.input.SetWidth(vpWidth - 4)
 }
 
 func (m *interactiveModel) rebuildViewport() {
-	wasAtBottom := m.viewport.AtBottom()
-	var lines []string
-	for _, msg := range m.chat {
-		switch msg.role {
-		case "user":
-			lines = append(lines, "")
-			lines = append(lines, m.styles.strong.Render("❯")+" "+msg.content)
-		case "assistant":
-			lines = append(lines, "")
-			lines = append(lines, m.styles.brand.Render("⏺")+" "+m.styles.brand.Render("ag"))
-			lines = append(lines, msg.content)
-		case "error":
-			lines = append(lines, m.styles.err.Render("  ⎿ ")+m.styles.muted.Render(msg.content))
-		case "status":
-			lines = append(lines, m.styles.muted.Render("  ⎿ "+msg.content))
-		}
-	}
-
+	tail := ""
 	if m.state == stateExecuting && m.statusLine != "" {
-		lines = append(lines, "")
 		progress := m.spinner.View() + " " + m.styles.muted.Render(m.statusLine)
-		lines = append(lines, progress)
+		tail = "\n" + progress
 	}
-
-	content := strings.Join(lines, "\n")
-	m.viewport.SetContent(content)
-	if wasAtBottom {
-		m.viewport.GotoBottom()
-	}
+	m.transcript.SetTail(tail)
 }
 
 func (m interactiveModel) View() tea.View {
@@ -579,7 +581,7 @@ func (m interactiveModel) View() tea.View {
 		return tea.NewView("Loading...")
 	}
 
-	vpView := m.viewport.View()
+	transcriptView := m.transcript.View()
 	separator := m.styles.muted.Render(strings.Repeat("─", m.width))
 	inputView := m.input.View()
 	bottomBorder := m.styles.muted.Render(strings.Repeat("─", m.width))
@@ -590,7 +592,7 @@ func (m interactiveModel) View() tea.View {
 
 	content := lipgloss.JoinVertical(
 		lipgloss.Left,
-		vpView,
+		transcriptView,
 		separator,
 		inputView,
 		bottomBorder,
@@ -598,8 +600,7 @@ func (m interactiveModel) View() tea.View {
 	)
 
 	view := tea.NewView(content)
-	view.AltScreen = true
-	view.MouseMode = tea.MouseModeCellMotion
+	view.MouseMode = tea.MouseModeAllMotion
 	return view
 }
 
@@ -616,7 +617,7 @@ func (m *interactiveModel) updateStatusBarBindings() {
 	} else {
 		bindings = append(bindings, statusbar.HelpBinding{Key: "enter", Desc: "send"})
 	}
-	if m.viewport.TotalLineCount() > m.viewport.Height() {
+	if m.transcript.LineCount() > m.transcript.Height() {
 		bindings = append(bindings, statusbar.HelpBinding{Key: "pgup/pgdn", Desc: "scroll"})
 	}
 	bindings = append(bindings, statusbar.HelpBinding{Key: "ctrl+d", Desc: "exit"})

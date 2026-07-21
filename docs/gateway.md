@@ -84,7 +84,9 @@ Recovery uses the trajectory entry index to find the newest compatible snapshot
 and then fetches only message-producing deltas. It does not materialize provider
 request payloads or obsolete checkpoints. This is the same projection used by
 conversation paging, so restart cost follows the visible branch rather than the
-total byte size of historical trajectory rows.
+total byte size of historical trajectory rows. The display projection includes
+user and assistant text plus tool-call IDs/names and bounded tool-result
+previews; raw tool arguments and full results stay in trajectory storage.
 
 If a recorded process fails its health check, the launcher first verifies that
 the ready record belongs to the requested gateway directory, asks that exact

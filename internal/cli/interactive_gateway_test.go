@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lincyaw/ag/gateway"
+	tuitypes "github.com/lincyaw/ag/internal/tui/types"
 	"github.com/lincyaw/ag/sdk"
 	agentruntime "github.com/lincyaw/ag/sdk/runtime"
 )
@@ -198,8 +199,12 @@ func TestHydrateGatewayModelReconnectsInputAndInteraction(t *testing.T) {
 		)
 	}
 	if model.interaction == nil || model.interaction.ID != "interaction-pending" ||
-		len(model.chat) != 2 {
-		t.Fatalf("interaction=%#v chat=%#v", model.interaction, model.chat)
+		model.transcript.Len() != 2 {
+		t.Fatalf(
+			"interaction=%#v transcript=%q",
+			model.interaction,
+			model.transcript.Content(),
+		)
 	}
 	for _, cancel := range model.execCancels {
 		cancel(context.Canceled)
@@ -224,25 +229,19 @@ func TestHydrateGatewayModelLoadsHistoryWithoutRepeatingPendingInput(t *testing.
 	if err := hydrateGatewayModel(t.Context(), frontend, session, &model); err != nil {
 		t.Fatal(err)
 	}
-	want := []chatMessage{
-		{role: "user", content: "earlier question"},
-		{role: "assistant", content: "earlier answer"},
-		{role: "user", content: "current question"},
+	want := []*tuitypes.Message{
+		tuitypes.User("earlier question"),
+		tuitypes.Agent(tuitypes.MessageTypeAssistant, "ag", "earlier answer"),
+		tuitypes.User("current question"),
 	}
-	if len(model.chat) != len(want) {
-		t.Fatalf("chat = %#v, want %#v", model.chat, want)
+	got := model.transcript.Messages()
+	if len(got) != len(want) {
+		t.Fatalf("messages = %#v, want %#v", got, want)
 	}
 	for index := range want {
-		if model.chat[index].role != want[index].role {
-			t.Fatalf("chat[%d] = %#v, want %#v", index, model.chat[index], want[index])
-		}
-		if index == 1 {
-			if !strings.Contains(model.chat[index].content, "earlier") ||
-				!strings.Contains(model.chat[index].content, "answer") {
-				t.Fatalf("chat[%d] = %#v", index, model.chat[index])
-			}
-		} else if model.chat[index].content != want[index].content {
-			t.Fatalf("chat[%d] = %#v, want %#v", index, model.chat[index], want[index])
+		if got[index].Type != want[index].Type ||
+			got[index].Content != want[index].Content {
+			t.Fatalf("messages[%d] = %#v, want %#v", index, got[index], want[index])
 		}
 	}
 	if len(model.history) != 2 || model.history[0] != "earlier question" ||
@@ -293,8 +292,9 @@ func TestHydrateGatewayModelDoesNotReconnectStaleTerminalInput(t *testing.T) {
 			len(model.execCancels),
 		)
 	}
-	if len(model.chat) != 3 || model.chat[2].content != "current question" {
-		t.Fatalf("chat = %#v", model.chat)
+	got := model.transcript.Messages()
+	if len(got) != 3 || got[2].Content != "current question" {
+		t.Fatalf("messages = %#v", got)
 	}
 }
 

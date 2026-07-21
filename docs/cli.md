@@ -68,8 +68,11 @@ history. Closing an active view with `ctrl+d` also detaches it.
 
 Use `ag run ID_OR_PREFIX` to reattach. The view first loads the active
 trajectory branch as a durable conversation snapshot, then consumes events
-after the snapshot cursor, so prior user and assistant messages remain visible
-across detach or manager restart. `ag trajectory list` prints every trajectory
+after the snapshot cursor, so prior user, assistant, and compact tool activity
+remain visible across detach or manager restart. The transcript uses the
+primary terminal screen and retains its own scroll model, matching the shared
+terminal-go message/view behavior instead of replacing history on refresh.
+`ag trajectory list` prints every trajectory
 with its projected `running`, `queued`, `waiting`, `paused`, or `idle` state,
 workspace, and last activity. The related `submit`, `pause`, `resume`,
 `cancel`, and `wait` commands operate on the same ID. Scripts use `ag run

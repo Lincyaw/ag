@@ -72,3 +72,57 @@ func TestConversationChunksPreserveUTF8(t *testing.T) {
 		t.Fatal("UTF-8 content was split incorrectly")
 	}
 }
+
+func TestConversationChunksRetainToolHistoryWithoutArguments(t *testing.T) {
+	t.Parallel()
+	chunks := conversationChunks([]sdk.Message{
+		{
+			Role: sdk.RoleAssistant,
+			ToolCalls: []sdk.ToolCall{{
+				ID: "call-1", Name: "read_file",
+				Arguments: json.RawMessage(`{"path":"/large/private/value"}`),
+			}},
+		},
+		{
+			Role: sdk.RoleTool, ToolCallID: "call-1",
+			Content: "file contents", IsError: true,
+		},
+	})
+	if len(chunks) != 2 {
+		t.Fatalf("chunks = %#v", chunks)
+	}
+	call := chunks[0]
+	if call.Role != sdk.RoleAssistant || len(call.ToolCalls) != 1 ||
+		call.ToolCalls[0].ID != "call-1" ||
+		call.ToolCalls[0].Name != "read_file" {
+		t.Fatalf("tool call projection = %#v", call)
+	}
+	encoded, err := json.Marshal(call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "private") {
+		t.Fatalf("tool arguments leaked into conversation projection: %s", encoded)
+	}
+	result := chunks[1]
+	if result.Role != sdk.RoleTool || result.ToolCallID != "call-1" ||
+		result.Content != "file contents" || !result.IsError {
+		t.Fatalf("tool result projection = %#v", result)
+	}
+}
+
+func TestConversationChunksBoundToolResultPreviews(t *testing.T) {
+	t.Parallel()
+	content := strings.Repeat("界", conversationToolPreviewBytes)
+	chunks := conversationChunks([]sdk.Message{{
+		Role: sdk.RoleTool, ToolCallID: "call-large", Content: content,
+	}})
+	if len(chunks) != 1 {
+		t.Fatalf("chunks = %d, want 1", len(chunks))
+	}
+	preview := chunks[0].Content
+	if !utf8.ValidString(preview) || !strings.HasSuffix(preview, "…") ||
+		len(preview) > conversationToolPreviewBytes+len("…") {
+		t.Fatalf("preview bytes=%d valid=%v suffix=%v", len(preview), utf8.ValidString(preview), strings.HasSuffix(preview, "…"))
+	}
+}

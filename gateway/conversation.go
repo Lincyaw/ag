@@ -10,16 +10,29 @@ import (
 )
 
 const (
-	defaultConversationPageSize = 100
-	maxConversationPageSize     = 1000
-	conversationChunkBytes      = 1 << 20
-	conversationPageBytes       = 4 << 20
+	defaultConversationPageSize  = 100
+	maxConversationPageSize      = 1000
+	conversationChunkBytes       = 1 << 20
+	conversationPageBytes        = 4 << 20
+	conversationToolPreviewBytes = 4 << 10
 )
 
 type ConversationMessage struct {
-	Role         sdk.Role `json:"role"`
-	Content      string   `json:"content"`
-	Continuation bool     `json:"continuation,omitempty"`
+	Role         sdk.Role               `json:"role"`
+	Content      string                 `json:"content"`
+	ToolCalls    []ConversationToolCall `json:"tool_calls,omitempty"`
+	ToolCallID   string                 `json:"tool_call_id,omitempty"`
+	IsError      bool                   `json:"is_error,omitempty"`
+	Continuation bool                   `json:"continuation,omitempty"`
+}
+
+// ConversationToolCall is the display projection of a model tool call. Raw
+// arguments stay in trajectory storage: attach views need the stable identity
+// and name, while copying potentially huge arguments into one gRPC item would
+// defeat conversation paging.
+type ConversationToolCall struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type ConversationQuery struct {
@@ -109,21 +122,62 @@ func normalizeConversationQuery(
 func conversationChunks(messages []sdk.Message) []ConversationMessage {
 	var result []ConversationMessage
 	for _, message := range messages {
-		if (message.Role != sdk.RoleUser && message.Role != sdk.RoleAssistant) ||
-			message.Content == "" {
+		if message.Role != sdk.RoleUser &&
+			message.Role != sdk.RoleAssistant &&
+			message.Role != sdk.RoleTool {
 			continue
 		}
-		content := message.Content
+		toolCalls := conversationToolCalls(message.ToolCalls)
+		content := conversationContent(message)
+		if content == "" {
+			if len(toolCalls) == 0 && message.Role != sdk.RoleTool {
+				continue
+			}
+			result = append(result, ConversationMessage{
+				Role: message.Role, ToolCalls: toolCalls,
+				ToolCallID: message.ToolCallID, IsError: message.IsError,
+			})
+			continue
+		}
 		continuation := false
 		for content != "" {
 			split := conversationChunkBoundary(content, conversationChunkBytes)
-			result = append(result, ConversationMessage{
+			item := ConversationMessage{
 				Role: message.Role, Content: content[:split],
 				Continuation: continuation,
-			})
+			}
+			if !continuation {
+				item.ToolCalls = toolCalls
+				item.ToolCallID = message.ToolCallID
+				item.IsError = message.IsError
+			}
+			result = append(result, item)
 			content = content[split:]
 			continuation = true
 		}
+	}
+	return result
+}
+
+func conversationContent(message sdk.Message) string {
+	if message.Role != sdk.RoleTool ||
+		len(message.Content) <= conversationToolPreviewBytes {
+		return message.Content
+	}
+	boundary := conversationChunkBoundary(
+		message.Content,
+		conversationToolPreviewBytes,
+	)
+	return message.Content[:boundary] + "…"
+}
+
+func conversationToolCalls(calls []sdk.ToolCall) []ConversationToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	result := make([]ConversationToolCall, len(calls))
+	for index, call := range calls {
+		result[index] = ConversationToolCall{ID: call.ID, Name: call.Name}
 	}
 	return result
 }
