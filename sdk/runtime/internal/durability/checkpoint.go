@@ -518,6 +518,17 @@ func LoadBranchMessages(
 	if head == "" {
 		return nil, nil
 	}
+	if inspector, ok := store.(sdk.TrajectoryEntryInspector); ok {
+		_, branch, err := inspector.InspectTrajectoryEntries(
+			ctx, trajectoryID, head,
+		)
+		if err != nil {
+			return nil, err
+		}
+		return LoadInspectedBranchMessages(
+			ctx, store, trajectoryID, branch,
+		)
+	}
 	branch, err := store.LoadBranch(ctx, trajectoryID, head)
 	if err != nil {
 		return nil, err

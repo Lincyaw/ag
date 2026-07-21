@@ -3,6 +3,7 @@ package durability_test
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -57,6 +58,52 @@ func TestDecodeCheckpointReturnsOwnedState(t *testing.T) {
 	}
 	if decodedAgain.Dependencies[0] != "provider-1" {
 		t.Fatal("decoded dependencies retained a caller mutation")
+	}
+}
+
+func TestLoadBranchMessagesUsesPayloadFreeInspection(t *testing.T) {
+	t.Parallel()
+	entry := func(id string, kind sdk.TrajectoryKind, payload any) sdk.TrajectoryEntry {
+		return sdk.TrajectoryEntry{
+			ID: id, TrajectoryID: "trajectory", Kind: kind,
+			Payload: mustJSON(t, payload),
+		}
+	}
+	legacy := entry("legacy", sdk.TrajectoryKindCheckpoint, durability.Checkpoint{
+		Messages: []sdk.Message{{Role: sdk.RoleUser, Content: "base"}},
+	})
+	response := entry(
+		"response",
+		sdk.TrajectoryKindProviderResponse,
+		sdk.AfterProviderPayload{Response: &sdk.ModelResponse{Content: "answer"}},
+	)
+	sparse := entry("sparse", sdk.TrajectoryKindCheckpoint, durability.Checkpoint{
+		MessageMode: durability.CheckpointMessagesBranch,
+	})
+	store := &inspectedCheckpointStore{
+		entries: map[string]sdk.TrajectoryEntry{
+			legacy.ID: legacy, response.ID: response, sparse.ID: sparse,
+		},
+		branch: []sdk.TrajectoryEntryInspection{
+			{ID: "obsolete", Kind: sdk.TrajectoryKindCheckpoint},
+			{ID: legacy.ID, Kind: legacy.Kind},
+			{ID: "large-request", Kind: sdk.TrajectoryKindProviderRequest},
+			{ID: response.ID, Kind: response.Kind},
+			{ID: sparse.ID, Kind: sparse.Kind},
+		},
+	}
+	messages, err := durability.LoadBranchMessages(
+		t.Context(), store, "trajectory", sparse.ID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || messages[0].Content != "base" ||
+		messages[1].Content != "answer" {
+		t.Fatalf("messages = %#v", messages)
+	}
+	if !slices.Equal(store.loaded, []string{"sparse", "legacy", "response"}) {
+		t.Fatalf("loaded entries = %v", store.loaded)
 	}
 }
 
@@ -515,6 +562,44 @@ type checkpointStore struct {
 	sdk.TrajectoryStore
 	entries  map[string]sdk.TrajectoryEntry
 	branches map[string][]sdk.TrajectoryEntry
+}
+
+type inspectedCheckpointStore struct {
+	sdk.TrajectoryStore
+	entries map[string]sdk.TrajectoryEntry
+	branch  []sdk.TrajectoryEntryInspection
+	loaded  []string
+}
+
+func (store *inspectedCheckpointStore) LoadEntry(
+	_ context.Context,
+	_ string,
+	entryID string,
+) (sdk.TrajectoryEntry, error) {
+	store.loaded = append(store.loaded, entryID)
+	entry, exists := store.entries[entryID]
+	if !exists {
+		return sdk.TrajectoryEntry{}, sdk.ErrTrajectoryEntryNotFound
+	}
+	return sdk.CloneTrajectoryEntry(entry), nil
+}
+
+func (store *inspectedCheckpointStore) InspectTrajectoryEntries(
+	_ context.Context,
+	trajectoryID string,
+	head string,
+) (sdk.TrajectoryMetadata, []sdk.TrajectoryEntryInspection, error) {
+	return sdk.TrajectoryMetadata{
+		ID: trajectoryID, Head: head, EntryCount: len(store.branch),
+	}, slices.Clone(store.branch), nil
+}
+
+func (*inspectedCheckpointStore) LoadBranch(
+	context.Context,
+	string,
+	string,
+) ([]sdk.TrajectoryEntry, error) {
+	panic("payload-heavy LoadBranch must not be called")
 }
 
 func (store checkpointStore) LoadEntry(
