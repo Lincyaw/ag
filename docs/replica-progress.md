@@ -89,10 +89,15 @@ worktree, but its attempt remains in the run artifacts and results TSV.
   `efde7260406ac097a6a635f415f1c817`,
   `3c6b6fe56fe8f9b16fabcdd05b412891`, and
   `c077616f25b38e13d34ca00b2529bfa1` all reached `idle` after durable cancel.
+  A bounded full-loop smoke then preallocated
+  `3ade52ba029c069c9d53a38b7d4f15c3d9df0428`; the ID matched the trajectory
+  file and `state.json`, and the forced-timeout cleanup left it `idle` with no
+  pending inputs and zero globally running trajectories.
 - Tests: helper lifecycle smoke (stable allocation plus existing/absent
   lookup); `bash -n tools/replica/loop.sh`; `git diff --check`;
-  `go test ./...`.
-- Risk: a fresh bounded loop smoke test is still needed before reinstalling the
-  autonomous launchd job.
-- Next target: add a short lifecycle smoke mode that proves one ID is reused
-  across an intentionally interrupted self-hosted invocation.
+  `go test ./...`; one full loop iteration with a forced five-second timeout.
+- Risk: the autonomous launchd job remains intentionally stopped; the smoke
+  proves cleanup and identity, not that a coding iteration completes within
+  its normal 45-minute boundary.
+- Next target: resume transcript fidelity work with a deterministic attach and
+  live-streaming interaction scenario.
