@@ -736,6 +736,11 @@ func (runtime *Runtime) executionFailureOutcome(
 	cause error,
 	headRestoresBase bool,
 ) executionFailureOutcome {
+	if runtime.gracefulExecutionDrainActive() {
+		return executionFailureOutcome{
+			state: sdk.TrajectoryExecutionPending,
+		}
+	}
 	if runtime.executionRecoveryHandoffActive() {
 		return executionFailureOutcome{
 			state:       sdk.TrajectoryExecutionPending,
@@ -763,12 +768,17 @@ func agentEndTrajectoryEntry(
 	now time.Time,
 	end sdk.AgentEndPayload,
 ) (sdk.TrajectoryEntry, error) {
+	// The branch already contains user, assistant, and tool message deltas. Keep
+	// terminal trajectory facts compact while the live AgentEnd event may still
+	// carry its full in-memory projection to observers.
+	durableEnd := end
+	durableEnd.Messages = nil
 	entry, err := newPayloadTrajectoryEntry(
 		parentID,
 		sdk.TrajectoryKindTerminal,
 		generation,
 		now,
-		end,
+		durableEnd,
 	)
 	if err != nil {
 		return sdk.TrajectoryEntry{}, err

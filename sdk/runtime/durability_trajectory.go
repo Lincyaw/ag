@@ -289,6 +289,15 @@ func (runtime *Runtime) rollbackTrajectory(
 	if err != nil {
 		return "", nil, leasedPostCommitEventBundle{}, err
 	}
+	if err := durability.HydrateCheckpointMessages(
+		ctx,
+		runtime.trajectories,
+		id,
+		target,
+		checkpoint,
+	); err != nil {
+		return "", nil, leasedPostCommitEventBundle{}, err
+	}
 	head, events, err := runtime.commitTrajectoryHeadMove(
 		ctx,
 		eventLease.snapshot,
@@ -553,6 +562,7 @@ func (runtime *Runtime) appendTrajectoryEntries(
 
 type trajectoryCheckpointCommit struct {
 	Messages          []sdk.Message
+	MessageMode       durability.CheckpointMessageMode
 	Result            Result
 	Action            sdk.Action
 	System            string
@@ -566,12 +576,17 @@ func (session *Session) checkpointTrajectory(
 	snapshot *registrySnapshot,
 	commit trajectoryCheckpointCommit,
 ) error {
+	messages := sdk.CloneMessages(commit.Messages)
+	if commit.MessageMode == durability.CheckpointMessagesBranch {
+		messages = nil
+	}
 	err := session.appendTrajectoryWithAudit(
 		ctx,
 		snapshot,
 		sdk.TrajectoryKindCheckpoint,
 		durability.Checkpoint{
-			Messages:     sdk.CloneMessages(commit.Messages),
+			Messages:     messages,
+			MessageMode:  commit.MessageMode,
 			System:       commit.System,
 			Provider:     session.config.Provider,
 			Output:       commit.Result.Output,

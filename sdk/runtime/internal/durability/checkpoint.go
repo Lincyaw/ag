@@ -13,7 +13,11 @@ import (
 
 // Checkpoint is the durable continuation state committed after an agent turn.
 type Checkpoint struct {
-	Messages                    []sdk.Message          `json:"messages"`
+	// Messages is retained for decoding legacy snapshot checkpoints. New
+	// checkpoints project their conversation from the trajectory branch instead
+	// of copying the complete message list into every turn boundary.
+	Messages                    []sdk.Message          `json:"messages,omitempty"`
+	MessageMode                 CheckpointMessageMode  `json:"message_mode,omitempty"`
 	System                      string                 `json:"system,omitempty"`
 	Provider                    string                 `json:"provider,omitempty"`
 	Output                      string                 `json:"output,omitempty"`
@@ -28,14 +32,30 @@ type Checkpoint struct {
 	Dependencies                []string               `json:"dependencies,omitempty"`
 }
 
+type CheckpointMessageMode string
+
+const (
+	// CheckpointMessagesSnapshot is the legacy representation. The empty wire
+	// value deliberately means snapshot so existing checkpoints keep decoding.
+	CheckpointMessagesSnapshot CheckpointMessageMode = ""
+	// CheckpointMessagesBranch means the message projection is the sequence of
+	// message-affecting entries reachable at this checkpoint's branch head.
+	CheckpointMessagesBranch CheckpointMessageMode = "branch"
+)
+
 // ProviderRequest is the durable projection of one model invocation request.
 type ProviderRequest struct {
-	Turn          int              `json:"turn"`
-	Provider      string           `json:"provider"`
-	Model         string           `json:"model,omitempty"`
-	OperationKey  string           `json:"operation_key"`
-	CorrelationID string           `json:"correlation_id,omitempty"`
-	Request       sdk.ModelRequest `json:"request"`
+	Turn          int    `json:"turn"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model,omitempty"`
+	OperationKey  string `json:"operation_key"`
+	CorrelationID string `json:"correlation_id,omitempty"`
+	MessageCount  int    `json:"message_count,omitempty"`
+	ToolCount     int    `json:"tool_count,omitempty"`
+	// Request is retained for decoding legacy trajectory entries. The durable
+	// operation record owns the exact request needed for in-flight recovery;
+	// new trajectory entries store only correlation and projection metadata.
+	Request *sdk.ModelRequest `json:"request,omitempty"`
 }
 
 // ProviderResponse preserves event-payload compatibility while adding durable
@@ -165,7 +185,19 @@ func LatestCheckpoint(
 		)
 	}
 	checkpoint, err := DecodeCheckpoint(metadata.ID, entry)
-	return entry, checkpoint, err
+	if err != nil {
+		return sdk.TrajectoryEntry{}, nil, err
+	}
+	if err := HydrateCheckpointMessages(
+		ctx,
+		store,
+		metadata.ID,
+		entry,
+		checkpoint,
+	); err != nil {
+		return sdk.TrajectoryEntry{}, nil, err
+	}
+	return entry, checkpoint, nil
 }
 
 // LatestExecutionCheckpoint returns the latest checkpoint on the active branch
@@ -194,6 +226,15 @@ func LatestExecutionCheckpoint(
 	if err != nil {
 		return sdk.TrajectoryEntry{}, nil, false, err
 	}
+	if err := HydrateCheckpointMessages(
+		ctx,
+		store,
+		metadata.ID,
+		entry,
+		checkpoint,
+	); err != nil {
+		return sdk.TrajectoryEntry{}, nil, false, err
+	}
 	return entry, checkpoint, true, nil
 }
 
@@ -212,6 +253,15 @@ func DecodeCheckpoint(
 			err,
 		)
 	}
+	if checkpoint.MessageMode != CheckpointMessagesSnapshot &&
+		checkpoint.MessageMode != CheckpointMessagesBranch {
+		return nil, fmt.Errorf(
+			"decode trajectory %q checkpoint %q: unknown message mode %q",
+			trajectoryID,
+			entry.ID,
+			checkpoint.MessageMode,
+		)
+	}
 	checkpoint.Messages = sdk.CloneMessages(checkpoint.Messages)
 	checkpoint.ContextInjections = sdk.CloneContextInjections(
 		checkpoint.ContextInjections,
@@ -221,6 +271,27 @@ func DecodeCheckpoint(
 	)
 	checkpoint.Dependencies = slices.Clone(checkpoint.Dependencies)
 	return &checkpoint, nil
+}
+
+// HydrateCheckpointMessages reconstructs a branch-backed checkpoint without
+// changing its durable representation. Legacy snapshot checkpoints are already
+// self-contained and remain a fast recovery anchor.
+func HydrateCheckpointMessages(
+	ctx context.Context,
+	store sdk.TrajectoryStore,
+	trajectoryID string,
+	entry sdk.TrajectoryEntry,
+	checkpoint *Checkpoint,
+) error {
+	if checkpoint == nil || checkpoint.MessageMode != CheckpointMessagesBranch {
+		return nil
+	}
+	messages, err := LoadBranchMessages(ctx, store, trajectoryID, entry.ID)
+	if err != nil {
+		return err
+	}
+	checkpoint.Messages = messages
+	return nil
 }
 
 // Messages returns an owned copy of the checkpoint conversation.
@@ -525,15 +596,18 @@ func removePendingToolCall(pending []string, id string) []string {
 }
 
 // BranchMessages projects the conversation visible at the supplied branch head.
-// It starts from the latest checkpoint on the branch and replays only trajectory
-// entries that affect the model-visible message list.
+// It starts from the latest legacy snapshot checkpoint on the branch and
+// replays only trajectory entries that affect the model-visible message list.
+// Branch-backed checkpoints are continuation markers, not replacement
+// message snapshots.
 func BranchMessages(
 	trajectoryID string,
 	branch []sdk.TrajectoryEntry,
 ) ([]sdk.Message, error) {
 	var messages []sdk.Message
 	start := 0
-	for index, entry := range branch {
+	for index := len(branch) - 1; index >= 0; index-- {
+		entry := branch[index]
 		if entry.Kind != sdk.TrajectoryKindCheckpoint {
 			continue
 		}
@@ -541,8 +615,11 @@ func BranchMessages(
 		if err != nil {
 			return nil, err
 		}
-		messages = Messages(checkpoint)
-		start = index + 1
+		if checkpoint.MessageMode == CheckpointMessagesSnapshot {
+			messages = Messages(checkpoint)
+			start = index + 1
+			break
+		}
 	}
 	for _, entry := range branch[start:] {
 		updated, err := branchMessagesAfterEntry(
@@ -602,6 +679,16 @@ func branchMessagesAfterEntry(
 		checkpoint, err := DecodeCheckpoint(trajectoryID, entry)
 		if err != nil {
 			return nil, err
+		}
+		if checkpoint.MessageMode == CheckpointMessagesBranch {
+			result := sdk.CloneMessages(messages)
+			if checkpoint.Action.Kind == sdk.ActionInject {
+				result = append(
+					result,
+					sdk.CloneMessages(checkpoint.Action.Messages)...,
+				)
+			}
+			return result, nil
 		}
 		return Messages(checkpoint), nil
 	case sdk.TrajectoryKindTerminal:

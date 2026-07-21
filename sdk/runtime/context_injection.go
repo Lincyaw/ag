@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lincyaw/ag/sdk"
+	"github.com/lincyaw/ag/sdk/runtime/internal/durability"
 )
 
 var errContextInjectionInterrupt = errors.New("interrupted by context injection")
@@ -429,6 +430,7 @@ func (execution *promptExecution) checkpointQueuedContext(
 		snapshot,
 		trajectoryCheckpointCommit{
 			Messages:          execution.messages,
+			MessageMode:       durability.CheckpointMessagesBranch,
 			Result:            execution.result,
 			Action:            action,
 			System:            execution.system,

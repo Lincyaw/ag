@@ -57,7 +57,25 @@ func LoadExecutionTerminalResult(
 	if err != nil || len(entries) == 0 {
 		return nil, err
 	}
-	return resultFromTerminal(entries[len(entries)-1])
+	entry := entries[len(entries)-1]
+	result, err := resultFromTerminal(entry)
+	if err != nil || result == nil || len(result.Messages) > 0 || entry.ParentID == "" {
+		return result, err
+	}
+	messages, err := durability.LoadBranchMessages(
+		ctx,
+		store,
+		metadata.ID,
+		entry.ParentID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	result.Messages = messages
+	if result.Output == "" {
+		result.Output = latestAssistantOutput(messages)
+	}
+	return result, nil
 }
 
 func latestAssistantOutput(messages []sdk.Message) string {

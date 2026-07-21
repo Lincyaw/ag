@@ -193,6 +193,12 @@ func (execution *promptExecution) runTurnsFrom(
 		if err != nil {
 			return result, err
 		}
+		if transition != promptTurnDone &&
+			execution.session.runtime.drainRequested() {
+			result.Messages = sdk.CloneMessages(execution.messages)
+			execution.session.applyMessageProjection(execution.messages)
+			return result, ErrRuntimeDraining
+		}
 		switch transition {
 		case promptTurnDone:
 			return result, nil
@@ -494,7 +500,8 @@ func (execution *promptExecution) prepareProviderCall(
 			Model:         ownedProvider.spec.Model,
 			OperationKey:  call.invocation.ID,
 			CorrelationID: call.invocation.ID,
-			Request:       call.request,
+			MessageCount:  len(call.request.Messages),
+			ToolCount:     len(call.request.Tools),
 		},
 		trajectoryAudits(beforeProvider.Audit),
 		sdk.EventTurnStart,
@@ -863,6 +870,7 @@ func (execution *promptExecution) applyAction(
 		snapshot,
 		trajectoryCheckpointCommit{
 			Messages:     execution.messages,
+			MessageMode:  durability.CheckpointMessagesBranch,
 			Result:       execution.result,
 			Action:       action,
 			System:       execution.system,
@@ -910,6 +918,8 @@ func (session *Session) finish(
 	result.Messages = sdk.CloneMessages(messages)
 	result.Cause = cause
 	end := agentEndPayloadFromResult(result, messages, cause)
+	durableEnd := end
+	durableEnd.Messages = nil
 	state := executionStateForCause(cause)
 	if state == sdk.TrajectoryExecutionFailed {
 		return result, errors.New(
@@ -920,7 +930,7 @@ func (session *Session) finish(
 		ctx,
 		snapshot,
 		sdk.TrajectoryKindTerminal,
-		end,
+		durableEnd,
 		state,
 		"",
 		nil,

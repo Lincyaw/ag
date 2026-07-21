@@ -3,11 +3,28 @@ package durability_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/lincyaw/ag/sdk"
 	"github.com/lincyaw/ag/sdk/runtime/internal/durability"
 )
+
+func TestProviderRequestProjectionDoesNotCopyModelRequest(t *testing.T) {
+	t.Parallel()
+
+	raw := mustJSON(t, durability.ProviderRequest{
+		Turn:         3,
+		Provider:     "openai",
+		OperationKey: "provider-operation",
+		MessageCount: 42,
+		ToolCount:    7,
+	})
+	if strings.Contains(string(raw), `"request"`) ||
+		strings.Contains(string(raw), `"messages"`) {
+		t.Fatalf("provider request copied model context: %s", raw)
+	}
+}
 
 func TestDecodeCheckpointReturnsOwnedState(t *testing.T) {
 	t.Parallel()
@@ -171,6 +188,80 @@ func TestBranchMessagesDistinguishesLegacyAndEnvelopeInputs(t *testing.T) {
 		messages[0].Content != "base" ||
 		messages[1].Content != "envelope" {
 		t.Fatalf("envelope branch messages = %#v", messages)
+	}
+}
+
+func TestBranchMessagesStartsAtLatestCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	branch := []sdk.TrajectoryEntry{
+		{
+			ID: "obsolete-checkpoint", Kind: sdk.TrajectoryKindCheckpoint,
+			Payload: json.RawMessage(`not-json`),
+		},
+		{
+			ID: "latest-checkpoint", ParentID: "obsolete-checkpoint",
+			Kind: sdk.TrajectoryKindCheckpoint,
+			Payload: mustJSON(t, durability.Checkpoint{
+				Messages: []sdk.Message{{
+					Role: sdk.RoleAssistant, Content: "latest",
+				}},
+			}),
+		},
+	}
+
+	messages, err := durability.BranchMessages("trajectory-1", branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].Content != "latest" {
+		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestBranchMessagesReplaysBranchBackedCheckpoints(t *testing.T) {
+	t.Parallel()
+
+	branch := []sdk.TrajectoryEntry{
+		{
+			ID: "legacy-snapshot", Kind: sdk.TrajectoryKindCheckpoint,
+			Payload: mustJSON(t, durability.Checkpoint{
+				Messages: []sdk.Message{{
+					Role: sdk.RoleUser, Content: "base",
+				}},
+			}),
+		},
+		{
+			ID: "assistant", ParentID: "legacy-snapshot",
+			Kind: sdk.TrajectoryKindProviderResponse,
+			Payload: mustJSON(t, sdk.AfterProviderPayload{
+				Response: &sdk.ModelResponse{Content: "answer"},
+			}),
+		},
+		{
+			ID: "branch-checkpoint", ParentID: "assistant",
+			Kind: sdk.TrajectoryKindCheckpoint,
+			Payload: mustJSON(t, durability.Checkpoint{
+				MessageMode: durability.CheckpointMessagesBranch,
+				Action: sdk.Action{
+					Kind: sdk.ActionInject,
+					Messages: []sdk.Message{{
+						Role: sdk.RoleUser, Content: "injected",
+					}},
+				},
+			}),
+		},
+	}
+
+	messages, err := durability.BranchMessages("trajectory-1", branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 3 ||
+		messages[0].Content != "base" ||
+		messages[1].Content != "answer" ||
+		messages[2].Content != "injected" {
+		t.Fatalf("messages = %#v", messages)
 	}
 }
 
