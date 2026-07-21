@@ -366,6 +366,10 @@ The gateway owns trajectory control records, plugin bindings, optimistic
 revisions, queued inputs, and asynchronous execution presentation. Its
 historical `Session` Go type is not a second public identity. It invokes the
 runtime through an execution backend and does not own the agent turn loop.
+For SQL deployments, those control records, inputs, interactions, reconnect
+events, and runtime trajectories share one configured GORM URI and namespace;
+gateway filesystem aggregates are legacy migration adapters, not a parallel
+source of truth.
 For each trajectory, gateway reserves active execution ownership before
 constructing a runtime host or accepting a prompt durably. Trajectory execution
 state remains the runtime/store contract; the gateway active slot only prevents

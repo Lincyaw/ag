@@ -57,7 +57,7 @@ func NewGORMEventStore(
 	ctx context.Context,
 	rawURI string,
 ) (EventStore, error) {
-	db, namespace, closeDB, writeMu, err := openGatewayEventDB(ctx, rawURI)
+	db, namespace, closeDB, writeMu, err := openGatewayGORMDB(ctx, rawURI)
 	if err != nil {
 		return nil, err
 	}
@@ -330,7 +330,7 @@ func agentEventFromRow(row gatewayEventRow) AgentEvent {
 	}
 }
 
-func openGatewayEventDB(
+func openGatewayGORMDB(
 	ctx context.Context,
 	rawURI string,
 ) (*gorm.DB, string, func() error, *sync.Mutex, error) {
@@ -339,7 +339,7 @@ func openGatewayEventDB(
 	}
 	parsed, err := url.Parse(strings.TrimSpace(rawURI))
 	if err != nil {
-		return nil, "", nil, nil, fmt.Errorf("parse gateway event storage URI: %w", err)
+		return nil, "", nil, nil, fmt.Errorf("parse gateway storage URI: %w", err)
 	}
 	namespace := strings.TrimSpace(parsed.Query().Get("namespace"))
 	if namespace == "" {
@@ -358,12 +358,12 @@ func openGatewayEventDB(
 			path = filepath.Join(string(filepath.Separator)+parsed.Host, parsed.Path)
 		}
 		if strings.TrimSpace(path) == "" {
-			return nil, "", nil, nil, errors.New("gateway SQLite event URI has no path")
+			return nil, "", nil, nil, errors.New("gateway SQLite URI has no path")
 		}
 		path, err = filepath.Abs(path)
 		if err != nil {
 			return nil, "", nil, nil, fmt.Errorf(
-				"resolve gateway SQLite event path: %w",
+				"resolve gateway SQLite path: %w",
 				err,
 			)
 		}
@@ -383,12 +383,12 @@ func openGatewayEventDB(
 		db, err = gorm.Open(postgres.Open(connection.String()), config)
 	default:
 		return nil, "", nil, nil, fmt.Errorf(
-			"gateway event storage requires sqlite or PostgreSQL, got %q",
+			"gateway storage requires sqlite or PostgreSQL, got %q",
 			parsed.Scheme,
 		)
 	}
 	if err != nil {
-		return nil, "", nil, nil, fmt.Errorf("open gateway event database: %w", err)
+		return nil, "", nil, nil, fmt.Errorf("open gateway database: %w", err)
 	}
 	sqlDB, err := db.DB()
 	if err != nil {

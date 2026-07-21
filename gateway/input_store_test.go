@@ -18,6 +18,15 @@ func TestInputStoreContract(t *testing.T) {
 			}
 			return store
 		},
+		"gorm-sqlite": func(t *testing.T) InputStore {
+			store, err := NewGORMInputStore(
+				t.Context(), gormEventStoreTestURI(t, "inputs"),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		},
 	}
 	for name, factory := range factories {
 		t.Run(name, func(t *testing.T) {

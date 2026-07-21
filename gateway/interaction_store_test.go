@@ -20,6 +20,15 @@ func TestInteractionStoreContract(t *testing.T) {
 			}
 			return store
 		},
+		"gorm-sqlite": func(t *testing.T) InteractionStore {
+			store, err := NewGORMInteractionStore(
+				t.Context(), gormEventStoreTestURI(t, "interactions"),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		},
 	}
 	for name, factory := range factories {
 		t.Run(name, func(t *testing.T) {
@@ -97,6 +106,15 @@ func TestInteractionStoreCancellationWakesWaiter(t *testing.T) {
 		"memory": func(*testing.T) InteractionStore { return NewMemoryInteractionStore() },
 		"file": func(t *testing.T) InteractionStore {
 			store, err := NewFileInteractionStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		},
+		"gorm-sqlite": func(t *testing.T) InteractionStore {
+			store, err := NewGORMInteractionStore(
+				t.Context(), gormEventStoreTestURI(t, "interaction-cancel"),
+			)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -353,3 +353,16 @@
   absent a URI, new local state falls back to SQLite while existing DuckDB and
   file stores remain readable for compatibility. This supersedes the earlier
   choice of DuckDB as the default for new state directories.
+- **Gateway control state shares the runtime database URI** (L2: user
+  direction). For SQLite and PostgreSQL, sessions, queued inputs, interactions,
+  reconnect events, and trajectory/runtime state use one configured URI and
+  namespace. Gateway control aggregates are normalized GORM rows with indexed
+  sequence/revision fields; file stores remain only as compatibility import
+  sources for non-SQL backends. Imports are idempotent and preserve in-flight
+  input state across the cutover.
+- **Trajectory history is indexed first and hydrated selectively** (L2:
+  performance invariant). Listing, conversation projection, checkpoint
+  hydration, and execution recovery inspect branch topology without payloads,
+  then load only the newest legacy snapshot and subsequent message-producing
+  deltas. Append-only history remains canonical without forcing every view or
+  worker restart to materialize obsolete payload blobs.

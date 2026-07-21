@@ -24,6 +24,15 @@ func TestSessionStoreContract(t *testing.T) {
 			}
 			return store
 		},
+		"gorm-sqlite": func(t *testing.T) SessionStore {
+			store, err := NewGORMSessionStore(
+				t.Context(), gormEventStoreTestURI(t, "sessions"),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		},
 	}
 	for name, factory := range factories {
 		t.Run(name, func(t *testing.T) {

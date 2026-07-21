@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -84,8 +83,8 @@ func StartGateway(
 			nil,
 		)
 	}
-	sessionStore, err := gateway.NewFileSessionStore(
-		filepath.Join(root, "control"),
+	controlStores, err := openGatewayControlStores(
+		ctx, stateResolution.URI, root,
 	)
 	if err != nil {
 		return nil, closeGatewayStartup(
@@ -101,65 +100,26 @@ func StartGateway(
 			nil,
 		)
 	}
-	eventStore, err := openGatewayEventStore(
-		ctx,
-		stateResolution.URI,
-		filepath.Join(root, "events"),
-	)
-	if err != nil {
-		return nil, closeGatewayStartup(
-			ctx,
-			err,
-			logFile,
-			observability,
-			directory,
-			sessionStore,
-			nil,
-			nil,
-			nil,
-			nil,
-		)
-	}
-	interactionStore, err := gateway.NewFileInteractionStore(
-		filepath.Join(root, "interactions"),
-	)
-	if err != nil {
-		return nil, closeGatewayStartup(
-			ctx, err, logFile, observability, directory,
-			sessionStore, eventStore, nil, nil, nil,
-		)
-	}
+	sessionStore := controlStores.sessions
+	eventStore := controlStores.events
+	inputStore := controlStores.inputs
 	interactions, err := gateway.NewInteractionManager(
-		interactionStore,
+		controlStores.interactions,
 		eventStore,
 	)
 	if err != nil {
 		return nil, closeGatewayStartup(
 			ctx,
-			errors.Join(err, interactionStore.Close(context.Background())),
+			errors.Join(
+				err,
+				controlStores.interactions.Close(context.Background()),
+			),
 			logFile,
 			observability,
 			directory,
 			sessionStore,
 			eventStore,
 			nil,
-			nil,
-			nil,
-		)
-	}
-	inputStore, err := gateway.NewFileInputStore(
-		filepath.Join(root, "inputs"),
-	)
-	if err != nil {
-		return nil, closeGatewayStartup(
-			ctx,
-			err,
-			logFile,
-			observability,
-			directory,
-			sessionStore,
-			eventStore,
-			interactions,
 			nil,
 			nil,
 		)
@@ -245,29 +205,79 @@ func StartGateway(
 	}, nil
 }
 
-// openGatewayEventStore keeps gateway events in the same SQL database and
-// deployment namespace as trajectory state. File storage remains only for
-// legacy state drivers which cannot host the GORM event tables.
-func openGatewayEventStore(
+type gatewayControlStores struct {
+	sessions     gateway.SessionStore
+	events       gateway.EventStore
+	inputs       gateway.InputStore
+	interactions gateway.InteractionStore
+}
+
+// openGatewayControlStores keeps the whole gateway control plane in the same
+// SQL URI and namespace as trajectory state. File stores are compatibility
+// adapters only for legacy non-SQL state drivers.
+func openGatewayControlStores(
 	ctx context.Context,
 	rawURI string,
-	legacyDirectory string,
-) (gateway.EventStore, error) {
-	parsed, err := url.Parse(strings.TrimSpace(rawURI))
-	if err != nil {
-		return nil, fmt.Errorf("parse gateway event backend URI: %w", err)
-	}
-	switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
+	root string,
+) (gatewayControlStores, error) {
+	scheme, _, _ := strings.Cut(strings.TrimSpace(rawURI), ":")
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
 	case "sqlite", "postgres", "postgresql":
-		return gateway.NewGORMEventStore(ctx, rawURI)
+		stores, err := gateway.NewGORMGatewayStores(
+			ctx,
+			rawURI,
+			gateway.LegacyGatewayStoreDirectories{
+				Sessions:     filepath.Join(root, "control"),
+				Inputs:       filepath.Join(root, "inputs"),
+				Interactions: filepath.Join(root, "interactions"),
+			},
+		)
+		if err != nil {
+			return gatewayControlStores{}, err
+		}
+		return gatewayControlStores{
+			sessions: stores.Sessions, events: stores.Events,
+			inputs: stores.Inputs, interactions: stores.Interactions,
+		}, nil
 	case "duckdb", "file", "memory":
-		return gateway.NewFileEventStore(legacyDirectory)
+		return openLegacyGatewayControlStores(root)
 	default:
-		return nil, fmt.Errorf(
-			"gateway event backend does not support state URI scheme %q",
-			parsed.Scheme,
+		return gatewayControlStores{}, fmt.Errorf(
+			"gateway control backend does not support state URI scheme %q",
+			scheme,
 		)
 	}
+}
+
+func openLegacyGatewayControlStores(root string) (gatewayControlStores, error) {
+	sessions, err := gateway.NewFileSessionStore(filepath.Join(root, "control"))
+	if err != nil {
+		return gatewayControlStores{}, err
+	}
+	events, err := gateway.NewFileEventStore(filepath.Join(root, "events"))
+	if err != nil {
+		_ = sessions.Close(context.Background())
+		return gatewayControlStores{}, err
+	}
+	inputs, err := gateway.NewFileInputStore(filepath.Join(root, "inputs"))
+	if err != nil {
+		_ = events.Close(context.Background())
+		_ = sessions.Close(context.Background())
+		return gatewayControlStores{}, err
+	}
+	interactions, err := gateway.NewFileInteractionStore(
+		filepath.Join(root, "interactions"),
+	)
+	if err != nil {
+		_ = inputs.Close(context.Background())
+		_ = events.Close(context.Background())
+		_ = sessions.Close(context.Background())
+		return gatewayControlStores{}, err
+	}
+	return gatewayControlStores{
+		sessions: sessions, events: events,
+		inputs: inputs, interactions: interactions,
+	}, nil
 }
 
 func (running *RunningGateway) Close(ctx context.Context) error {

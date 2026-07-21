@@ -41,10 +41,10 @@ gateway.directory/
     config.json
     ready.json
     gateway.stderr.log
-  control/
+  control/         # legacy non-SQL session migration source only
   events/          # legacy non-SQL event adapter only
-  inputs/
-  interactions/
+  inputs/          # legacy non-SQL input migration source only
+  interactions/    # legacy non-SQL interaction migration source only
 ```
 
 Runtime durability is selected once through `state.backend_uri`, outside the
@@ -54,11 +54,17 @@ remote. With no explicit URI, new local installations use one SQLite database
 under `state.directory`; existing DuckDB or legacy file state is opened only
 for compatibility.
 
+With a SQLite or PostgreSQL state URI, the complete gateway control plane uses
+the same URI, namespace, and GORM schema as runtime state. Sessions, input
+queues, interactions, and reconnect events live in normalized
+`ag_gateway_*` tables; revision and sequence transitions update one row instead
+of rewriting a file aggregate. On first SQL startup, valid legacy control,
+input, and interaction files are imported idempotently and then retained only
+as rollback evidence.
+
 The reconnect cursor log is a projection for attached views, not the agent's
-memory or the source of historical conversation. With a SQLite or PostgreSQL
-state URI it lives in the same database and deployment namespace in
-`ag_gateway_events` and `ag_gateway_event_cursors`; trajectory entries remain
-the authoritative facts. Before persistence, the gateway removes repeated
+memory or the source of historical conversation. Trajectory entries remain the
+authoritative facts. Before persistence, the gateway removes repeated
 conversation snapshots from events such as `turn_end`; reconnect pages are
 also bounded by encoded bytes rather than only by item count. The former
 `events/events.json` aggregate is read only by the legacy adapter. New legacy
@@ -73,6 +79,12 @@ executable in a new process session. Concurrent CLIs therefore converge on one
 manager. The child binds a random loopback port, reports a `grpc://` target in
 `ready.json`, recovers durable executions and queued inputs, and outlives any
 one TUI.
+
+Recovery uses the trajectory entry index to find the newest compatible snapshot
+and then fetches only message-producing deltas. It does not materialize provider
+request payloads or obsolete checkpoints. This is the same projection used by
+conversation paging, so restart cost follows the visible branch rather than the
+total byte size of historical trajectory rows.
 
 If a recorded process fails its health check, the launcher first verifies that
 the ready record belongs to the requested gateway directory, asks that exact
