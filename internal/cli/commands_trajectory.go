@@ -64,10 +64,13 @@ func (application *app) trajectoryCommand() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				if strings.TrimSpace(branchHead) != "" {
+					return application.runHistoricalAgentView(
+						command.Context(), client, trajectoryID, branchHead,
+					)
+				}
 				return application.runAgentView(
-					command.Context(),
-					client,
-					trajectoryID,
+					command.Context(), client, trajectoryID,
 					agentViewOptions{CreateTemplate: &createTemplate},
 				)
 			}
@@ -168,7 +171,8 @@ func (application *app) trajectoryCommand() *cobra.Command {
 }
 
 func trajectoryShowUsesTUI(output, branchHead string, inputTerminal bool) bool {
-	return output == outputText && strings.TrimSpace(branchHead) == "" && inputTerminal
+	_ = branchHead
+	return output == outputText && inputTerminal
 }
 
 func (application *app) trajectorySubmitCommand() *cobra.Command {

@@ -339,6 +339,8 @@ func (d *modelPickerDialog) handleSelection(mode modelPickerApplyMode) tea.Cmd {
 				TranscriptNotice:   notice,
 				WelcomeModelLine:   welcomeLine,
 				RevealFocusWarning: d.effortTouched,
+				SessionOnly:        mode == modelPickerApplySession,
+				ThinkingLevel:      d.effortLevel(),
 			}),
 		)
 	}
@@ -363,6 +365,8 @@ func (d *modelPickerDialog) handleSelection(mode modelPickerApplyMode) tea.Cmd {
 				WelcomeModelLine:   welcomeLine,
 				RevealFocusWarning: d.effortTouched,
 				ShowTranscript:     d.showTranscript,
+				SessionOnly:        mode == modelPickerApplySession,
+				ThinkingLevel:      d.effortLevel(),
 			}),
 		)
 	}
@@ -393,6 +397,17 @@ func (d *modelPickerDialog) effortNoticeLabel() string {
 		return "xHigh effort"
 	default:
 		return "high effort"
+	}
+}
+
+func (d *modelPickerDialog) effortLevel() string {
+	switch d.effortIndex {
+	case 0:
+		return "medium"
+	case 2:
+		return "xhigh"
+	default:
+		return "high"
 	}
 }
 

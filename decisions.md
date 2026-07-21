@@ -384,3 +384,18 @@
   fake local SQLite session store. Attaching opens another long-lived gRPC view
   over the same durable trajectory; `/clear` creates a new trajectory and
   replaces only the active frontend tab.
+- **Historical heads use an isolated read-only agent view** (L2: frontend
+  boundary). `trajectory show --head` hydrates the selected immutable branch
+  into the same transcript, scrolling, mouse, and expansion framework as a
+  live attach. It neither restores persisted live tabs nor exposes mutations
+  against a non-current head.
+- **Display capabilities are captured with trajectory creation** (L2: durable
+  projection). The gateway session records the configured tool-name catalog
+  needed by `/status`, permission, and tool-list UI. Runtime configuration
+  remains private; attached remote plugin manifests may add names without
+  turning the TUI into a second composition root.
+- **Managed gateway protocol versions fence strict JSON subcontracts** (L2:
+  lifecycle invariant). A field added to a `DisallowUnknownFields` JSON payload
+  is an incompatible RPC change even if the protobuf envelope is unchanged.
+  The protocol version must advance so the frontend manager replaces an older
+  healthy daemon before sending the new payload.

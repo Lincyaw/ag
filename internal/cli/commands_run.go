@@ -224,6 +224,7 @@ func gatewayCreateSessionRequest(
 		}
 	}
 	slices.Sort(models)
+	tools := gatewayConfiguredTools(config)
 	return gatewayclient.CreateSessionRequest{
 		ID: id, Provider: config.Agent.Provider,
 		System: config.Agent.System, MaxTurns: config.Agent.MaxTurns,
@@ -232,9 +233,31 @@ func gatewayCreateSessionRequest(
 		Settings: gateway.SessionSettings{
 			Model:         config.OpenAI.Model,
 			Models:        models,
+			Tools:         tools,
 			AutoCompact:   &autoCompact,
 			ThinkingLevel: "off",
 			Permissions:   permissionRules,
 		},
 	}, nil
+}
+
+func gatewayConfiguredTools(config appconfig.Config) []string {
+	tools := []string{gateway.GatewayAskUserTool}
+	if config.Workspace.Enabled {
+		tools = append(tools, "read_file", "search_files")
+		if config.Workspace.EnableWrite {
+			tools = append(tools, "write_file", "edit_file")
+		}
+		if config.Tree.Enabled {
+			tools = append(tools, "workspace_tree")
+		}
+	}
+	if config.HostFS.Enabled {
+		tools = append(tools, "hostfs_read_file", "hostfs_tree")
+	}
+	if config.Bash.Enabled {
+		tools = append(tools, "bash")
+	}
+	slices.Sort(tools)
+	return slices.Compact(tools)
 }

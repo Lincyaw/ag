@@ -3139,7 +3139,7 @@ func (m *appModel) handleEffortPickerCanceled(showTranscript bool) (tea.Model, t
 
 func normalizeThinkingLevel(level string) string {
 	switch strings.ToLower(strings.TrimSpace(level)) {
-	case "off", "low", "medium", "high":
+	case "off", "low", "medium", "high", "xhigh":
 		return strings.ToLower(strings.TrimSpace(level))
 	default:
 		return "high"
@@ -3165,8 +3165,15 @@ func (m *appModel) handleCycleThinkingLevel() (tea.Model, tea.Cmd) {
 func (m *appModel) handleChangeModel(msg messages.ChangeModelMsg) (tea.Model, tea.Cmd) {
 	m.chatPage.SetTranscriptTopContextLines(0)
 	m.chatPage.AdjustBottomSlack(-m.chatPage.TranscriptViewportHeight())
-	if err := m.application.SetCurrentAgentModel(context.Background(), msg.ModelRef); err != nil {
+	if err := m.application.SetCurrentAgentModel(
+		context.Background(), msg.ModelRef, msg.SessionOnly,
+	); err != nil {
 		return m, notification.ErrorCmd(fmt.Sprintf("Failed to change model: %v", err))
+	}
+	if msg.ThinkingLevel != "" {
+		m.thinkingLevel = normalizeThinkingLevel(msg.ThinkingLevel)
+		m.thinkingModeEnabled = m.thinkingLevel != "off"
+		m.application.SetThinkingLevel(m.thinkingLevel)
 	}
 	if msg.WelcomeModelLine != "" {
 		m.chatPage.SetWelcomeModelLine(msg.WelcomeModelLine)

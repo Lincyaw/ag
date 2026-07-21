@@ -109,7 +109,7 @@ func (server *Server) CreateTrajectory(
 		ID: request.GetId(), UserID: request.GetUserId(),
 		Title:    settings.Title,
 		Provider: request.GetProvider(), System: request.GetSystem(),
-		Model: settings.Model, Models: settings.Models,
+		Model: settings.Model, Models: settings.Models, Tools: settings.Tools,
 		MaxTurns:      int(request.GetMaxTurns()),
 		WorkspaceRoot: request.GetWorkspaceRoot(),
 		RuntimeConfig: request.GetRuntimeConfigJson(),

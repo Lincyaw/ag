@@ -522,6 +522,8 @@ func providerReasoningEffort(value string) string {
 		return "medium"
 	case "high":
 		return "high"
+	case "xhigh":
+		return "xhigh"
 	default:
 		return ""
 	}

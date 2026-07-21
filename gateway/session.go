@@ -48,6 +48,7 @@ type SessionSettings struct {
 	Title         string          `json:"title,omitempty"`
 	Model         string          `json:"model,omitempty"`
 	Models        []string        `json:"models,omitempty"`
+	Tools         []string        `json:"tools,omitempty"`
 	AutoCompact   *bool           `json:"auto_compact,omitempty"`
 	ThinkingLevel string          `json:"thinking_level,omitempty"`
 	Permissions   PermissionRules `json:"permissions,omitempty"`
@@ -76,6 +77,7 @@ type Session struct {
 	Provider      string   `json:"provider,omitempty"`
 	Model         string   `json:"model,omitempty"`
 	Models        []string `json:"models,omitempty"`
+	Tools         []string `json:"tools,omitempty"`
 	System        string   `json:"system,omitempty"`
 	MaxTurns      int      `json:"max_turns"`
 	WorkspaceRoot string   `json:"workspace_root,omitempty"`
@@ -142,12 +144,16 @@ func normalizeSession(session Session) (Session, error) {
 		return Session{}, err
 	}
 	session.Models = models
+	session.Tools, err = normalizeStringSet("gateway session tool", session.Tools, 128)
+	if err != nil {
+		return Session{}, err
+	}
 	if session.Model != "" && !slices.Contains(session.Models, session.Model) {
 		session.Models = append(session.Models, session.Model)
 		slices.Sort(session.Models)
 	}
 	switch session.ThinkingLevel {
-	case "", "off", "low", "medium", "high":
+	case "", "off", "low", "medium", "high", "xhigh":
 	default:
 		return Session{}, fmt.Errorf(
 			"gateway session thinking level %q is invalid",
@@ -291,6 +297,7 @@ func normalizeUserID(value string) (string, error) {
 func cloneSession(session Session) Session {
 	session.Plugins = clonePluginBindings(session.Plugins)
 	session.Models = slices.Clone(session.Models)
+	session.Tools = slices.Clone(session.Tools)
 	session.Permissions = clonePermissionRules(session.Permissions)
 	if session.AutoCompact != nil {
 		enabled := *session.AutoCompact

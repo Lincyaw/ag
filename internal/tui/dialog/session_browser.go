@@ -488,6 +488,9 @@ func (d *sessionBrowserDialog) sessionSizeLabel(sess session.Summary) string {
 	if sess.SizeBytes > 0 {
 		return formatSessionBrowserSize(sess.SizeBytes)
 	}
+	if sess.NumMessages < 0 {
+		return "trajectory"
+	}
 	switch sess.NumMessages {
 	case 0:
 		return "0 messages"

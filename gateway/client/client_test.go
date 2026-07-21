@@ -33,6 +33,7 @@ func TestClientUsesGRPCAndMultiplexesViewCommandsWithEvents(t *testing.T) {
 		WorkspaceRoot: "/workspace", RuntimeConfig: []byte(`{"tree":true}`),
 		Settings: gateway.SessionSettings{
 			Model: "model-a", Models: []string{"model-a", "model-b"},
+			Tools: []string{"read_file", "bash"},
 		},
 	})
 	if err != nil || created.ID != "trajectory-a" {
@@ -45,7 +46,8 @@ func TestClientUsesGRPCAndMultiplexesViewCommandsWithEvents(t *testing.T) {
 	}
 	var settings gateway.SessionSettings
 	if err := json.Unmarshal(remote.created.GetSettingsJson(), &settings); err != nil ||
-		settings.Model != "model-a" || len(settings.Models) != 2 {
+		settings.Model != "model-a" || len(settings.Models) != 2 ||
+		len(settings.Tools) != 2 {
 		t.Fatalf("create settings = %#v, %v", settings, err)
 	}
 	title := "renamed"

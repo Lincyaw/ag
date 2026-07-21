@@ -9,6 +9,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/lincyaw/ag/gateway"
 	gatewayclient "github.com/lincyaw/ag/gateway/client"
+	cagentapp "github.com/lincyaw/ag/internal/cagent/app"
+	cagentsession "github.com/lincyaw/ag/internal/cagent/session"
 	appconfig "github.com/lincyaw/ag/internal/config"
 	terminaltui "github.com/lincyaw/ag/internal/tui"
 	tuiinput "github.com/lincyaw/ag/internal/tui/input"
@@ -103,6 +105,58 @@ func (application *app) runAgentView(
 			binding.SessionAttacher(),
 		),
 	)
+	return application.runTerminalTUI(ctx, model, binding.Start)
+}
+
+func (application *app) runHistoricalAgentView(
+	ctx context.Context,
+	client *gatewayclient.Client,
+	sessionID string,
+	head string,
+) error {
+	trajectory, err := client.GetSession(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("load trajectory %s: %w", sessionID, err)
+	}
+	messages, _, err := loadGatewayConversationAtHead(
+		ctx, client, trajectory.ID, strings.TrimSpace(head),
+	)
+	if err != nil {
+		return err
+	}
+	mirror := gatewayConversationSession(trajectory, messages)
+	readonly := cagentapp.New(ctx, mirror, cagentapp.WithReadOnly())
+	readonly.SetAgentInfo(
+		gatewayTUIToolNames(trajectory), nil, trajectory.Models, trajectory.Model,
+	)
+	readonly.TrackThinkingLevel(trajectory.ThinkingLevel)
+	workingDir := trajectory.WorkspaceRoot
+	if strings.TrimSpace(workingDir) == "" {
+		workingDir = "."
+	}
+	model := terminaltui.New(
+		ctx,
+		func(context.Context, string) (
+			*cagentapp.App, *cagentsession.Session, func(), error,
+		) {
+			return nil, nil, nil, errors.New("historical branch is read-only")
+		},
+		readonly,
+		workingDir,
+		nil,
+		terminaltui.WithAppName("ag"),
+		terminaltui.WithVersion(application.version),
+		terminaltui.WithHideSidebar(),
+		terminaltui.WithIsolatedView(),
+	)
+	return application.runTerminalTUI(ctx, model, nil)
+}
+
+func (application *app) runTerminalTUI(
+	ctx context.Context,
+	model tea.Model,
+	start func(),
+) error {
 	coalescer := tuiinput.NewWheelCoalescer()
 	filter := func(_ tea.Model, message tea.Msg) tea.Msg {
 		if wheel, ok := message.(tea.MouseWheelMsg); ok && coalescer.Handle(wheel) {
@@ -120,8 +174,10 @@ func (application *app) runAgentView(
 	if settable, ok := model.(interface{ SetProgram(*tea.Program) }); ok {
 		settable.SetProgram(program)
 	}
-	binding.Start()
-	_, err = program.Run()
+	if start != nil {
+		start()
+	}
+	_, err := program.Run()
 	if err != nil {
 		return fmt.Errorf("trajectory TUI view: %w", err)
 	}
@@ -207,11 +263,20 @@ func hydrateGatewayModel(
 
 func loadGatewayConversation(
 	ctx context.Context,
-	client gatewayHydrationClient,
+	client gatewayConversationClient,
 	trajectoryID string,
 ) ([]sdk.Message, *sdk.TrajectoryExecution, error) {
+	return loadGatewayConversationAtHead(ctx, client, trajectoryID, "")
+}
+
+func loadGatewayConversationAtHead(
+	ctx context.Context,
+	client gatewayConversationClient,
+	trajectoryID string,
+	requestedHead string,
+) ([]sdk.Message, *sdk.TrajectoryExecution, error) {
 	query := gateway.ConversationQuery{Limit: gatewayEventPageSize}
-	head := ""
+	head := strings.TrimSpace(requestedHead)
 	var (
 		messages  []sdk.Message
 		execution *sdk.TrajectoryExecution
@@ -230,6 +295,8 @@ func loadGatewayConversation(
 				head,
 				page.Head,
 			)
+		} else if execution == nil {
+			execution = sdk.CloneTrajectoryExecution(page.Execution)
 		}
 		for _, item := range page.Items {
 			if item.Continuation {
@@ -283,18 +350,22 @@ func conversationExecutionFinished(
 }
 
 type gatewayHydrationClient interface {
-	ListConversation(
-		context.Context,
-		string,
-		string,
-		gateway.ConversationQuery,
-	) (gateway.ConversationPage, error)
+	gatewayConversationClient
 	ListInputs(context.Context, string, gateway.InputQuery) (gateway.InputPage, error)
 	ListInteractions(
 		context.Context,
 		string,
 		gateway.InteractionQuery,
 	) (gateway.InteractionPage, error)
+}
+
+type gatewayConversationClient interface {
+	ListConversation(
+		context.Context,
+		string,
+		string,
+		gateway.ConversationQuery,
+	) (gateway.ConversationPage, error)
 }
 
 func resolveGatewaySessionPrefix(

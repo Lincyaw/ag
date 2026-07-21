@@ -90,6 +90,7 @@ type appModel struct {
 	editor          editor.Editor
 	sessionLister   SessionLister
 	sessionAttacher SessionAttacher
+	isolatedView    bool
 
 	// history is the active tab's workspace-scoped prompt history.
 	history   *history.History
@@ -309,6 +310,14 @@ func WithSessionNavigator(lister SessionLister, attacher SessionAttacher) Option
 	}
 }
 
+// WithIsolatedView disables persisted tab restoration for a read-only deep
+// link such as a historical trajectory branch.
+func WithIsolatedView() Option {
+	return func(m *appModel) {
+		m.isolatedView = true
+	}
+}
+
 // WithHideSidebar hides the chat sidebar. The rest of the chrome (tab bar,
 // status bar, dialogs) remains visible. The user cannot bring the sidebar
 // back via the TUI.
@@ -468,6 +477,11 @@ func New(ctx context.Context, spawner SessionSpawner, initialApp *app.App, initi
 	// Apply options
 	for _, opt := range opts {
 		opt(m)
+	}
+	if m.isolatedView && ts != nil {
+		_ = ts.Close()
+		ts = nil
+		m.tuiStore = nil
 	}
 
 	// Create initial editor (after options are applied so command builder is set)

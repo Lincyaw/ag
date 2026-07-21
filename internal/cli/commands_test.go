@@ -2,11 +2,13 @@ package cli
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/lincyaw/ag/internal/bootstrap"
+	appconfig "github.com/lincyaw/ag/internal/config"
 	"github.com/lincyaw/ag/registry"
 	"github.com/lincyaw/ag/sdk"
 )
@@ -61,6 +63,22 @@ func TestSelectPluginInstanceRequiresExplicitReplica(t *testing.T) {
 	}
 }
 
+func TestGatewayConfiguredToolsMatchesRuntimeComposition(t *testing.T) {
+	got := gatewayConfiguredTools(appconfig.Config{
+		Workspace: appconfig.Workspace{Enabled: true, EnableWrite: true},
+		Tree:      appconfig.Tree{Enabled: true},
+		Bash:      appconfig.Bash{Enabled: true},
+		HostFS:    appconfig.HostFS{Enabled: true},
+	})
+	want := []string{
+		"ask_user", "bash", "edit_file", "hostfs_read_file", "hostfs_tree",
+		"read_file", "search_files", "workspace_tree", "write_file",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("gateway tools = %#v, want %#v", got, want)
+	}
+}
+
 func TestTrajectoryShowUsesTUIOnlyForInteractiveCurrentView(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -72,7 +90,7 @@ func TestTrajectoryShowUsesTUIOnlyForInteractiveCurrentView(t *testing.T) {
 	}{
 		{name: "terminal text", output: outputText, inputTerminal: true, want: true},
 		{name: "json", output: outputJSON, inputTerminal: true},
-		{name: "historical branch", output: outputText, branchHead: "checkpoint", inputTerminal: true},
+		{name: "historical branch", output: outputText, branchHead: "checkpoint", inputTerminal: true, want: true},
 		{name: "piped input", output: outputText},
 	}
 	for _, test := range tests {

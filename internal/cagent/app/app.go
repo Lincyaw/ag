@@ -1,12 +1,7 @@
 // Package app defines the controller seam the TUI drives.
 //
-// In cagent this package wires a runtime.Runtime, a session.Session and a
-// title generator into the App the TUI talks to. In the ag peer
-// the runtime is the gateway wire protocol; the real implementation of these
-// methods is supplied later by internal/adapter. This file exists so the
-// cagent-derived TUI compiles against a stable App surface: the exported
-// methods are the subset the gateway-backed TUI still needs, while the bodies
-// are stubs (zero value / not-implemented error) until the adapter takes over.
+// The migrated TUI keeps its local presentation state here while every
+// durable or executable action is delegated to the gateway-backed Controller.
 //
 // Only the symbols the TUI references are exposed:
 //
@@ -23,6 +18,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"html"
 	"os"
 	"path/filepath"
 	"slices"
@@ -31,6 +28,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/lincyaw/ag/internal/cagent/chat"
 	"github.com/lincyaw/ag/internal/cagent/config/types"
 	"github.com/lincyaw/ag/internal/cagent/runtime"
 	"github.com/lincyaw/ag/internal/cagent/session"
@@ -45,9 +43,8 @@ import (
 // gateway wire protocol, implemented by internal/adapter.
 //
 // Only the methods that actually need to reach the backend are listed here;
-// everything else on App stays a local no-op/zero stub (model switching,
-// snapshots, skills/commands enumeration — surfaces the wire protocol does not
-// expose). A nil Controller keeps App behaving as the phase-1 stub.
+// everything else on App stays local presentation state. A nil Controller is
+// used only by isolated/read-only views and unit tests.
 //
 // The Controller never sends events back directly: it pushes runtime.Event
 // values into the App via App.EmitEvent, which fans them out to every
@@ -80,7 +77,7 @@ type Controller interface {
 	// FirstMessage returns the queued first message, if any, to send on launch.
 	FirstMessage() (content string, ok bool)
 	// SwitchModel asks the backend to switch the active model profile by name.
-	SwitchModel(name string)
+	SwitchModel(name string, sessionOnly bool)
 	// SetAutoCompact toggles backend automatic context compaction for this session.
 	SetAutoCompact(enabled bool)
 	// SetPermissionRule applies a session-scoped permission rule on the backend.
@@ -493,8 +490,7 @@ func (a *App) Resume(req runtime.ResumeRequest) {
 	}
 }
 
-// TogglePause toggles the runtime pause state. Stub: reports not paused and
-// not supported until the adapter takes over.
+// TogglePause toggles the durable gateway queue pause state.
 func (a *App) TogglePause() (paused, supported bool) {
 	if a.controller == nil {
 		return false, false
@@ -515,24 +511,28 @@ func (a *App) ClearSession() {
 	}
 }
 
-// SwitchAgent switches the active agent. Stub: returns nil until the adapter
-// takes over.
+// SwitchAgent switches the active agent. The gateway currently exposes one
+// agent per trajectory, so there is no backend transition to perform.
 func (a *App) SwitchAgent(agentName string) error {
 	_ = agentName
 	return nil
 }
 
-// SetCurrentAgentModel overrides the active agent's model by forwarding a
-// "/model <name>" command to the gateway (which owns the switch_model command).
-// An empty ref (the picker's "select default" path) is ignored since the wire
-// protocol has no notion of clearing an override.
-func (a *App) SetCurrentAgentModel(ctx context.Context, modelRef string) error {
+// SetCurrentAgentModel persists the active trajectory's model. When
+// sessionOnly is false the controller also updates the creation template used
+// by new tabs in this frontend process.
+func (a *App) SetCurrentAgentModel(
+	ctx context.Context,
+	modelRef string,
+	sessionOnly ...bool,
+) error {
 	_ = ctx
 	if modelRef == "" {
 		return nil
 	}
 	if a.controller != nil {
-		a.controller.SwitchModel(modelRef)
+		only := len(sessionOnly) > 0 && sessionOnly[0]
+		a.controller.SwitchModel(modelRef, only)
 	}
 	return nil
 }
@@ -545,9 +545,8 @@ func (a *App) SupportsModelSwitching() bool {
 	return len(a.modelNames) > 0
 }
 
-// CycleAgentThinkingLevel advances the active agent's thinking-effort level.
-// The returned string is the new effort-level name (e.g. "high"); empty here.
-// Stub: returns the zero level and nil until the adapter takes over.
+// CycleAgentThinkingLevel advances and persists the active agent's reasoning
+// effort level.
 func (a *App) CycleAgentThinkingLevel(ctx context.Context) (string, error) {
 	_ = ctx
 	a.agentInfoMu.Lock()
@@ -799,28 +798,99 @@ func (a *App) TrackCurrentAgentModel(model string) {
 	a.activeModel = model
 }
 
-// PlainTextTranscript renders the session as plain text. Stub: returns the
-// empty string until the adapter takes over.
+// PlainTextTranscript renders the hydrated durable conversation locally.
 func (a *App) PlainTextTranscript() string {
-	return ""
+	if a == nil || a.session == nil {
+		return ""
+	}
+	var builder strings.Builder
+	for _, item := range a.session.GetAllMessages() {
+		if item.Implicit {
+			continue
+		}
+		label := strings.ToUpper(string(item.Message.Role))
+		if item.AgentName != "" {
+			label += " (" + item.AgentName + ")"
+		}
+		builder.WriteString(label)
+		builder.WriteString(":\n")
+		builder.WriteString(strings.TrimSpace(item.Message.Content))
+		if len(item.Message.ToolCalls) > 0 {
+			raw, _ := json.MarshalIndent(item.Message.ToolCalls, "", "  ")
+			if builder.Len() > 0 {
+				builder.WriteByte('\n')
+			}
+			builder.Write(raw)
+		}
+		builder.WriteString("\n\n")
+	}
+	result := strings.TrimSpace(builder.String())
+	if result == "" {
+		return ""
+	}
+	return result + "\n"
 }
 
-// ExportHTML writes the session transcript to an HTML file. Stub: returns an
-// empty path and nil until the adapter takes over.
+// ExportHTML writes a standalone, escaped transcript without consulting the
+// backend because the attached session is already fully hydrated.
 func (a *App) ExportHTML(ctx context.Context, filename string) (string, error) {
-	_, _ = ctx, filename
-	return "", nil
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if a == nil || a.session == nil {
+		return "", errors.New("no active session")
+	}
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		filename = "trajectory-" + a.session.ID + ".html"
+	}
+	if strings.ToLower(filepath.Ext(filename)) != ".html" {
+		filename += ".html"
+	}
+	absolute, err := filepath.Abs(filename)
+	if err != nil {
+		return "", fmt.Errorf("resolve export path: %w", err)
+	}
+	title := strings.TrimSpace(a.session.Title)
+	if title == "" {
+		title = a.session.ID
+	}
+	transcript := html.EscapeString(a.PlainTextTranscript())
+	document := "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" +
+		html.EscapeString(title) +
+		"</title><style>body{max-width:960px;margin:40px auto;padding:0 24px;background:#111;color:#eee;font:15px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><h1>" +
+		html.EscapeString(title) + "</h1><pre>" + transcript + "</pre></body></html>\n"
+	if err := os.WriteFile(absolute, []byte(document), 0o600); err != nil {
+		return "", fmt.Errorf("write session export: %w", err)
+	}
+	return absolute, nil
 }
 
-// RegenerateSessionTitle regenerates the session title. Stub: returns nil until
-// the adapter takes over.
+// RegenerateSessionTitle derives the same deterministic first-turn title used
+// during hydration and persists it through the controller.
 func (a *App) RegenerateSessionTitle(ctx context.Context) error {
-	_ = ctx
-	return nil
+	if a == nil || a.session == nil {
+		return errors.New("no active session")
+	}
+	for _, item := range a.session.GetAllMessages() {
+		if item.Message.Role != chat.MessageRoleUser || item.Implicit {
+			continue
+		}
+		line := strings.TrimSpace(strings.SplitN(item.Message.Content, "\n", 2)[0])
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		if len(runes) > 48 {
+			line = string(runes[:47]) + "…"
+		}
+		return a.UpdateSessionTitle(ctx, line)
+	}
+	return errors.New("cannot generate a title without a user message")
 }
 
-// SessionStore returns the session store. Stub: returns nil until the adapter
-// supplies a real store.
+// SessionStore returns nil because durable sessions are accessed through the
+// gateway navigator callbacks rather than the copied local store abstraction.
 func (a *App) SessionStore() session.Store {
 	return nil
 }

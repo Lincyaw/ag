@@ -75,6 +75,37 @@ worktree, but its attempt remains in the run artifacts and results TSV.
 
 ## Iterations
 
+### Manual maintenance — connect the copied TUI to durable gateway state
+
+- Observed gap: the migrated Claude-style TUI rendered the right surfaces, but
+  several controls were frontend-only; historical branches fell back to plain
+  output, new tabs did not expose their real tool catalog, and an old managed
+  gateway could reject newly added trajectory settings without being replaced.
+- Files changed: gateway session/RPC metadata, runtime reasoning projection,
+  the gateway TUI adapter, copied TUI handlers/dialogs, focused tests,
+  `decisions.md`, and this handoff.
+- State transitions: model/default selection, auto-compact, thinking effort
+  (including `xhigh`), permission rules, pause/resume, title changes, `/clear`,
+  new tabs, and `/resume` now mutate or attach durable gateway trajectories.
+  `trajectory show --head` opens the same transcript framework as an isolated
+  read-only branch view. New trajectories persist their configured tool names,
+  while plugin manifests augment that capability projection at attach time.
+- Evidence: `go test ./...`; real PTY checks of `ag run`, the active model in
+  the welcome card, `/status` reporting seven configured gateway tools,
+  `/clear` creating a second durable trajectory, and a historical
+  `trajectory show --head` view exiting through the normal two-press Ctrl-C
+  flow. The first PTY run also caught the v3 settings-schema mismatch; protocol
+  v4 then caused the managed gateway to replace itself and the same flow
+  succeeded.
+- Risk: assistant output is still delivered to the TUI at durable message
+  boundaries rather than as provider token deltas. Manual `/compact`, skills,
+  and filesystem snapshot undo also need first-class runtime/gateway contracts;
+  their copied visual surfaces are not treated as proof that those backend
+  operations exist.
+- Next target: carry provider text deltas through durable operation/plugin RPC
+  events and add a deterministic submit/stream/interrupt/reattach scenario to
+  the comparison suite.
+
 ### Manual maintenance — preallocate the self-hosted trajectory
 
 - Observed gap: three timed-out iterations left three trajectories marked

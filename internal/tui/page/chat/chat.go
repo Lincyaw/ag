@@ -603,7 +603,7 @@ func (p *chatPage) emptyWelcomeView(width int) string {
 
 func (p *chatPage) claudeWelcomeLines(cwd string, width int) []string {
 	if shouldRenderWelcomeCard(width) {
-		return claudeWelcomeCardLines(cwd, width)
+		return claudeWelcomeCardLines(cwd, p.currentWelcomeModelLine(), width)
 	}
 	return compactClaudeWelcomeLines(cwd, p.currentWelcomeModelLine())
 }
@@ -637,7 +637,7 @@ func shouldRenderWelcomeCard(width int) bool {
 	return err == nil && info.IsDir()
 }
 
-func claudeWelcomeCardLines(cwd string, width int) []string {
+func claudeWelcomeCardLines(cwd, modelLine string, width int) []string {
 	leftWidth, rightWidth := welcomeCardColumnWidths(width)
 	logo := lipgloss.NewStyle().Foreground(lipgloss.Color("174"))
 	logoFill := logo.Background(lipgloss.Color("16"))
@@ -656,7 +656,7 @@ func claudeWelcomeCardLines(cwd string, width int) []string {
 		logo.Render("▝▜") + logoFill.Render("█████") + logo.Render("▛▘"),
 		logo.Render("▘▘") + " " + logo.Render("▝▝"),
 		"",
-		muted.Render(defaultWelcomeModelLine),
+		muted.Render(modelLine),
 		" " + muted.Render(compactWelcomeCardDirectory(cwd, leftWidth-2)),
 	}
 	rightRows := []string{

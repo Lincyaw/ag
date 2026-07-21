@@ -225,7 +225,7 @@ func (m *appModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.dialogMgr.TopIsExitConfirmation() {
 			return m.forwardDialog(msg)
 		}
-		if m.agentsModeOpen && m.editor.Value() != "" {
+		if !m.application.IsReadOnly() && m.agentsModeOpen && m.editor.Value() != "" {
 			now := time.Now()
 			m.focusedPanel = PanelEditor
 			m.editor.SetValue("")
@@ -240,7 +240,7 @@ func (m *appModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				invalidateStatusBarAfter(2*time.Second),
 			)
 		}
-		if m.editor.Value() != "" {
+		if !m.application.IsReadOnly() && m.editor.Value() != "" {
 			now := time.Now()
 			m.focusedPanel = PanelEditor
 			if m.editor.ShellMode() {

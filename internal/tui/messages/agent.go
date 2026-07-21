@@ -44,5 +44,7 @@ type (
 		WelcomeModelLine   string
 		RevealFocusWarning bool
 		ShowTranscript     bool
+		SessionOnly        bool
+		ThinkingLevel      string
 	}
 )
