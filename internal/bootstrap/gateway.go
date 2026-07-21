@@ -41,6 +41,7 @@ func StartGateway(
 		ServiceName:    "ag-gateway",
 		ServiceVersion: version,
 		Logger:         logger,
+		Disabled:       !config.Observability.Enabled,
 	})
 	if err != nil {
 		return nil, errors.Join(

@@ -32,6 +32,7 @@ type Config struct {
 	ServiceName    string
 	ServiceVersion string
 	Logger         *slog.Logger
+	Disabled       bool
 }
 
 type Runtime struct {
@@ -49,6 +50,12 @@ func Setup(ctx context.Context, config Config) (*Runtime, error) {
 	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
+	}
+	if config.Disabled {
+		return &Runtime{
+			Tracer: otel.Tracer(instrumentationName),
+			Meter:  otel.Meter(instrumentationName),
+		}, nil
 	}
 
 	res, err := resource.New(

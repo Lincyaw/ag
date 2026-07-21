@@ -77,6 +77,26 @@ func TestValidateHTTPProtocol(t *testing.T) {
 	}
 }
 
+func TestSetupDisabledIgnoresExporterEnvironment(t *testing.T) {
+	t.Setenv("OTEL_TRACES_EXPORTER", "unsupported")
+	t.Setenv("OTEL_METRICS_EXPORTER", "otlp")
+	t.Setenv("OTEL_LOGS_EXPORTER", "otlp")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+	runtime, err := Setup(t.Context(), Config{
+		ServiceName: "disabled-test",
+		Disabled:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Tracer == nil || runtime.Meter == nil || runtime.LogHandler != nil {
+		t.Fatalf("disabled runtime = %#v", runtime)
+	}
+	if err := runtime.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSetupFailureDoesNotPublishPartialProviders(t *testing.T) {
 	original := otel.GetTracerProvider()
 	sentinel := noop.NewTracerProvider()

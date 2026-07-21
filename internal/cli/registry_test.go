@@ -29,6 +29,7 @@ func TestRegistryServeCommandPublishesReadyDirectory(t *testing.T) {
 		Path:   filepath.Join(t.TempDir(), "registry"),
 	}).String()
 	command.SetArgs([]string{
+		"--otel=false",
 		"registry", "serve",
 		"--listen", "127.0.0.1:0",
 		"--registry-backend", backendURI,
@@ -101,6 +102,7 @@ func TestRegistryServeCommandPublishesReadyDirectory(t *testing.T) {
 		"test-version",
 	)
 	discover.SetArgs([]string{
+		"--otel=false",
 		"plugin", "discover",
 		"--registry-uri", ready.URI,
 		"--name", "cli-registry-test",

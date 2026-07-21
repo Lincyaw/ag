@@ -71,6 +71,7 @@ func StartRuntime(
 	}
 	observability, err := telemetry.Setup(ctx, telemetry.Config{
 		ServiceName: "ag", ServiceVersion: version, Logger: logger,
+		Disabled: !config.Observability.Enabled,
 	})
 	if err != nil {
 		return nil, errors.Join(
