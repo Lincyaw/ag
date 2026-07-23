@@ -702,12 +702,12 @@ func LoadPermissionSettings(workingDir string) *session.PermissionsConfig {
 	}
 	var files []string
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		files = append(files, filepath.Join(home, ".claude", "settings.json"))
+		files = append(files, filepath.Join(home, ".ag", "settings.json"))
 	}
 	if workingDir != "" {
 		files = append(files,
-			filepath.Join(workingDir, ".claude", "settings.json"),
-			filepath.Join(workingDir, ".claude", "settings.local.json"),
+			filepath.Join(workingDir, ".ag", "settings.json"),
+			filepath.Join(workingDir, ".ag", "settings.local.json"),
 		)
 	}
 

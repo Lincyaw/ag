@@ -426,7 +426,7 @@ func discoverClaudeAgentItems() []discoveredAgent {
 	paths := ancestorClaudeAgentDirs(".")
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		paths = append(paths,
-			filepath.Join(home, ".claude", "agents"),
+			filepath.Join(home, ".ag", "agents"),
 			filepath.Join(home, ".codex", "repos", "autoharness", "agents"),
 		)
 	}
@@ -473,11 +473,11 @@ func discoverClaudeAgentItems() []discoveredAgent {
 func ancestorClaudeAgentDirs(start string) []string {
 	current, err := filepath.Abs(start)
 	if err != nil || current == "" {
-		return []string{filepath.Join(".claude", "agents")}
+		return []string{filepath.Join(".ag", "agents")}
 	}
 	var paths []string
 	for {
-		paths = append(paths, filepath.Join(current, ".claude", "agents"))
+		paths = append(paths, filepath.Join(current, ".ag", "agents"))
 		parent := filepath.Dir(current)
 		if parent == current {
 			break
@@ -491,14 +491,14 @@ func builtinClaudeAgentItems() []discoveredAgent {
 	return []discoveredAgent{
 		{
 			Name:        "statusline-setup",
-			Description: "Use this agent to configure the user's Claude Code status l…",
+			Description: "Use this agent to configure the user's AG status l…",
 		},
 		{
 			Name:        "general-purpose",
 			Description: "General-purpose agent for researching complex questions, se…",
 		},
 		{
-			Name:        "claude",
+			Name:        "ag",
 			Description: "Catch-all for any task that doesn't fit a more specific age…",
 		},
 		{
@@ -506,8 +506,8 @@ func builtinClaudeAgentItems() []discoveredAgent {
 			Description: "Software architect agent for designing implementation plans…",
 		},
 		{
-			Name:        "claude-code-guide",
-			Description: `Use this agent when the user asks questions ("Can Claude...…`,
+			Name:        "ag-guide",
+			Description: `Use this agent when the user asks questions ("Can AG...…`,
 		},
 		{
 			Name:        "Explore",

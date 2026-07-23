@@ -101,7 +101,7 @@ func builtInSessionCommands() []Item {
 			ID:           "session.clipboard",
 			Label:        "Copy",
 			SlashCommand: "/copy",
-			Description:  "Copy Claude's last response to clipboard (or /copy N for the Nth-latest)",
+			Description:  "Copy AG's last response to clipboard (or /copy N for the Nth-latest)",
 			Category:     "Session",
 			Immediate:    true,
 			Execute: func(arg string) tea.Cmd {
@@ -312,7 +312,7 @@ func builtInSessionCommands() []Item {
 			ID:           "session.status",
 			Label:        "Status",
 			SlashCommand: "/status",
-			Description:  "Show Claude Code status including version, model, account, API connectivity, and tool statuses",
+			Description:  "Show AG status including version, model, account, API connectivity, and tool statuses",
 			Category:     "Session",
 			Immediate:    true,
 			Execute: func(string) tea.Cmd {
@@ -324,7 +324,7 @@ func builtInSessionCommands() []Item {
 			ID:           "session.tools",
 			Label:        "Tools",
 			SlashCommand: "/tools",
-			Description:  "Claude Code compatibility: /tools is not a command",
+			Description:  "AG does not expose /tools as a command",
 			Category:     "Session",
 			Hidden:       true,
 			Immediate:    true,

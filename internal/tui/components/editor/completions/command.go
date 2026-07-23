@@ -83,7 +83,7 @@ func claudeCompatibleCommandItems(available map[string]bool) []completion.Item {
 	}{
 		{
 			name:        "init",
-			description: "Initialize a new CLAUDE.md file with codebase documentation",
+			description: "Initialize a new AGENTS.md file with codebase documentation",
 		},
 		{
 			name:        "paper-review",
@@ -107,7 +107,7 @@ func claudeCompatibleCommandItems(available map[string]bool) []completion.Item {
 		},
 		{
 			name:        "agents",
-			description: "(removed) Ask Claude to create/manage subagents, or edit .claude/agents/",
+			description: "(removed) Ask AG to create/manage subagents, or edit .ag/agents/",
 		},
 		{
 			name:        "background",
@@ -145,7 +145,7 @@ func claudeCompatibleCommandItems(available map[string]bool) []completion.Item {
 		},
 		{
 			name:        "model",
-			description: "Set the AI model for Claude Code (currently Opus 4.8 (1M context))",
+			description: "Set the AI model for AG (currently Opus 4.8 (1M context))",
 		},
 		{
 			name:        "claude-api",
@@ -171,7 +171,7 @@ func claudeCompatibleCommandItems(available map[string]bool) []completion.Item {
 		},
 		{
 			name:        "status",
-			description: "Show Claude Code status including version, model, account, API connectivity, and tool statuses",
+			description: "Show AG status including version, model, account, API connectivity, and tool statuses",
 			search:      "mo model",
 		},
 		{
@@ -181,7 +181,7 @@ func claudeCompatibleCommandItems(available map[string]bool) []completion.Item {
 		},
 		{
 			name:        "update-config",
-			description: `Use this skill to configure the Claude Code harness via settings.json. Automated behaviors ("from now on when X", "each time X", "whenever X", "before/after X") must be encoded as settings, not prompt memory.`,
+			description: `Use this skill to configure the AG harness via settings.json. Automated behaviors ("from now on when X", "each time X", "whenever X", "before/after X") must be encoded as settings, not prompt memory.`,
 			search:      "mo model",
 		},
 		{
@@ -201,7 +201,7 @@ func claudeCompatibleCommandItems(available map[string]bool) []completion.Item {
 		},
 		{
 			name:        "mobile",
-			description: "Show QR code to download the Claude mobile app",
+			description: "Show QR code to download the AG mobile app",
 		},
 		{
 			name:        "skills",

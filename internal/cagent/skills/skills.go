@@ -65,7 +65,7 @@ func IsHomeSkillPath(path string) bool {
 func homeSkillSearchPaths(home string) []localSearchPath {
 	return []localSearchPath{
 		{filepath.Join(home, ".codex", "skills"), true},
-		{filepath.Join(home, ".claude", "skills"), false},
+		{filepath.Join(home, ".ag", "skills"), false},
 		{filepath.Join(home, ".agents", "skills"), true},
 	}
 }

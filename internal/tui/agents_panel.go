@@ -629,7 +629,7 @@ func agentsModeHeaderLines(cwd, counts string) []string {
 	bold := lipgloss.NewStyle().Bold(true)
 	return []string{
 		"",
-		logo.Render(" ▐") + logoFill.Render("▛███▜") + logo.Render("▌") + "   " + bold.Render("Claude Code") + " " + muted.Render("v2.1.201"),
+		logo.Render(" ▐") + logoFill.Render("▛███▜") + logo.Render("▌") + "   " + bold.Render("AG") + " " + muted.Render("v2.1.201"),
 		logo.Render("▝▜") + logoFill.Render("█████") + logo.Render("▛▘") + "  " + muted.Render("Opus 4.8 (1M context) · "+cwd),
 		logo.Render("  ▘▘ ▝▝  ") + "  " + muted.Render(counts),
 		"",

@@ -523,7 +523,7 @@ func (d *modelPickerDialog) View() string {
 	d.contentWidth = contentWidth
 
 	description := wrapModelPickerText(
-		"Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.",
+		"Switch between models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.",
 		contentWidth,
 	)
 	rows := d.renderClaudeModelRows(contentWidth)

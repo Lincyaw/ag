@@ -621,7 +621,7 @@ func compactClaudeWelcomeLines(cwd, modelLine string) []string {
 	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
 	bold := lipgloss.NewStyle().Bold(true)
 	return []string{
-		logo.Render(" ▐") + logoFill.Render("▛███▜") + logo.Render("▌") + "   " + bold.Render("Claude") + " " + bold.Render("Code") + " " + muted.Render("v2.1.201"),
+		logo.Render(" ▐") + logoFill.Render("▛███▜") + logo.Render("▌") + "   " + bold.Render("AG") + " " + muted.Render("v2.1.201"),
 		logo.Render("▝▜") + logoFill.Render("█████") + logo.Render("▛▘") + "  " + muted.Render(modelLine),
 		logo.Render(" ") + " " + logo.Render("▘▘") + " " + logo.Render("▝▝") + "    " + muted.Render(cwd),
 		"",
@@ -661,10 +661,10 @@ func claudeWelcomeCardLines(cwd, modelLine string, width int) []string {
 	}
 	rightRows := []string{
 		"Tips for getting started",
-		"Run /init to create a CLAUDE.md file with …",
+		"Run /init to create an AGENTS.md file with …",
 		border.Render(strings.Repeat("─", max(1, rightWidth-2))),
 		accentBold.Render("What's new"),
-		"Claude Sonnet 5 sessions no longer use the…",
+		"AG sessions no longer use the…",
 		"Changed `AskUserQuestion` dialogs to no lo…",
 		`Changed the "default" permission mode to "…`,
 		mutedItalic.Render("/release-notes for more"),
@@ -697,7 +697,7 @@ func welcomeCardColumnWidths(width int) (left, right int) {
 }
 
 func welcomeCardTopBorder(width int, style lipgloss.Style) string {
-	prefix := "╭─── Claude Code v2.1.201 "
+	prefix := "╭─── AG v0.2.0 "
 	suffix := "╮"
 	fillWidth := max(0, width-lipgloss.Width(prefix)-lipgloss.Width(suffix))
 	return style.Render(prefix + strings.Repeat("─", fillWidth) + suffix)

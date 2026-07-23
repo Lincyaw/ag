@@ -151,7 +151,6 @@ func buildEnvironment(root string, configured []string) ([]string, error) {
 			values[name] = value
 		}
 	}
-	values["HOME"] = root
 	if values["LANG"] == "" {
 		values["LANG"] = "C.UTF-8"
 	}

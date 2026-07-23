@@ -117,8 +117,8 @@ func (d *thinkingToggleDialog) View() string {
 		thinkingToggleLine(thinkingToggleTitleStyle.Render("Toggle thinking mode"), contentWidth),
 		thinkingToggleLine(thinkingToggleBodyStyle.Render("Enable or disable thinking for this session."), contentWidth),
 		"",
-		d.renderOption(0, "Enabled", d.enabled, "Claude will think before responding", contentWidth),
-		d.renderOption(1, "Disabled", !d.enabled, "Claude will respond without extended thinking", contentWidth),
+		d.renderOption(0, "Enabled", d.enabled, "AG will think before responding", contentWidth),
+		d.renderOption(1, "Disabled", !d.enabled, "AG will respond without extended thinking", contentWidth),
 		"",
 		thinkingToggleLine(thinkingToggleBodyStyle.Render("Enter to confirm · Esc to cancel"), contentWidth),
 	}

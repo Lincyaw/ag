@@ -1056,15 +1056,15 @@ func (m *appModel) savePermissionRule(kind, rule string) error {
 func (m *appModel) permissionSettingsPath() (string, error) {
 	switch m.localPermissionSaveIndex {
 	case 1:
-		return filepath.Join(m.currentWorkingDirectory(), ".claude", "settings.json"), nil
+		return filepath.Join(m.currentWorkingDirectory(), ".ag", "settings.json"), nil
 	case 2:
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(home, ".claude", "settings.json"), nil
+		return filepath.Join(home, ".ag", "settings.json"), nil
 	default:
-		return filepath.Join(m.currentWorkingDirectory(), ".claude", "settings.local.json"), nil
+		return filepath.Join(m.currentWorkingDirectory(), ".ag", "settings.local.json"), nil
 	}
 }
 
@@ -1129,7 +1129,7 @@ func (m *appModel) localHelpContent() string {
 func localHelpGeneralContent(width int) string {
 	introWidth := max(72, min(107, width-13))
 	intro := wrapIndentedText(
-		"Claude understands your codebase, makes edits with your permission, and executes commands — right from your terminal.",
+		"AG understands your codebase, makes edits with your permission, and executes commands — right from your terminal.",
 		introWidth,
 		"",
 	)
@@ -1137,7 +1137,7 @@ func localHelpGeneralContent(width int) string {
 	lines = append(lines, intro...)
 	lines = append(lines, "Shortcuts")
 	lines = append(lines, renderHelpShortcutRows()...)
-	lines = append(lines, "", "For more help: https://code.claude.com/docs/en/overview", "", "Esc to cancel")
+	lines = append(lines, "", "For more help: https://github.com/lincyaw/ag", "", "Esc to cancel")
 	return strings.Join(lines, "\n")
 }
 
@@ -1187,7 +1187,7 @@ func (m *appModel) localHelpCommandsContent(custom bool) string {
 			lines = append(lines, "    "+truncateHelpDescription(entry.description))
 		}
 	}
-	lines = append(lines, "", "", "", "", "For more help: https://code.claude.com/docs/en/overview", "", "Esc to cancel")
+	lines = append(lines, "", "", "", "", "For more help: https://github.com/lincyaw/ag", "", "Esc to cancel")
 	return strings.Join(lines, "\n")
 }
 
@@ -1872,7 +1872,7 @@ func projectClaudeMemoryFile() string {
 		return ""
 	}
 	for dir := wd; dir != ""; dir = filepath.Dir(dir) {
-		path := filepath.Join(dir, "CLAUDE.md")
+		path := filepath.Join(dir, "AGENTS.md")
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
 			return path
 		}
@@ -2170,7 +2170,7 @@ func contextMemoryFiles() []contextMemoryFile {
 	seen := map[string]bool{}
 	var files []contextMemoryFile
 	for dir := wd; dir != ""; dir = filepath.Dir(dir) {
-		for _, name := range []string{"CLAUDE.md", "AGENTS.md"} {
+		for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
 			path := filepath.Join(dir, name)
 			if seen[path] {
 				continue
@@ -2505,9 +2505,9 @@ func (m *appModel) localPermissionsSaveLocationContent() string {
 		label string
 		desc  string
 	}{
-		{"Project settings (local)", "Saved in .claude/settings.local.json"},
-		{"Project settings", "Checked in at .claude/settings.json"},
-		{"User settings", "Saved in at ~/.claude/settings.json"},
+		{"Project settings (local)", "Saved in .ag/settings.local.json"},
+		{"Project settings", "Checked in at .ag/settings.json"},
+		{"User settings", "Saved at ~/.ag/settings.json"},
 	}
 	for i, option := range options {
 		lines = append(lines, renderPermissionSaveOption(i, option.label, option.desc, i == m.localPermissionSaveIndex))
@@ -2581,15 +2581,15 @@ func permissionsTabDescriptionAndSearchWidth(tab int) (string, int) {
 	case permissionsTabRecentlyDenied:
 		return "Denied tool requests from this session will appear here.", 58
 	case permissionsTabAllow:
-		return "Claude Code won't ask before using allowed tools.", 47
+		return "AG won't ask before using allowed tools.", 47
 	case permissionsTabAsk:
-		return "Claude Code will always ask for confirmation before using these tools.", 68
+		return "AG will always ask for confirmation before using these tools.", 68
 	case permissionsTabDeny:
-		return "Claude Code will always reject requests to use denied tools.", 58
+		return "AG will always reject requests to use denied tools.", 58
 	case permissionsTabWorkspace:
 		return "Workspace trust and project policy rules apply here.", 58
 	default:
-		return "Claude Code won't ask before using allowed tools.", 47
+		return "AG won't ask before using allowed tools.", 47
 	}
 }
 

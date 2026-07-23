@@ -377,7 +377,7 @@ func (mv *messageModel) render(width int) string {
 		}
 		return msg.Content
 	case types.MessageTypeCancelled:
-		return renderNoticeMessage("Interrupted · What should Claude do instead?", width)
+		return renderNoticeMessage("Interrupted · What should AG do instead?", width)
 	case types.MessageTypeWelcome:
 		messageStyle := styles.WelcomeMessageStyle
 		// Convert explicit newlines to markdown hard line breaks (two trailing spaces)
