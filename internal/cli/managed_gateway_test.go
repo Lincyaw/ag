@@ -33,7 +33,14 @@ func TestCLIImportsGatewayManagerForAutomaticStartup(t *testing.T) {
 			if workspace["root"] != config.Workspace.Root {
 				t.Fatalf("managed config workspace = %q", workspace["root"])
 			}
-			ready, err := json.Marshal(gatewaymanager.Ready{Target: target})
+			executable, executableSHA256, err := gatewaymanager.CurrentExecutableIdentity()
+			if err != nil {
+				return nil, err
+			}
+			ready, err := json.Marshal(gatewaymanager.Ready{
+				Target:     target,
+				Executable: executable, ExecutableSHA256: executableSHA256,
+			})
 			if err != nil {
 				return nil, err
 			}

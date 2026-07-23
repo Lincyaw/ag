@@ -4,6 +4,8 @@ package manager
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,6 +44,8 @@ type Ready struct {
 	Listen              string `json:"listen"`
 	Directory           string `json:"directory"`
 	Registry            string `json:"registry"`
+	Executable          string `json:"executable,omitempty"`
+	ExecutableSHA256    string `json:"executable_sha256,omitempty"`
 	RecoveredExecutions int    `json:"recovered_executions"`
 	PID                 int    `json:"pid"`
 }
@@ -70,7 +74,9 @@ type Config struct {
 }
 
 type Manager struct {
-	config Config
+	config           Config
+	executable       string
+	executableSHA256 string
 }
 
 func New(config Config) (*Manager, error) {
@@ -99,7 +105,15 @@ func New(config Config) (*Manager, error) {
 	}
 	config.RuntimeConfig = append([]byte(nil), config.RuntimeConfig...)
 	config.Environment = append([]string(nil), config.Environment...)
-	manager := &Manager{config: config}
+	executable, executableSHA256, err := executableIdentity(config.Executable)
+	if err != nil {
+		return nil, err
+	}
+	manager := &Manager{
+		config:           config,
+		executable:       executable,
+		executableSHA256: executableSHA256,
+	}
 	if manager.config.Probe == nil {
 		manager.config.Probe = probeGRPC
 	}
@@ -190,6 +204,10 @@ func (manager *Manager) healthy(ctx context.Context, readyPath string) (Ready, b
 	if err != nil || !validTarget(ready.Target) {
 		return Ready{}, false
 	}
+	if ready.Executable != manager.executable ||
+		ready.ExecutableSHA256 != manager.executableSHA256 {
+		return Ready{}, false
+	}
 	probeContext, cancel := context.WithTimeout(ctx, manager.config.ProbeTimeout)
 	defer cancel()
 	if err := manager.config.Probe(probeContext, ready.Target); err != nil {
@@ -245,14 +263,6 @@ func (manager *Manager) launch(
 	readyPath string,
 	logPath string,
 ) (<-chan error, error) {
-	executable := strings.TrimSpace(manager.config.Executable)
-	if executable == "" {
-		var err error
-		executable, err = os.Executable()
-		if err != nil {
-			return nil, fmt.Errorf("locate ag executable: %w", err)
-		}
-	}
 	stdout, err := os.OpenFile(
 		readyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600,
 	)
@@ -266,7 +276,7 @@ func (manager *Manager) launch(
 		_ = stdout.Close()
 		return nil, fmt.Errorf("open gateway diagnostic log: %w", err)
 	}
-	command := exec.Command(executable)
+	command := exec.Command(manager.executable)
 	command.Stdin = nil
 	command.Stdout = stdout
 	command.Stderr = stderr
@@ -293,6 +303,38 @@ func (manager *Manager) launch(
 		close(done)
 	}()
 	return done, nil
+}
+
+func CurrentExecutableIdentity() (string, string, error) {
+	return executableIdentity("")
+}
+
+func executableIdentity(configured string) (string, string, error) {
+	executable := strings.TrimSpace(configured)
+	if executable == "" {
+		var err error
+		executable, err = os.Executable()
+		if err != nil {
+			return "", "", fmt.Errorf("locate ag executable: %w", err)
+		}
+	}
+	absolute, err := filepath.Abs(executable)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve ag executable path: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
+		absolute = resolved
+	}
+	file, err := os.Open(absolute)
+	if err != nil {
+		return "", "", fmt.Errorf("open ag executable: %w", err)
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", "", fmt.Errorf("hash ag executable: %w", err)
+	}
+	return filepath.Clean(absolute), hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func ChildRequestFromEnvironment() (string, bool, error) {

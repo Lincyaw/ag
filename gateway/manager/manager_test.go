@@ -114,6 +114,62 @@ func TestManagerReplacesStaleReadiness(t *testing.T) {
 	}
 }
 
+func TestManagerReplacesHealthyGatewayFromDifferentExecutable(t *testing.T) {
+	directory := t.TempDir()
+	managed := filepath.Join(directory, DirectoryName)
+	if err := os.MkdirAll(managed, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		staleTarget = "grpc://127.0.0.1:19020"
+		freshTarget = "grpc://127.0.0.1:19021"
+	)
+	readyPath := filepath.Join(managed, ReadyName)
+	raw, err := json.Marshal(Ready{
+		Target: staleTarget, Directory: directory, PID: 4242,
+		Executable: "/tmp/old-ag", ExecutableSHA256: strings.Repeat("0", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(readyPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stopped atomic.Bool
+	manager, err := New(Config{
+		Directory: directory, RuntimeConfig: []byte(`{}`),
+		Probe: func(context.Context, string) error {
+			return nil
+		},
+		Stopper: func(_ context.Context, ready Ready) error {
+			if ready.PID != 4242 || ready.Executable != "/tmp/old-ag" {
+				t.Fatalf("stopped readiness = %#v", ready)
+			}
+			stopped.Store(true)
+			return nil
+		},
+		Launcher: func(_ string, readyPath string, _ string) (<-chan error, error) {
+			if !stopped.Load() {
+				t.Fatal("replacement launched before stale executable stopped")
+			}
+			if err := writeTestReady(readyPath, freshTarget); err != nil {
+				return nil, err
+			}
+			return make(chan error), nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready, err := manager.Ensure(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.Target != freshTarget || !stopped.Load() {
+		t.Fatalf("ready=%#v stopped=%v", ready, stopped.Load())
+	}
+}
+
 func TestManagerStopsRecordedInstanceBeforeReplacement(t *testing.T) {
 	directory := t.TempDir()
 	managed := filepath.Join(directory, DirectoryName)
@@ -206,7 +262,14 @@ func TestChildRequestUsesPrivateEnvironmentProtocol(t *testing.T) {
 }
 
 func writeTestReady(path string, target string) error {
-	raw, err := json.Marshal(Ready{Target: target, PID: os.Getpid()})
+	executable, executableSHA256, err := CurrentExecutableIdentity()
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(Ready{
+		Target: target, PID: os.Getpid(),
+		Executable: executable, ExecutableSHA256: executableSHA256,
+	})
 	if err != nil {
 		return err
 	}

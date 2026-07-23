@@ -131,6 +131,10 @@ func (application *app) serveGateway(
 		Directory: running.Root, Registry: running.RegistryURI,
 		RecoveredExecutions: len(recovered), PID: os.Getpid(),
 	}
+	ready.Executable, ready.ExecutableSHA256, err = gatewaymanager.CurrentExecutableIdentity()
+	if err != nil {
+		return err
+	}
 	if err := application.writeGatewayReady(ready); err != nil {
 		return fmt.Errorf("write gateway ready record: %w", err)
 	}
