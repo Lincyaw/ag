@@ -248,12 +248,6 @@ func gatewayConfiguredTools(config appconfig.Config) []string {
 		if config.Workspace.EnableWrite {
 			tools = append(tools, "write_file", "edit_file")
 		}
-		if config.Tree.Enabled {
-			tools = append(tools, "workspace_tree")
-		}
-	}
-	if config.HostFS.Enabled {
-		tools = append(tools, "hostfs_read_file", "hostfs_tree")
 	}
 	if config.Bash.Enabled {
 		tools = append(tools, "bash")

@@ -66,13 +66,10 @@ func TestSelectPluginInstanceRequiresExplicitReplica(t *testing.T) {
 func TestGatewayConfiguredToolsMatchesRuntimeComposition(t *testing.T) {
 	got := gatewayConfiguredTools(appconfig.Config{
 		Workspace: appconfig.Workspace{Enabled: true, EnableWrite: true},
-		Tree:      appconfig.Tree{Enabled: true},
 		Bash:      appconfig.Bash{Enabled: true},
-		HostFS:    appconfig.HostFS{Enabled: true},
 	})
 	want := []string{
-		"ask_user", "bash", "edit_file", "hostfs_read_file", "hostfs_tree",
-		"read_file", "search_files", "workspace_tree", "write_file",
+		"ask_user", "bash", "edit_file", "read_file", "search_files", "write_file",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("gateway tools = %#v, want %#v", got, want)

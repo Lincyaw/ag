@@ -7,10 +7,8 @@ import (
 	"github.com/lincyaw/ag/plugins/bash"
 	"github.com/lincyaw/ag/plugins/compact"
 	fileplugin "github.com/lincyaw/ag/plugins/file"
-	"github.com/lincyaw/ag/plugins/hostfs"
 	"github.com/lincyaw/ag/plugins/openai"
 	otelplugin "github.com/lincyaw/ag/plugins/otel"
-	"github.com/lincyaw/ag/plugins/tree"
 	"github.com/lincyaw/ag/sdk"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -54,13 +52,6 @@ func configuredLocalPlugins(
 			MaxToolResultChars: config.Compact.MaxToolResultChars,
 		}))
 	}
-	if config.Workspace.Enabled && config.Tree.Enabled {
-		plugins = append(plugins, tree.New(tree.Config{
-			Root:       config.Workspace.Root,
-			MaxEntries: config.Tree.MaxEntries,
-			MaxDepth:   config.Tree.MaxDepth,
-		}))
-	}
 	if config.Workspace.Enabled {
 		plugins = append(plugins, fileplugin.New(fileplugin.Config{
 			Root:          config.Workspace.Root,
@@ -68,14 +59,6 @@ func configuredLocalPlugins(
 			MaxReadBytes:  config.Workspace.MaxReadBytes,
 			MaxWriteBytes: config.Workspace.MaxWriteBytes,
 			MaxEntries:    config.Workspace.MaxEntries,
-		}))
-	}
-	if config.HostFS.Enabled {
-		plugins = append(plugins, hostfs.New(hostfs.Config{
-			Roots:        config.HostFS.Roots,
-			MaxReadBytes: config.HostFS.MaxReadBytes,
-			MaxEntries:   config.HostFS.MaxEntries,
-			MaxDepth:     config.HostFS.MaxDepth,
 		}))
 	}
 	if config.Bash.Enabled {

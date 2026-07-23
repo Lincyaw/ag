@@ -10,8 +10,6 @@ type TrajectoryRuntimeProfile struct {
 	Workspace     Workspace               `json:"workspace"`
 	Bash          TrajectoryBashProfile   `json:"bash"`
 	Compact       Compact                 `json:"compact"`
-	Tree          Tree                    `json:"tree"`
-	HostFS        HostFS                  `json:"hostfs"`
 	Plugins       Plugins                 `json:"plugins"`
 	Observability Observability           `json:"observability"`
 }
@@ -51,8 +49,9 @@ func NewTrajectoryRuntimeProfile(config Config) TrajectoryRuntimeProfile {
 			MaxOutputBytes:        config.Bash.MaxOutputBytes,
 			Environment:           append([]string(nil), config.Bash.Environment...),
 		},
-		Compact: config.Compact, Tree: config.Tree, HostFS: config.HostFS,
-		Plugins: config.Plugins, Observability: config.Observability,
+		Compact:       config.Compact,
+		Plugins:       config.Plugins,
+		Observability: config.Observability,
 	}
 }
 
@@ -74,8 +73,6 @@ func (profile TrajectoryRuntimeProfile) Apply(base Config) Config {
 		Environment:    append([]string(nil), profile.Bash.Environment...),
 	}
 	base.Compact = profile.Compact
-	base.Tree = profile.Tree
-	base.HostFS = profile.HostFS
 	base.Plugins = profile.Plugins
 	base.Observability = profile.Observability
 	return base
