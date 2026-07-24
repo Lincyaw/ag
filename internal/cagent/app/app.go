@@ -117,6 +117,7 @@ type App struct {
 	agentInfoMu   sync.Mutex
 	toolNames     []string
 	commandNames  []string
+	commandSpecs  types.Commands
 	modelNames    []string
 	activeModel   string
 	thinkingLevel string
@@ -341,6 +342,21 @@ func (a *App) SetAgentInfo(toolNames, commandNames, modelNames []string, activeM
 	a.activeModel = activeModel
 }
 
+// SetAgentCommands records the full prompt-command metadata advertised by the
+// gateway. It is separate from SetAgentInfo so older name-only producers keep
+// working.
+func (a *App) SetAgentCommands(commands types.Commands) {
+	a.agentInfoMu.Lock()
+	defer a.agentInfoMu.Unlock()
+	a.commandSpecs = make(types.Commands, len(commands))
+	a.commandNames = a.commandNames[:0]
+	for name, command := range commands {
+		a.commandSpecs[name] = command
+		a.commandNames = append(a.commandNames, name)
+	}
+	slices.Sort(a.commandNames)
+}
+
 // CurrentModel returns the active model profile last advertised by session_ready
 // or model-switch acknowledgement events.
 func (a *App) CurrentModel(ctx context.Context) string {
@@ -362,7 +378,7 @@ func (a *App) CurrentAgentCommands(ctx context.Context) types.Commands {
 	}
 	cmds := make(types.Commands, len(a.commandNames))
 	for _, name := range a.commandNames {
-		cmds[name] = types.Command{}
+		cmds[name] = a.commandSpecs[name]
 	}
 	return cmds
 }
@@ -773,18 +789,35 @@ func (a *App) CurrentAgentTools(ctx context.Context) ([]tools.Tool, error) {
 	return ts, nil
 }
 
-// ResolveCommand converts a /command into its prompt text. Stub: returns the
-// input unchanged until the adapter takes over.
+// ResolveCommand converts a registered /command into its prompt text.
 func (a *App) ResolveCommand(ctx context.Context, userInput string) string {
-	_ = ctx
-	return userInput
+	command, arguments, ok := a.LookupCommand(ctx, userInput)
+	if !ok {
+		return userInput
+	}
+	instruction := command.Instruction
+	if strings.Contains(instruction, "$ARGUMENTS") {
+		return strings.ReplaceAll(instruction, "$ARGUMENTS", arguments)
+	}
+	if arguments == "" {
+		return instruction
+	}
+	return strings.TrimSpace(instruction) + "\n\n" + arguments
 }
 
-// LookupCommand parses userInput as a /command invocation. Stub: always reports
-// no match until the adapter takes over.
+// LookupCommand parses userInput as a registered /command invocation.
 func (a *App) LookupCommand(ctx context.Context, userInput string) (types.Command, string, bool) {
-	_, _ = ctx, userInput
-	return types.Command{}, "", false
+	_ = ctx
+	userInput = strings.TrimSpace(userInput)
+	if !strings.HasPrefix(userInput, "/") {
+		return types.Command{}, "", false
+	}
+	invocation, arguments, _ := strings.Cut(userInput, " ")
+	name := strings.TrimPrefix(invocation, "/")
+	a.agentInfoMu.Lock()
+	defer a.agentInfoMu.Unlock()
+	command, ok := a.commandSpecs[name]
+	return command, strings.TrimSpace(arguments), ok
 }
 
 // TrackCurrentAgentModel records the active agent's current model.

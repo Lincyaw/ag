@@ -51,7 +51,7 @@ func (trajectory *trajectoryExecutionRuntime) cancelAfter(
 
 func (trajectory *trajectoryExecutionRuntime) claim(
 	ctx context.Context,
-	store sdk.TrajectoryStore,
+	store sdk.TrajectoryExecutionStore,
 	trajectoryID string,
 ) (sdk.TrajectoryExecution, error) {
 	if store == nil {
@@ -135,7 +135,7 @@ func (trajectory *trajectoryExecutionRuntime) heartbeatInterval() time.Duration 
 
 func (trajectory *trajectoryExecutionRuntime) renew(
 	ctx context.Context,
-	store sdk.TrajectoryStore,
+	store sdk.TrajectoryExecutionStore,
 	trajectoryID string,
 	executionID string,
 	token string,

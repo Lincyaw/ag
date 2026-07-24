@@ -26,6 +26,7 @@ type CatalogSnapshot struct {
 	Subscribers  []sdk.SubscriberSpec `json:"subscribers"`
 	Capabilities []sdk.CapabilitySpec `json:"capabilities"`
 	Events       []sdk.EventContract  `json:"events"`
+	Commands     []sdk.CommandSpec    `json:"commands"`
 }
 
 type builtinEventContract struct {
@@ -167,6 +168,9 @@ func catalogFromSnapshot(snapshot *registrySnapshot) CatalogSnapshot {
 			sdk.CloneEventContract(event.contract),
 		)
 	}
+	for _, command := range snapshot.commands {
+		result.Commands = append(result.Commands, command.spec)
+	}
 	sortCatalog(&result)
 	return result
 }
@@ -194,6 +198,9 @@ func sortCatalog(catalog *CatalogSnapshot) {
 		return strings.Compare(left.Name, right.Name)
 	})
 	slices.SortFunc(catalog.Events, func(left, right sdk.EventContract) int {
+		return strings.Compare(left.Name, right.Name)
+	})
+	slices.SortFunc(catalog.Commands, func(left, right sdk.CommandSpec) int {
 		return strings.Compare(left.Name, right.Name)
 	})
 }

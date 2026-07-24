@@ -17,21 +17,23 @@ const APIVersion = 1
 var resourceNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type Manifest struct {
-	Name          string   `json:"name"`
-	Version       string   `json:"version"`
-	Description   string   `json:"description"`
-	APIVersion    int      `json:"api_version"`
-	MinAPIVersion int      `json:"min_api_version,omitempty"`
-	MaxAPIVersion int      `json:"max_api_version,omitempty"`
-	Requires      []string `json:"requires,omitempty"`
-	Conflicts     []string `json:"conflicts,omitempty"`
-	Registers     []string `json:"registers,omitempty"`
+	Name          string        `json:"name"`
+	Version       string        `json:"version"`
+	Description   string        `json:"description"`
+	APIVersion    int           `json:"api_version"`
+	MinAPIVersion int           `json:"min_api_version,omitempty"`
+	MaxAPIVersion int           `json:"max_api_version,omitempty"`
+	Requires      []string      `json:"requires,omitempty"`
+	Conflicts     []string      `json:"conflicts,omitempty"`
+	Registers     []string      `json:"registers,omitempty"`
+	Commands      []CommandSpec `json:"commands,omitempty"`
 }
 
 func CloneManifest(manifest Manifest) Manifest {
 	manifest.Requires = slices.Clone(manifest.Requires)
 	manifest.Conflicts = slices.Clone(manifest.Conflicts)
 	manifest.Registers = slices.Clone(manifest.Registers)
+	manifest.Commands = slices.Clone(manifest.Commands)
 	return manifest
 }
 
@@ -62,6 +64,33 @@ func (manifest Manifest) Validate() error {
 			maximum,
 			APIVersion,
 		)
+	}
+	seenCommands := make(map[string]struct{}, len(manifest.Commands))
+	registered := make(map[string]struct{}, len(manifest.Registers))
+	for _, resource := range manifest.Registers {
+		registered[resource] = struct{}{}
+	}
+	for _, command := range manifest.Commands {
+		if err := ValidateResourceName("command", command.Name); err != nil {
+			return err
+		}
+		if strings.TrimSpace(command.Description) == "" {
+			return fmt.Errorf("command %q description is empty", command.Name)
+		}
+		if strings.TrimSpace(command.Instruction) == "" {
+			return fmt.Errorf("command %q instruction is empty", command.Name)
+		}
+		if _, exists := seenCommands[command.Name]; exists {
+			return fmt.Errorf("command %q is declared twice", command.Name)
+		}
+		if _, exists := registered[CommandResource(command.Name)]; !exists {
+			return fmt.Errorf(
+				"command %q is missing %q from manifest registers",
+				command.Name,
+				CommandResource(command.Name),
+			)
+		}
+		seenCommands[command.Name] = struct{}{}
 	}
 	return validateUniqueStrings(
 		manifest.Name,
@@ -94,6 +123,21 @@ type Registrar interface {
 // registrars intentionally do not implement it.
 type AgentRegistrar interface {
 	RegisterAgent(AgentSpec) error
+}
+
+// CommandRegistrar is the optional registrar extension for prompt commands.
+// RegisterCommand keeps sdk.Registrar source-compatible for third-party
+// registrar implementations.
+type CommandRegistrar interface {
+	RegisterCommand(CommandSpec) error
+}
+
+func RegisterCommand(registrar Registrar, spec CommandSpec) error {
+	commands, ok := registrar.(CommandRegistrar)
+	if !ok {
+		return errors.New("command registration is not supported by this registrar")
+	}
+	return commands.RegisterCommand(spec)
 }
 
 func RegisterAgent(registrar Registrar, spec AgentSpec) error {
@@ -151,6 +195,7 @@ const (
 	ResourceKindSubscriber ResourceKind = "subscriber"
 	ResourceKindCapability ResourceKind = "capability"
 	ResourceKindEvent      ResourceKind = "event"
+	ResourceKindCommand    ResourceKind = "command"
 )
 
 func (kind ResourceKind) ResourceName(name string) string {
@@ -178,6 +223,8 @@ func CapabilityResource(name string) string {
 }
 
 func EventResource(name string) string { return ResourceKindEvent.ResourceName(name) }
+
+func CommandResource(name string) string { return ResourceKindCommand.ResourceName(name) }
 
 func PluginResource(name string) string { return ResourceKindPlugin.ResourceName(name) }
 

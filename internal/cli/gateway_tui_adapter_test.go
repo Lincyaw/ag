@@ -83,6 +83,25 @@ func TestGatewayInputContentPreservesAttachmentReferencesAndInlineText(t *testin
 	}
 }
 
+func TestGatewayTUICommandsUsesAttachedPluginManifest(t *testing.T) {
+	commands := gatewayTUICommands(gateway.Session{
+		Plugins: []gateway.PluginBinding{{
+			Manifest: sdk.Manifest{Commands: []sdk.CommandSpec{{
+				Name: "review", Description: "Review a target",
+				Instruction: "Review $ARGUMENTS",
+			}}},
+		}},
+	})
+	command, ok := commands["review"]
+	if !ok {
+		t.Fatal("plugin command was not projected to TUI")
+	}
+	if command.Description != "Review a target" ||
+		command.Instruction != "Review $ARGUMENTS" {
+		t.Fatalf("projected command = %#v", command)
+	}
+}
+
 func TestGatewayInteractionAnswerUsesSemanticOptions(t *testing.T) {
 	interaction := gateway.Interaction{Options: []gateway.InteractionOption{
 		{ID: "allow_once", Label: "Allow"},

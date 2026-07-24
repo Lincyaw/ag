@@ -21,7 +21,7 @@ const (
 	GatewayEventSessionPaused    = "gateway_session_paused"
 	GatewayEventSessionResumed   = "gateway_session_resumed"
 	GatewayEventSessionUpdated   = "gateway_session_updated"
-	defaultInputPoll             = 100 * time.Millisecond
+	defaultInputRetry            = 100 * time.Millisecond
 )
 
 var errInputDispatchPaused = errors.New("gateway input dispatch paused")
@@ -32,7 +32,7 @@ type inputSupervisor struct {
 	executions ExecutionBackend
 	events     EventStore
 	logger     *slog.Logger
-	poll       time.Duration
+	retry      time.Duration
 	ctx        context.Context
 	cancel     context.CancelFunc
 	mu         sync.Mutex
@@ -49,7 +49,7 @@ func newInputSupervisor(
 	ctx, cancel := context.WithCancel(context.Background())
 	return &inputSupervisor{
 		inputs: inputs, sessions: sessions, executions: executions,
-		events: events, logger: slog.Default(), poll: defaultInputPoll,
+		events: events, logger: slog.Default(), retry: defaultInputRetry,
 		ctx: ctx, cancel: cancel, runners: make(map[string]struct{}),
 	}
 }
@@ -255,49 +255,36 @@ func (supervisor *inputSupervisor) awaitAndComplete(
 	input AgentInput,
 	executionID string,
 ) error {
-	for {
-		current, err := supervisor.executions.Get(
-			supervisor.ctx,
-			session,
-			executionID,
-		)
-		if err == nil && current.Execution.Terminal() {
-			state := AgentInputSucceeded
-			switch current.Execution.State {
-			case sdk.TrajectoryExecutionFailed:
-				state = AgentInputFailed
-			case sdk.TrajectoryExecutionCancelled:
-				state = AgentInputCancelled
-			}
-			completed, completeErr := supervisor.inputs.Complete(
-				supervisor.ctx,
-				input.SessionID,
-				input.ID,
-				state,
-				current.Execution.LastError,
-			)
-			if completeErr == nil {
-				supervisor.emit(
-					input.SessionID,
-					GatewayEventInputCompleted,
-					completed,
-				)
-			}
-			return completeErr
-		}
-		if err != nil && !errors.Is(err, ErrExecutionNotFound) {
-			supervisor.logger.Warn(
-				"poll gateway input execution",
-				"session_id", input.SessionID,
-				"input_id", input.ID,
-				"execution_id", executionID,
-				"error", err,
-			)
-		}
-		if err := supervisor.wait(); err != nil {
-			return err
-		}
+	current, err := supervisor.executions.Wait(
+		supervisor.ctx,
+		session,
+		executionID,
+	)
+	if err != nil {
+		return err
 	}
+	state := AgentInputSucceeded
+	switch current.Execution.State {
+	case sdk.TrajectoryExecutionFailed:
+		state = AgentInputFailed
+	case sdk.TrajectoryExecutionCancelled:
+		state = AgentInputCancelled
+	}
+	completed, err := supervisor.inputs.Complete(
+		supervisor.ctx,
+		input.SessionID,
+		input.ID,
+		state,
+		current.Execution.LastError,
+	)
+	if err == nil {
+		supervisor.emit(
+			input.SessionID,
+			GatewayEventInputCompleted,
+			completed,
+		)
+	}
+	return err
 }
 
 func (supervisor *inputSupervisor) failInput(
@@ -321,7 +308,7 @@ func (supervisor *inputSupervisor) failInput(
 }
 
 func (supervisor *inputSupervisor) wait() error {
-	timer := time.NewTimer(supervisor.poll)
+	timer := time.NewTimer(supervisor.retry)
 	defer timer.Stop()
 	select {
 	case <-supervisor.ctx.Done():

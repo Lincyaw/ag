@@ -45,6 +45,10 @@ type ExecutionBackend interface {
 	Recover(context.Context, Session) (Execution, error)
 	Current(context.Context, Session) (Execution, error)
 	Get(context.Context, Session, string) (Execution, error)
+	// Wait blocks until the selected execution is terminal. Hosted backends
+	// should observe their runtime completion boundary directly; storage polling
+	// is only a recovery fallback for executions not hosted by this process.
+	Wait(context.Context, Session, string) (Execution, error)
 	Cancel(context.Context, Session, string) (Execution, error)
 	Close(context.Context) error
 }
@@ -92,6 +96,10 @@ type ServiceConfig struct {
 	Interactions     *InteractionManager
 	Directory        PluginDirectory
 	Executions       ExecutionBackend
+	Drainer          ExecutionDrainer
+	Trajectories     TrajectoryBackend
+	EntryPages       TrajectoryEntryPageBackend
+	Conversations    TrajectoryConversationBackend
 	DefaultNamespace string
 	DefaultProvider  string
 	DefaultSystem    string
@@ -99,18 +107,40 @@ type ServiceConfig struct {
 }
 
 type Service struct {
-	store        SessionStore
-	events       EventStore
-	inputs       InputStore
-	interactions *InteractionManager
-	directory    PluginDirectory
-	executions   ExecutionBackend
-	trajectories TrajectoryBackend
-	manager      *Manager
-	supervisor   *inputSupervisor
-	gates        *sessionGate
-	draining     atomic.Bool
-	defaults     Session
+	store         SessionStore
+	events        EventStore
+	inputs        InputStore
+	interactions  *InteractionManager
+	directory     PluginDirectory
+	executions    ExecutionBackend
+	drainer       ExecutionDrainer
+	trajectories  TrajectoryBackend
+	entryPages    TrajectoryEntryPageBackend
+	conversations TrajectoryConversationBackend
+	manager       *Manager
+	supervisor    *inputSupervisor
+	gates         *sessionGate
+	draining      atomic.Bool
+	defaults      Session
+}
+
+type ServiceCapabilities struct {
+	TrajectoryControl bool `json:"trajectory_control"`
+	TrajectoryEntries bool `json:"trajectory_entries"`
+	Conversation      bool `json:"conversation"`
+	GracefulDrain     bool `json:"graceful_drain"`
+}
+
+func (service *Service) Capabilities() ServiceCapabilities {
+	if service == nil {
+		return ServiceCapabilities{}
+	}
+	return ServiceCapabilities{
+		TrajectoryControl: service.trajectories != nil,
+		TrajectoryEntries: service.entryPages != nil || service.trajectories != nil,
+		Conversation:      service.conversations != nil || service.trajectories != nil,
+		GracefulDrain:     service.drainer != nil,
+	}
 }
 
 func NewService(config ServiceConfig) (*Service, error) {
@@ -161,7 +191,22 @@ func NewService(config ServiceConfig) (*Service, error) {
 			MaxTurns: config.DefaultMaxTurns,
 		},
 	}
-	service.trajectories, _ = config.Executions.(TrajectoryBackend)
+	service.trajectories = config.Trajectories
+	if service.trajectories == nil {
+		service.trajectories, _ = config.Executions.(TrajectoryBackend)
+	}
+	service.entryPages = config.EntryPages
+	if service.entryPages == nil {
+		service.entryPages, _ = config.Executions.(TrajectoryEntryPageBackend)
+	}
+	service.conversations = config.Conversations
+	if service.conversations == nil {
+		service.conversations, _ = config.Executions.(TrajectoryConversationBackend)
+	}
+	service.drainer = config.Drainer
+	if service.drainer == nil {
+		service.drainer, _ = config.Executions.(ExecutionDrainer)
+	}
 	manager, err := NewManager(ManagerConfig{
 		Store:            config.Store,
 		Directory:        config.Directory,
@@ -208,8 +253,8 @@ func (service *Service) ListConversation(
 	if err != nil {
 		return ConversationPage{}, err
 	}
-	if projector, ok := service.executions.(TrajectoryConversationBackend); ok {
-		return projector.ListConversation(
+	if service.conversations != nil {
+		return service.conversations.ListConversation(
 			ctx,
 			session,
 			strings.TrimSpace(head),
@@ -239,8 +284,8 @@ func (service *Service) ListTrajectoryEntries(
 	if err != nil {
 		return TrajectoryEntryPage{}, err
 	}
-	if inspector, ok := service.executions.(TrajectoryEntryPageBackend); ok {
-		return inspector.ListTrajectoryEntries(
+	if service.entryPages != nil {
+		return service.entryPages.ListTrajectoryEntries(
 			ctx,
 			session,
 			strings.TrimSpace(head),
@@ -964,11 +1009,10 @@ func (service *Service) Drain(ctx context.Context) error {
 	}
 	service.draining.Store(true)
 	queueErr := service.supervisor.close(ctx)
-	drainer, ok := service.executions.(ExecutionDrainer)
-	if !ok {
+	if service.drainer == nil {
 		return queueErr
 	}
-	return errors.Join(queueErr, drainer.Drain(ctx))
+	return errors.Join(queueErr, service.drainer.Drain(ctx))
 }
 
 func (service *Service) requireIdle(

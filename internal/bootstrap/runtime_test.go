@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	appconfig "github.com/lincyaw/ag/internal/config"
+	"github.com/lincyaw/ag/sdk"
 )
 
 func TestOpenStateBackendDefaultsStateDirectoryToSQLite(t *testing.T) {
@@ -45,7 +46,7 @@ func TestOpenStateBackendDefaultsStateDirectoryToSQLite(t *testing.T) {
 		parsed.Path != filepath.Join(directory, defaultSQLiteStateFile) {
 		t.Fatalf("default backend = %s", backend.String())
 	}
-	if capabilities := backend.Capabilities(); !capabilities.AtomicState {
+	if capabilities := sdk.InspectStorageCapabilities(backend); !capabilities.AtomicState {
 		t.Fatalf("default capabilities = %#v", capabilities)
 	}
 }

@@ -68,10 +68,11 @@ authoritative facts. Before persistence, the gateway removes repeated
 conversation snapshots from events such as `turn_end`; reconnect pages are
 also bounded by encoded bytes rather than only by item count. The former
 `events/events.json` aggregate is read only by the legacy adapter. New legacy
-writes are append-only in
-`events.journal.jsonl`, so the whole aggregate is not decoded and rewritten on
-every runtime event. Existing `events.json` files are left in place and are not
-bulk-imported into SQL because their repeated payloads may be very large.
+writes first enter `events.journal.jsonl`; the adapter periodically publishes
+`events.snapshot.json` and truncates the journal, so startup does not replay an
+unbounded log. Existing `events.json` files remain a read-only base and are not
+copied into the snapshot or bulk-imported into SQL because their repeated
+payloads may be very large.
 
 Startup takes an inter-process lock, checks the ready record through gRPC
 health, writes a mode-`0600` runtime configuration, and launches the current

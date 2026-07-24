@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -61,6 +62,7 @@ type EventStore interface {
 type eventStream struct {
 	NextSequence uint64       `json:"next_sequence"`
 	Events       []AgentEvent `json:"events"`
+	byID         map[string]int
 }
 
 func normalizeEventQuery(query EventQuery) (EventQuery, error) {
@@ -184,9 +186,16 @@ func appendAgentEvent(
 	event sdk.Event,
 	now time.Time,
 ) (eventStream, AgentEvent, bool, error) {
-	for _, current := range stream.Events {
-		if current.ID == event.ID {
-			return stream, cloneAgentEvent(current), false, nil
+	if index, exists := stream.byID[event.ID]; exists {
+		return stream, cloneAgentEvent(stream.Events[index]), false, nil
+	}
+	if stream.byID == nil {
+		stream.byID = make(map[string]int, len(stream.Events)+1)
+		for index, current := range stream.Events {
+			stream.byID[current.ID] = index
+			if current.ID == event.ID {
+				return stream, cloneAgentEvent(current), false, nil
+			}
 		}
 	}
 	if stream.NextSequence == 0 {
@@ -208,16 +217,17 @@ func appendAgentEvent(
 	}
 	stream.NextSequence++
 	stream.Events = append(stream.Events, cloneAgentEvent(created))
+	stream.byID[created.ID] = len(stream.Events) - 1
 	return stream, created, true, nil
 }
 
 func listAgentEvents(stream eventStream, query EventQuery) EventPage {
 	page := EventPage{Items: make([]AgentEvent, 0, query.Limit)}
 	encodedBytes := eventPageEnvelopeOverhead
-	for _, event := range stream.Events {
-		if event.Sequence <= query.After {
-			continue
-		}
+	start := sort.Search(len(stream.Events), func(index int) bool {
+		return stream.Events[index].Sequence > query.After
+	})
+	for _, event := range stream.Events[start:] {
 		if !appendEventPageItem(&page, event, &encodedBytes) {
 			break
 		}
@@ -266,9 +276,11 @@ func cloneEventStream(stream eventStream) eventStream {
 	result := eventStream{
 		NextSequence: stream.NextSequence,
 		Events:       make([]AgentEvent, len(stream.Events)),
+		byID:         make(map[string]int, len(stream.Events)),
 	}
 	for index := range stream.Events {
 		result.Events[index] = cloneAgentEvent(stream.Events[index])
+		result.byID[stream.Events[index].ID] = index
 	}
 	return result
 }
@@ -320,6 +332,10 @@ func validateStoredEventStream(
 			stream.NextSequence,
 			previous,
 		)
+	}
+	stream.byID = make(map[string]int, len(stream.Events))
+	for index, event := range stream.Events {
+		stream.byID[event.ID] = index
 	}
 	return cloneEventStream(stream), nil
 }

@@ -28,6 +28,10 @@ type Config struct {
 	Workspace     Workspace               `mapstructure:"workspace" json:"workspace" yaml:"workspace"`
 	Bash          Bash                    `mapstructure:"bash" json:"bash" yaml:"bash"`
 	Compact       Compact                 `mapstructure:"compact" json:"compact" yaml:"compact"`
+	SystemPrompt  SystemPrompt            `mapstructure:"system_prompt" json:"system_prompt" yaml:"system_prompt"`
+	Skills        Skills                  `mapstructure:"skills" json:"skills" yaml:"skills"`
+	Memory        Memory                  `mapstructure:"memory" json:"memory" yaml:"memory"`
+	Subagent      Subagent                `mapstructure:"subagent" json:"subagent" yaml:"subagent"`
 	Plugins       Plugins                 `mapstructure:"plugins" json:"plugins" yaml:"plugins"`
 	Registry      Registry                `mapstructure:"registry" json:"registry" yaml:"registry"`
 	Gateway       Gateway                 `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
@@ -117,6 +121,43 @@ type Compact struct {
 	KeepRecentMessages int  `mapstructure:"keep_recent_messages" json:"keep_recent_messages" yaml:"keep_recent_messages"`
 	MaxMessageChars    int  `mapstructure:"max_message_chars" json:"max_message_chars" yaml:"max_message_chars"`
 	MaxToolResultChars int  `mapstructure:"max_tool_result_chars" json:"max_tool_result_chars" yaml:"max_tool_result_chars"`
+}
+
+type SystemPrompt struct {
+	Enabled      bool   `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
+	Prompt       string `mapstructure:"prompt" json:"prompt,omitempty" yaml:"prompt,omitempty"`
+	PromptFile   string `mapstructure:"prompt_file" json:"prompt_file,omitempty" yaml:"prompt_file,omitempty"`
+	MaxFileBytes int64  `mapstructure:"max_file_bytes" json:"max_file_bytes" yaml:"max_file_bytes"`
+}
+
+type Skills struct {
+	Enabled         bool     `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
+	Paths           []string `mapstructure:"paths" json:"paths,omitempty" yaml:"paths,omitempty"`
+	IncludeDefaults bool     `mapstructure:"include_defaults" json:"include_defaults" yaml:"include_defaults"`
+	MaxReadBytes    int64    `mapstructure:"max_read_bytes" json:"max_read_bytes" yaml:"max_read_bytes"`
+}
+
+type Memory struct {
+	Enabled             bool   `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
+	Path                string `mapstructure:"path" json:"path" yaml:"path"`
+	EnableWrite         bool   `mapstructure:"enable_write" json:"enable_write" yaml:"enable_write"`
+	IndexInSystemPrompt bool   `mapstructure:"index_in_system_prompt" json:"index_in_system_prompt" yaml:"index_in_system_prompt"`
+	MaxReadBytes        int64  `mapstructure:"max_read_bytes" json:"max_read_bytes" yaml:"max_read_bytes"`
+	MaxIndexEntries     int    `mapstructure:"max_index_entries" json:"max_index_entries" yaml:"max_index_entries"`
+}
+
+type Subagent struct {
+	Enabled bool            `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
+	Agents  []SubagentAgent `mapstructure:"agents" json:"agents,omitempty" yaml:"agents,omitempty"`
+}
+
+type SubagentAgent struct {
+	Name        string   `mapstructure:"name" json:"name" yaml:"name"`
+	Description string   `mapstructure:"description" json:"description" yaml:"description"`
+	Provider    string   `mapstructure:"provider" json:"provider,omitempty" yaml:"provider,omitempty"`
+	System      string   `mapstructure:"system" json:"system,omitempty" yaml:"system,omitempty"`
+	MaxTurns    int      `mapstructure:"max_turns" json:"max_turns,omitempty" yaml:"max_turns,omitempty"`
+	Tools       []string `mapstructure:"tools" json:"tools,omitempty" yaml:"tools,omitempty"`
 }
 
 type Plugins struct {
@@ -255,6 +296,33 @@ func (c Config) Validate() error {
 		c.Compact.TargetTokens < 1 || c.Compact.KeepRecentMessages < 1 ||
 		c.Compact.MaxMessageChars < 1 || c.Compact.MaxToolResultChars < 1) {
 		return errors.New("compact limits must be positive")
+	}
+	if c.SystemPrompt.Enabled && c.SystemPrompt.MaxFileBytes < 1 {
+		return errors.New("system_prompt.max_file_bytes must be positive")
+	}
+	if c.Skills.Enabled && c.Skills.MaxReadBytes < 1 {
+		return errors.New("skills.max_read_bytes must be positive")
+	}
+	for _, path := range c.Skills.Paths {
+		if strings.TrimSpace(path) == "" {
+			return errors.New("skills.paths contains an empty entry")
+		}
+	}
+	if c.Memory.Enabled && (strings.TrimSpace(c.Memory.Path) == "" ||
+		c.Memory.MaxReadBytes < 1 || c.Memory.MaxIndexEntries < 1) {
+		return errors.New("memory path and limits must be configured")
+	}
+	for index, agent := range c.Subagent.Agents {
+		if strings.TrimSpace(agent.Name) == "" ||
+			strings.TrimSpace(agent.Description) == "" ||
+			agent.MaxTurns < 0 {
+			return fmt.Errorf("subagent.agents[%d] is invalid", index)
+		}
+		for _, tool := range agent.Tools {
+			if strings.TrimSpace(tool) == "" {
+				return fmt.Errorf("subagent.agents[%d].tools contains an empty entry", index)
+			}
+		}
 	}
 	if strings.TrimSpace(c.State.Directory) == "" &&
 		strings.TrimSpace(c.State.BackendURI) == "" {
@@ -433,6 +501,22 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("compact.keep_recent_messages", 16)
 	v.SetDefault("compact.max_message_chars", 2_000)
 	v.SetDefault("compact.max_tool_result_chars", 4_000)
+	v.SetDefault("system_prompt.enabled", true)
+	v.SetDefault("system_prompt.prompt", "")
+	v.SetDefault("system_prompt.prompt_file", "")
+	v.SetDefault("system_prompt.max_file_bytes", 1<<20)
+	v.SetDefault("skills.enabled", true)
+	v.SetDefault("skills.paths", []string{})
+	v.SetDefault("skills.include_defaults", true)
+	v.SetDefault("skills.max_read_bytes", 1<<20)
+	v.SetDefault("memory.enabled", true)
+	v.SetDefault("memory.path", ".ag/memory")
+	v.SetDefault("memory.enable_write", true)
+	v.SetDefault("memory.index_in_system_prompt", true)
+	v.SetDefault("memory.max_read_bytes", 1<<20)
+	v.SetDefault("memory.max_index_entries", 200)
+	v.SetDefault("subagent.enabled", true)
+	v.SetDefault("subagent.agents", []map[string]any{})
 	v.SetDefault("plugins.remote", []string{})
 	v.SetDefault("plugins.registry_uri", "")
 	v.SetDefault("plugins.registry_namespace", "default")

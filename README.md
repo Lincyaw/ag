@@ -155,6 +155,31 @@ Remote aliases share the plugin namespace with local plugins. Disable a local
 plugin (for example, `--file=false`) before mounting a remote plugin under the
 same name; `ag plugin inspect grpc://host:port` can inspect a URI directly.
 
+## Prompt context, skills, memory, and subagents
+
+Four local plugins are enabled by default:
+
+- `system-prompt` loads `AGENTS.md` and `CLAUDE.md` from the filesystem
+  hierarchy down to `workspace.root`, then prepends that context to
+  `agent.system`. Configure `system_prompt.prompt_file` or
+  `system_prompt.prompt` to use an explicit prompt instead.
+- `skills` discovers `SKILL.md` resources, appends an
+  `<available_skills>` index to the system prompt, and exposes the
+  `load_skill` tool. Project `.ag`, `.agentm`, `.agents`, `.claude`, and
+  `.codex` skill directories are supported, along with user `.ag`,
+  `.agentm`, and `.claude` directories and explicit `skills.paths`.
+- `memory` keeps typed project memories below `.ag/memory`. A compact index is
+  appended to the system prompt; `memory_read` and `memory_search` load details
+  on demand, while `memory_save` and `memory_delete` maintain the store.
+- `subagent` registers a general-purpose child agent and the `dispatch_agent`
+  tool. Each dispatch runs through the runtime's durable new/fork/resume
+  trajectory machinery and returns its session ID with the result. Configure
+  specialized agents with `subagent.agents`, including provider, system prompt,
+  turn limit, and tool allowlist.
+
+These are ordinary SDK plugins. They can be disabled independently with their
+respective `enabled` setting.
+
 Use `--registry-uri` and `--lease-ttl` on a standalone plugin to register and
 renew a discovery lease. Discovery never implies execution: `ag plugin
 discover` lists active leases, while `ag run` mounts only explicitly configured

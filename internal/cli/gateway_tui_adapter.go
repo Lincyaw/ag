@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	gatewayclient "github.com/lincyaw/ag/gateway/client"
 	cagentapp "github.com/lincyaw/ag/internal/cagent/app"
 	cagentchat "github.com/lincyaw/ag/internal/cagent/chat"
+	cagenttypes "github.com/lincyaw/ag/internal/cagent/config/types"
 	cagentruntime "github.com/lincyaw/ag/internal/cagent/runtime"
 	cagentsession "github.com/lincyaw/ag/internal/cagent/session"
 	cagenttools "github.com/lincyaw/ag/internal/cagent/tools"
@@ -115,6 +117,7 @@ func newGatewayTUIBinding(
 	binding.App.SetAgentInfo(
 		gatewayTUIToolNames(trajectory), nil, trajectory.Models, trajectory.Model,
 	)
+	binding.App.SetAgentCommands(gatewayTUICommands(trajectory))
 	binding.App.TrackThinkingLevel(trajectory.ThinkingLevel)
 	return binding, nil
 }
@@ -507,11 +510,22 @@ func (binding *gatewayTUIBinding) translate(event gateway.AgentEvent) {
 
 func (binding *gatewayTUIBinding) applyMetadata(metadata gateway.Session) {
 	binding.mu.Lock()
+	previousCommands := gatewayTUICommands(binding.metadata)
 	binding.metadata = metadata
 	binding.mu.Unlock()
+	commands := gatewayTUICommands(metadata)
 	binding.App.SetAgentInfo(
 		gatewayTUIToolNames(metadata), nil, metadata.Models, metadata.Model,
 	)
+	binding.App.SetAgentCommands(commands)
+	if !maps.Equal(previousCommands, commands) {
+		binding.App.EmitEvent(cagentruntime.AgentInfo(
+			gatewayTUIAgentName,
+			metadata.Model,
+			"",
+			"",
+		))
+	}
 	binding.App.TrackThinkingLevel(metadata.ThinkingLevel)
 	binding.Session.Permissions = &cagentsession.PermissionsConfig{
 		Allow: slices.Clone(metadata.Permissions.Allow),
@@ -544,6 +558,19 @@ func (binding *gatewayTUIBinding) applyMetadata(metadata gateway.Session) {
 			gatewayTUIAgentName,
 		))
 	}
+}
+
+func gatewayTUICommands(metadata gateway.Session) cagenttypes.Commands {
+	commands := make(cagenttypes.Commands)
+	for _, plugin := range metadata.Plugins {
+		for _, command := range plugin.Manifest.Commands {
+			commands[command.Name] = cagenttypes.Command{
+				Description: command.Description,
+				Instruction: command.Instruction,
+			}
+		}
+	}
+	return commands
 }
 
 func gatewayTUIToolNames(metadata gateway.Session) []string {

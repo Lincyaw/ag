@@ -430,17 +430,25 @@ type TrajectoryEntryInspector interface {
 	) (TrajectoryMetadata, []TrajectoryEntryInspection, error)
 }
 
-// TrajectoryStore is the only trajectory dependency accepted by Runtime.
-// Files, databases, object stores, and network services are implementations of
-// this port rather than execution-time special cases.
-type TrajectoryStore interface {
+// TrajectoryCreator owns aggregate creation.
+type TrajectoryCreator interface {
 	Create(context.Context, Trajectory) error
+}
+
+// TrajectoryAppender owns appends made outside an active execution.
+type TrajectoryAppender interface {
 	Append(
 		context.Context,
 		string,
 		string,
 		...TrajectoryEntry,
 	) (string, error)
+}
+
+// TrajectoryExecutionStore owns execution admission, leases, completion, and
+// recovery. Keeping this contract separate prevents control-plane readers from
+// depending on mutation methods.
+type TrajectoryExecutionStore interface {
 	BeginExecution(
 		context.Context,
 		string,
@@ -478,24 +486,48 @@ type TrajectoryStore interface {
 		context.Context,
 		time.Time,
 	) ([]TrajectoryMetadata, error)
+}
+
+// TrajectoryReader is the targeted branch/entry read port used by Runtime.
+type TrajectoryReader interface {
 	LoadMetadata(context.Context, string) (TrajectoryMetadata, error)
 	LoadEntry(context.Context, string, string) (TrajectoryEntry, error)
 	LoadBranch(context.Context, string, string) ([]TrajectoryEntry, error)
-	// LoadBranchView materializes the trajectory projection visible at head.
-	// Unlike Load, it only includes entries reachable from that branch head.
-	LoadBranchView(context.Context, string, string) (Trajectory, error)
 	FindLatest(
 		context.Context,
 		string,
 		string,
 		TrajectoryKind,
 	) (TrajectoryEntry, bool, error)
+}
+
+// TrajectoryProjectionReader exposes materialized compatibility views. Runtime
+// code should prefer TrajectoryReader so it does not load unrelated payloads.
+type TrajectoryProjectionReader interface {
+	// LoadBranchView materializes the trajectory projection visible at head.
+	// Unlike Load, it only includes entries reachable from that branch head.
+	LoadBranchView(context.Context, string, string) (Trajectory, error)
 	// Load materializes inherited entries and locally owned entries into a
 	// compatibility view. Runtime recovery should use the targeted read methods.
 	Load(context.Context, string) (Trajectory, error)
+}
+
+// TrajectoryCatalog owns listing and retention operations.
+type TrajectoryCatalog interface {
 	List(context.Context) ([]TrajectorySummary, error)
 	ListPage(context.Context, PageRequest) (TrajectoryPage, error)
 	Delete(context.Context, string) error
+}
+
+// TrajectoryStore is the complete storage-adapter contract. Consumers should
+// accept the narrow interfaces above whenever they need only part of it.
+type TrajectoryStore interface {
+	TrajectoryCreator
+	TrajectoryAppender
+	TrajectoryExecutionStore
+	TrajectoryReader
+	TrajectoryProjectionReader
+	TrajectoryCatalog
 }
 
 func (kind TrajectoryKind) Valid() bool {

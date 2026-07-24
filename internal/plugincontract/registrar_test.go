@@ -71,3 +71,32 @@ func TestRegistrarRejectsDuplicateEventFields(t *testing.T) {
 		t.Fatalf("validation error = %v", err)
 	}
 }
+
+func TestRegistrarRegistersAndValidatesCommands(t *testing.T) {
+	spec := sdk.CommandSpec{
+		Name:        "review",
+		Description: "Review a target",
+		Instruction: "Review $ARGUMENTS",
+	}
+	registrar := NewRegistrar()
+	if err := sdk.RegisterCommand(registrar, spec); err != nil {
+		t.Fatal(err)
+	}
+	if got := registrar.Resources(); !slices.Equal(
+		got,
+		[]string{sdk.CommandResource("review")},
+	) {
+		t.Fatalf("command resources = %v", got)
+	}
+	manifest := sdk.Manifest{
+		Name:        "commands",
+		Version:     "1.0.0",
+		Description: "contributes commands",
+		APIVersion:  sdk.APIVersion,
+		Registers:   []string{sdk.CommandResource("review")},
+		Commands:    []sdk.CommandSpec{spec},
+	}
+	if err := registrar.ValidateManifest(manifest); err != nil {
+		t.Fatal(err)
+	}
+}

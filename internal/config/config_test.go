@@ -58,6 +58,26 @@ level = "debug"
 	if loaded.Config.Logging.Format != "json" {
 		t.Fatalf("default log format = %q", loaded.Config.Logging.Format)
 	}
+	if !loaded.Config.SystemPrompt.Enabled ||
+		loaded.Config.SystemPrompt.MaxFileBytes != 1<<20 ||
+		!loaded.Config.Skills.Enabled ||
+		!loaded.Config.Skills.IncludeDefaults ||
+		loaded.Config.Skills.MaxReadBytes != 1<<20 ||
+		!loaded.Config.Memory.Enabled ||
+		!loaded.Config.Memory.EnableWrite ||
+		!loaded.Config.Memory.IndexInSystemPrompt ||
+		loaded.Config.Memory.Path != ".ag/memory" ||
+		loaded.Config.Memory.MaxReadBytes != 1<<20 ||
+		loaded.Config.Memory.MaxIndexEntries != 200 ||
+		!loaded.Config.Subagent.Enabled {
+		t.Fatalf(
+			"plugin defaults = %#v / %#v / %#v / %#v",
+			loaded.Config.SystemPrompt,
+			loaded.Config.Skills,
+			loaded.Config.Memory,
+			loaded.Config.Subagent,
+		)
+	}
 }
 
 func TestOpenAIAPIKeyEnvironmentAlias(t *testing.T) {

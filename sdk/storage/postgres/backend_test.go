@@ -78,7 +78,7 @@ func TestBackendSharesDurableStateAcrossIndependentPools(t *testing.T) {
 	namespace := "multipool-" + sdk.NewID()
 	first := openPostgresTestBackend(t, namespace)
 	second := openPostgresTestBackend(t, namespace)
-	capabilities := first.Capabilities()
+	capabilities := sdk.InspectStorageCapabilities(first)
 	if !capabilities.Durable ||
 		!capabilities.MultiProcessSafe ||
 		!capabilities.AtomicState {

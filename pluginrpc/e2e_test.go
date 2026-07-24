@@ -122,6 +122,12 @@ type e2ePlugin struct {
 	received chan sdk.Delivery
 }
 
+var e2eCommand = sdk.CommandSpec{
+	Name:        "remote-review",
+	Description: "Review through the remote plugin",
+	Instruction: "Review $ARGUMENTS",
+}
+
 func newE2EPlugin() *e2ePlugin {
 	return &e2ePlugin{
 		provider: &e2eProvider{},
@@ -141,7 +147,9 @@ func (plugin *e2ePlugin) Manifest() sdk.Manifest {
 			sdk.CapabilityResource("remote-state"),
 			sdk.HookResource("remote-system"),
 			sdk.SubscriberResource("remote-terminal-events"),
+			sdk.CommandResource(e2eCommand.Name),
 		},
+		Commands: []sdk.CommandSpec{e2eCommand},
 	}
 }
 
@@ -175,6 +183,7 @@ func (plugin *e2ePlugin) Install(
 		registrar.RegisterCapability(e2eCapability{}),
 		registrar.RegisterHook(hook),
 		registrar.RegisterSubscriber(subscriber),
+		sdk.RegisterCommand(registrar, e2eCommand),
 	)
 }
 
@@ -260,7 +269,8 @@ func TestRemotePluginRealTCPRunsSessionHookToolAndSubscriber(t *testing.T) {
 	catalog := runtime.Catalog()
 	if len(catalog.Providers) != 1 || len(catalog.Tools) != 1 ||
 		len(catalog.Hooks) != 1 || len(catalog.Subscribers) != 1 ||
-		len(catalog.Capabilities) != 1 {
+		len(catalog.Capabilities) != 1 || len(catalog.Commands) != 1 ||
+		catalog.Commands[0] != e2eCommand {
 		t.Fatalf("remote catalog = %#v", catalog)
 	}
 

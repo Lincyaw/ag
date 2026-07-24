@@ -11,8 +11,10 @@ const (
 	PluginInboxQueue = "plugin-inbox"
 )
 
-// StorageCapabilities make correctness properties explicit instead of asking
-// callers to infer them from a backend's name.
+// StorageCapabilities describes backend properties used for validation and
+// diagnostics. AtomicState is the exception retained in the diagnostic schema:
+// InspectStorageCapabilities derives it from the backend's method set, and
+// runtime code uses AtomicStateBackend directly.
 type StorageCapabilities struct {
 	Durable            bool `json:"durable"`
 	MultiProcessSafe   bool `json:"multi_process_safe"`
@@ -23,6 +25,17 @@ type StorageCapabilities struct {
 	NamedQueues        bool `json:"named_queues"`
 	NamespaceIsolation bool `json:"namespace_isolation"`
 	EncryptedAtRest    bool `json:"encrypted_at_rest"`
+}
+
+// InspectStorageCapabilities returns capabilities suitable for diagnostics.
+// Correctness-sensitive code must use the relevant interface directly.
+func InspectStorageCapabilities(backend StateBackend) StorageCapabilities {
+	if backend == nil {
+		return StorageCapabilities{}
+	}
+	capabilities := backend.Capabilities()
+	_, capabilities.AtomicState = backend.(AtomicStateBackend)
+	return capabilities
 }
 
 type RetentionPolicy struct {
@@ -64,16 +77,20 @@ func CloneStateMutationOutbox(
 	return result
 }
 
-// ExecutionStepDeliveries is kept as a source-compatible alias for older
-// callers. New atomic state APIs should use StateMutationDeliveries.
+// ExecutionStepDeliveries is retained for source compatibility.
+// Deprecated: use StateMutationDeliveries.
 type ExecutionStepDeliveries = StateMutationDeliveries
 
+// CloneExecutionStepDeliveries is retained for source compatibility.
+// Deprecated: use CloneStateMutationDeliveries.
 func CloneExecutionStepDeliveries(
 	group ExecutionStepDeliveries,
 ) ExecutionStepDeliveries {
 	return CloneStateMutationDeliveries(group)
 }
 
+// CloneExecutionStepOutbox is retained for source compatibility.
+// Deprecated: use CloneStateMutationOutbox.
 func CloneExecutionStepOutbox(
 	outbox []ExecutionStepDeliveries,
 ) []ExecutionStepDeliveries {
@@ -117,12 +134,12 @@ type ExecutionMutationResult struct {
 	Trajectory TrajectoryMetadata `json:"trajectory"`
 }
 
-// ExecutionStepCommit is kept as a source-compatible alias for older callers.
-// New atomic state APIs should use ExecutionMutationCommit.
+// ExecutionStepCommit is retained for source compatibility.
+// Deprecated: use ExecutionMutationCommit.
 type ExecutionStepCommit = ExecutionMutationCommit
 
-// ExecutionStepResult is kept as a source-compatible alias for older callers.
-// New atomic state APIs should use ExecutionMutationResult.
+// ExecutionStepResult is retained for source compatibility.
+// Deprecated: use ExecutionMutationResult.
 type ExecutionStepResult = ExecutionMutationResult
 
 // ExecutionCancelCommit is the durable boundary for externally cancelling one
@@ -173,9 +190,8 @@ type StateBackend interface {
 }
 
 // AtomicStateBackend is an optional stronger StateBackend contract. Runtime
-// uses it when AtomicState is advertised; callers of Runtime remain neutral to
-// the concrete database. Backends must keep this interface and their
-// Capabilities().AtomicState flag consistent.
+// discovers it from the method set; callers remain neutral to the concrete
+// database.
 type AtomicStateBackend interface {
 	StateBackend
 	AppendTrajectory(

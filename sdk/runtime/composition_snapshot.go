@@ -98,6 +98,11 @@ func (agent ownedAgent) resourceRevision(name string) string {
 	return agent.resourceIdentity(name).Revision()
 }
 
+type ownedCommand struct {
+	owner *mountState
+	spec  sdk.CommandSpec
+}
+
 type registrySnapshot struct {
 	generation   uint64
 	plugins      map[string]*mountState
@@ -108,6 +113,7 @@ type registrySnapshot struct {
 	subscribers  map[string]ownedResource[sdk.Subscriber, sdk.SubscriberSpec]
 	capabilities map[string]ownedResource[sdk.AsyncCapability, sdk.CapabilitySpec]
 	events       map[string]ownedEvent
+	commands     map[string]ownedCommand
 }
 
 func (snapshot *registrySnapshot) includePluginOwner(owner *mountState) {
@@ -127,6 +133,7 @@ func initialSnapshot() *registrySnapshot {
 		subscribers:  make(map[string]ownedResource[sdk.Subscriber, sdk.SubscriberSpec]),
 		capabilities: make(map[string]ownedResource[sdk.AsyncCapability, sdk.CapabilitySpec]),
 		events:       make(map[string]ownedEvent),
+		commands:     make(map[string]ownedCommand),
 	}
 	for _, builtin := range builtinEventContracts {
 		snapshot.events[builtin.Name] = ownedEvent{
@@ -147,6 +154,7 @@ func (snapshot *registrySnapshot) clone() *registrySnapshot {
 		subscribers:  make(map[string]ownedResource[sdk.Subscriber, sdk.SubscriberSpec], len(snapshot.subscribers)),
 		capabilities: make(map[string]ownedResource[sdk.AsyncCapability, sdk.CapabilitySpec], len(snapshot.capabilities)),
 		events:       make(map[string]ownedEvent, len(snapshot.events)),
+		commands:     maps.Clone(snapshot.commands),
 	}
 	for name, tool := range snapshot.tools {
 		tool.spec = sdk.CloneToolSpec(tool.spec)
@@ -201,6 +209,9 @@ func (snapshot *registrySnapshot) resources() map[string]struct{} {
 	}
 	for name := range snapshot.events {
 		resources[sdk.EventResource(name)] = struct{}{}
+	}
+	for name := range snapshot.commands {
+		resources[sdk.CommandResource(name)] = struct{}{}
 	}
 	return resources
 }
@@ -426,6 +437,12 @@ func (snapshot *registrySnapshot) add(
 			contract: contract,
 		}
 	}
+	for commandName, spec := range staged.Commands {
+		snapshot.commands[commandName] = ownedCommand{
+			owner: state,
+			spec:  spec,
+		}
+	}
 	for _, hookName := range staged.HookOrder {
 		hook := staged.Hooks[hookName]
 		eventName := hook.Spec.Event
@@ -494,6 +511,11 @@ func (snapshot *registrySnapshot) without(
 	for name, event := range result.events {
 		if event.owner == state {
 			delete(result.events, name)
+		}
+	}
+	for name, command := range result.commands {
+		if command.owner == state {
+			delete(result.commands, name)
 		}
 	}
 	return result

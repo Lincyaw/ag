@@ -227,6 +227,7 @@ type remoteConnection struct {
 	subscribers  []sdk.SubscriberSpec
 	capabilities []sdk.CapabilitySpec
 	events       []sdk.EventContract
+	commands     []sdk.CommandSpec
 }
 
 func newRemoteConnection(
@@ -256,6 +257,9 @@ func newRemoteConnection(
 	}
 	for _, contract := range description.GetEvents() {
 		remote.events = append(remote.events, fromProtoEventContract(contract))
+	}
+	for _, spec := range description.GetCommands() {
+		remote.commands = append(remote.commands, fromProtoCommandSpec(spec))
 	}
 	return remote, nil
 }
@@ -293,6 +297,11 @@ func (remote *remoteConnection) Install(
 	}
 	for _, contract := range remote.events {
 		if err := registrar.RegisterEvent(contract); err != nil {
+			return err
+		}
+	}
+	for _, spec := range remote.commands {
+		if err := sdk.RegisterCommand(registrar, spec); err != nil {
 			return err
 		}
 	}

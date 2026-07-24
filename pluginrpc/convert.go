@@ -22,6 +22,7 @@ func toProtoManifest(manifest sdk.Manifest) *pluginv1.Manifest {
 		Requires:      append([]string(nil), manifest.Requires...),
 		Conflicts:     append([]string(nil), manifest.Conflicts...),
 		Registers:     append([]string(nil), manifest.Registers...),
+		Commands:      toProtoCommandSpecs(manifest.Commands),
 	}
 }
 
@@ -39,11 +40,47 @@ func fromProtoManifest(manifest *pluginv1.Manifest) (sdk.Manifest, error) {
 		Requires:      append([]string(nil), manifest.GetRequires()...),
 		Conflicts:     append([]string(nil), manifest.GetConflicts()...),
 		Registers:     append([]string(nil), manifest.GetRegisters()...),
+		Commands:      fromProtoCommandSpecs(manifest.GetCommands()),
 	}
 	if err := result.Validate(); err != nil {
 		return sdk.Manifest{}, err
 	}
 	return result, nil
+}
+
+func toProtoCommandSpec(spec sdk.CommandSpec) *pluginv1.CommandSpec {
+	return &pluginv1.CommandSpec{
+		Name: spec.Name, Description: spec.Description, Instruction: spec.Instruction,
+	}
+}
+
+func toProtoCommandSpecs(specs []sdk.CommandSpec) []*pluginv1.CommandSpec {
+	if len(specs) == 0 {
+		return nil
+	}
+	result := make([]*pluginv1.CommandSpec, 0, len(specs))
+	for _, spec := range specs {
+		result = append(result, toProtoCommandSpec(spec))
+	}
+	return result
+}
+
+func fromProtoCommandSpec(spec *pluginv1.CommandSpec) sdk.CommandSpec {
+	return sdk.CommandSpec{
+		Name: spec.GetName(), Description: spec.GetDescription(),
+		Instruction: spec.GetInstruction(),
+	}
+}
+
+func fromProtoCommandSpecs(specs []*pluginv1.CommandSpec) []sdk.CommandSpec {
+	if len(specs) == 0 {
+		return nil
+	}
+	result := make([]sdk.CommandSpec, 0, len(specs))
+	for _, spec := range specs {
+		result = append(result, fromProtoCommandSpec(spec))
+	}
+	return result
 }
 
 func toProtoProviderSpec(spec sdk.ProviderSpec) *pluginv1.ProviderSpec {

@@ -67,6 +67,31 @@ func TestManifestValidationDoesNotMutateResourceSlices(t *testing.T) {
 	}
 }
 
+func TestManifestValidatesCommandDeclarations(t *testing.T) {
+	t.Parallel()
+	command := CommandSpec{
+		Name:        "review",
+		Description: "Review a target",
+		Instruction: "Review $ARGUMENTS",
+	}
+	manifest := Manifest{
+		Name:        "commands",
+		Version:     "1.0.0",
+		Description: "contributes commands",
+		APIVersion:  APIVersion,
+		Registers:   []string{CommandResource(command.Name)},
+		Commands:    []CommandSpec{command},
+	}
+	if err := manifest.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	manifest.Registers = nil
+	if err := manifest.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "missing") {
+		t.Fatalf("missing command resource validation error = %v", err)
+	}
+}
+
 func TestResourceRevisionEncodingIsStable(t *testing.T) {
 	t.Parallel()
 	revision := ResourceRevision(

@@ -159,6 +159,12 @@ func TestInputSupervisorDoesNotBindOlderActiveExecutionToRecoveredInput(t *testi
 
 func TestServiceDrainStopsAdmissionAndDrainsExecutionBackend(t *testing.T) {
 	service, backend := newInputSupervisorTestService(t)
+	if capabilities := service.Capabilities(); !capabilities.GracefulDrain ||
+		capabilities.TrajectoryControl ||
+		capabilities.TrajectoryEntries ||
+		capabilities.Conversation {
+		t.Fatalf("service capabilities = %#v", capabilities)
+	}
 	session := createInputSupervisorTestSession(t, service, "draining")
 	if err := service.Drain(t.Context()); err != nil {
 		t.Fatal(err)
@@ -369,6 +375,27 @@ func (backend *queueExecutionBackend) Get(
 		return Execution{}, ErrExecutionNotFound
 	}
 	return execution, nil
+}
+
+func (backend *queueExecutionBackend) Wait(
+	ctx context.Context,
+	session Session,
+	executionID string,
+) (Execution, error) {
+	for {
+		execution, err := backend.Get(ctx, session, executionID)
+		if err != nil {
+			return Execution{}, err
+		}
+		if execution.Execution.Terminal() {
+			return execution, nil
+		}
+		select {
+		case <-ctx.Done():
+			return Execution{}, ctx.Err()
+		case <-time.After(time.Millisecond):
+		}
+	}
 }
 
 func (backend *queueExecutionBackend) Cancel(

@@ -200,6 +200,16 @@ type AsyncCapability interface {
 	CancelInvoke(context.Context, string) (Operation, error)
 }
 
+// CommandSpec describes a slash command contributed by a plugin. Commands are
+// prompt shortcuts: the TUI resolves Instruction and submits the resulting
+// text as the next user turn. "$ARGUMENTS" is replaced with the invocation
+// arguments; when it is absent, non-empty arguments are appended.
+type CommandSpec struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Instruction string `json:"instruction"`
+}
+
 func cloneJSONMap(source map[string]any) map[string]any {
 	if source == nil {
 		return nil

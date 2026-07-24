@@ -849,7 +849,7 @@ func TestRuntimeValidatesConfigBeforeTouchingStorage(t *testing.T) {
 	}
 }
 
-func TestRuntimeRejectsInconsistentStorageCapabilities(t *testing.T) {
+func TestRuntimeRejectsMissingRequiredStorageCapabilities(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name    string
@@ -876,21 +876,6 @@ func TestRuntimeRejectsInconsistentStorageCapabilities(t *testing.T) {
 			}),
 			want: "state backend must advertise named delivery queues",
 		},
-		{
-			name: "advertises atomic without interface",
-			backend: stateBackendWithCapabilities(func(
-				capabilities sdk.StorageCapabilities,
-			) sdk.StorageCapabilities {
-				capabilities.AtomicState = true
-				return capabilities
-			}),
-			want: "state backend advertises atomic state without implementing AtomicStateBackend",
-		},
-		{
-			name:    "implements atomic without advertising",
-			backend: hiddenAtomicStateTestBackend(),
-			want:    "state backend implements AtomicStateBackend without advertising atomic state",
-		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -900,6 +885,41 @@ func TestRuntimeRejectsInconsistentStorageCapabilities(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRuntimeDiscoversAtomicStateFromMethodSet(t *testing.T) {
+	t.Parallel()
+	backend := hiddenAtomicStateTestBackend()
+	runtime, err := NewRuntime(RuntimeConfig{Storage: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := runtime.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	if !sdk.InspectStorageCapabilities(backend).AtomicState {
+		t.Fatal("atomic state capability was not discovered from method set")
+	}
+	nonAtomic := stateBackendWithCapabilities(func(
+		capabilities sdk.StorageCapabilities,
+	) sdk.StorageCapabilities {
+		capabilities.AtomicState = true
+		return capabilities
+	})
+	if sdk.InspectStorageCapabilities(nonAtomic).AtomicState {
+		t.Fatal("atomic state capability trusted a descriptive flag")
+	}
+	plainRuntime, err := NewRuntime(RuntimeConfig{Storage: nonAtomic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := plainRuntime.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
 }
 
 func stateBackendWithCapabilities(
@@ -915,7 +935,6 @@ func stateBackendWithCapabilities(
 func hiddenAtomicStateTestBackend() sdk.StateBackend {
 	backend := newTestStateBackend()
 	capabilities := backend.Capabilities()
-	capabilities.AtomicState = false
 	return &hiddenAtomicStateBackend{
 		atomicTestBackend: &atomicTestBackend{StateBackend: backend},
 		capabilities:      capabilities,

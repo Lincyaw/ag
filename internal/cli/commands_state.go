@@ -51,7 +51,7 @@ func (application *app) stateCommand() *cobra.Command {
 				Namespace:          backend.Namespace(),
 				Selection:          string(resolution.Source),
 				LegacyFileFallback: resolution.LegacyFileFallback(),
-				Capabilities:       backend.Capabilities(),
+				Capabilities:       sdk.InspectStorageCapabilities(backend),
 			})
 		},
 	}

@@ -18,6 +18,39 @@ max_retries = 2
 root = "."
 max_read_bytes = 65536
 
+[system_prompt]
+# With no prompt/prompt_file, AGENTS.md and CLAUDE.md are loaded from the
+# filesystem hierarchy down to workspace.root.
+enabled = true
+max_file_bytes = 1048576
+
+[skills]
+# Discovers SKILL.md under project/user .ag, .agentm, .agents, .claude, and
+# .codex skill directories. Add explicit files or directories with paths.
+enabled = true
+include_defaults = true
+paths = []
+max_read_bytes = 1048576
+
+[memory]
+# The compact MEMORY.md-style index is added to the system prompt; full
+# memory bodies are read only when relevant.
+enabled = true
+path = ".ag/memory"
+enable_write = true
+index_in_system_prompt = true
+max_read_bytes = 1048576
+max_index_entries = 200
+
+[subagent]
+# With no explicit agents, a general-purpose child agent is registered. Child
+# sessions use the runtime's durable trajectory and invocation machinery.
+enabled = true
+# agents = [
+#   { name = "reviewer", description = "Reviews code changes", max_turns = 4,
+#     tools = ["read_file", "search_files"] }
+# ]
+
 [gateway]
 # Empty means ag automatically manages a local background process. Set a
 # grpc:// or grpcs:// target only when attaching to a remote manager.

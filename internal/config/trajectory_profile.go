@@ -10,6 +10,10 @@ type TrajectoryRuntimeProfile struct {
 	Workspace     Workspace               `json:"workspace"`
 	Bash          TrajectoryBashProfile   `json:"bash"`
 	Compact       Compact                 `json:"compact"`
+	SystemPrompt  SystemPrompt            `json:"system_prompt"`
+	Skills        Skills                  `json:"skills"`
+	Memory        Memory                  `json:"memory"`
+	Subagent      Subagent                `json:"subagent"`
 	Plugins       Plugins                 `json:"plugins"`
 	Observability Observability           `json:"observability"`
 }
@@ -50,6 +54,10 @@ func NewTrajectoryRuntimeProfile(config Config) TrajectoryRuntimeProfile {
 			Environment:           append([]string(nil), config.Bash.Environment...),
 		},
 		Compact:       config.Compact,
+		SystemPrompt:  config.SystemPrompt,
+		Skills:        config.Skills,
+		Memory:        config.Memory,
+		Subagent:      config.Subagent,
 		Plugins:       config.Plugins,
 		Observability: config.Observability,
 	}
@@ -73,6 +81,10 @@ func (profile TrajectoryRuntimeProfile) Apply(base Config) Config {
 		Environment:    append([]string(nil), profile.Bash.Environment...),
 	}
 	base.Compact = profile.Compact
+	base.SystemPrompt = profile.SystemPrompt
+	base.Skills = profile.Skills
+	base.Memory = profile.Memory
+	base.Subagent = profile.Subagent
 	base.Plugins = profile.Plugins
 	base.Observability = profile.Observability
 	return base

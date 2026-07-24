@@ -214,6 +214,18 @@ enabled = false
 [compact]
 enabled = false
 
+[system_prompt]
+enabled = false
+
+[skills]
+enabled = false
+
+[memory]
+enabled = false
+
+[subagent]
+enabled = false
+
 [state]
 directory = %q
 

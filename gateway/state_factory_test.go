@@ -34,7 +34,7 @@ func TestDuckDBSessionStateFactoryUsesSessionScopedDatabase(t *testing.T) {
 		parsed.Query().Get("namespace") != "session-one" {
 		t.Fatalf("backend URI = %s", backend.String())
 	}
-	if capabilities := backend.Capabilities(); !capabilities.AtomicState {
+	if capabilities := sdk.InspectStorageCapabilities(backend); !capabilities.AtomicState {
 		t.Fatalf("capabilities = %#v", capabilities)
 	}
 }

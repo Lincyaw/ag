@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/lincyaw/ag/internal/lifecycle"
 	"github.com/lincyaw/ag/sdk"
@@ -445,6 +446,48 @@ func (backend *runtimeExecutionBackend) Get(
 		)
 	}
 	return execution, nil
+}
+
+func (backend *runtimeExecutionBackend) Wait(
+	ctx context.Context,
+	session Session,
+	executionID string,
+) (Execution, error) {
+	const (
+		initialRecoveryPoll = 25 * time.Millisecond
+		maxRecoveryPoll     = time.Second
+	)
+	delay := initialRecoveryPoll
+	for {
+		readPlan, err := backend.hosts.readPlan(session.ID)
+		if err != nil {
+			return Execution{}, err
+		}
+		if readPlan.active() {
+			if err := readPlan.wait(ctx); err != nil {
+				return Execution{}, err
+			}
+		}
+		execution, err := backend.Get(ctx, session, executionID)
+		if err != nil {
+			return Execution{}, err
+		}
+		if execution.Execution.Terminal() {
+			return execution, nil
+		}
+		// A non-terminal execution without a process-local host can occur during
+		// startup recovery. There is no portable watcher on TrajectoryStore, so
+		// keep the fallback bounded and back off instead of making every hosted
+		// input poll storage at a fixed rate.
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return Execution{}, ctx.Err()
+		case <-timer.C:
+		}
+		delay = min(delay*2, maxRecoveryPoll)
+	}
 }
 
 func (backend *runtimeExecutionBackend) Cancel(

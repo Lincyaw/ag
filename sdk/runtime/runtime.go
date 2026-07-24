@@ -346,10 +346,7 @@ func resolveRuntimeStoragePorts(
 			"state backend must advertise named delivery queues",
 		)
 	}
-	atomicState, err := resolveAtomicStateBackend(backend, capabilities)
-	if err != nil {
-		return runtimeStoragePorts{}, err
-	}
+	atomicState, _ := backend.(sdk.AtomicStateBackend)
 	trajectories := backend.Trajectories()
 	operations := backend.Operations()
 	contextInjections := backend.ContextInjections()
@@ -370,27 +367,6 @@ func resolveRuntimeStoragePorts(
 		delivery:          deliveryStore,
 		atomicState:       atomicState,
 	}, nil
-}
-
-func resolveAtomicStateBackend(
-	backend sdk.StateBackend,
-	capabilities sdk.StorageCapabilities,
-) (sdk.AtomicStateBackend, error) {
-	atomicState, implementsAtomicState := backend.(sdk.AtomicStateBackend)
-	switch {
-	case capabilities.AtomicState && !implementsAtomicState:
-		return nil, errors.New(
-			"state backend advertises atomic state without implementing AtomicStateBackend",
-		)
-	case !capabilities.AtomicState && implementsAtomicState:
-		return nil, errors.New(
-			"state backend implements AtomicStateBackend without advertising atomic state",
-		)
-	case capabilities.AtomicState:
-		return atomicState, nil
-	default:
-		return nil, nil
-	}
 }
 
 // RequestClose starts shutdown once without waiting for cleanup to finish.

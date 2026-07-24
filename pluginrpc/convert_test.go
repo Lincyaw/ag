@@ -64,7 +64,14 @@ func TestManifestAPIRangeRoundTripsThroughProtocol(t *testing.T) {
 		MinAPIVersion: sdk.APIVersion,
 		MaxAPIVersion: sdk.APIVersion + 1,
 		Requires:      []string{sdk.ToolResource("reader")},
-		Registers:     []string{sdk.ProviderResource("model")},
+		Registers: []string{
+			sdk.ProviderResource("model"),
+			sdk.CommandResource("review"),
+		},
+		Commands: []sdk.CommandSpec{{
+			Name: "review", Description: "Review a target",
+			Instruction: "Review $ARGUMENTS",
+		}},
 	}
 	roundTripped, err := fromProtoManifest(toProtoManifest(manifest))
 	if err != nil {

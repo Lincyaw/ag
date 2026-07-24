@@ -378,7 +378,7 @@ func TestDuckDBStorageDriverIsDurableAndNamespaceIsolated(t *testing.T) {
 	} else if permissions := info.Mode().Perm(); permissions != 0o700 {
 		t.Fatalf("DuckDB state directory permissions = %o, want 700", permissions)
 	}
-	capabilities := backend.Capabilities()
+	capabilities := sdk.InspectStorageCapabilities(backend)
 	if !capabilities.Durable ||
 		capabilities.MultiProcessSafe ||
 		!capabilities.AtomicState ||

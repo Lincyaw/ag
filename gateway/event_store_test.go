@@ -176,6 +176,58 @@ func TestFileEventStorePersistsPrivateState(t *testing.T) {
 	}
 }
 
+func TestFileEventStoreCompactsJournalIntoSnapshot(t *testing.T) {
+	ctx := t.Context()
+	directory := t.TempDir()
+	opened, err := NewFileEventStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := opened.(*fileEventStore)
+	for _, id := range []string{"event-a", "event-b"} {
+		if _, err := store.Append(
+			ctx,
+			"persistent",
+			testRuntimeEvent(id, id),
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.mu.Lock()
+	err = store.compactJournalLocked(ctx, true)
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(directory, "events.journal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("compacted journal size = %d, want 0", info.Size())
+	}
+	if _, err := os.Stat(filepath.Join(directory, "events.snapshot.json")); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewFileEventStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close(context.Background())
+	page, err := reopened.List(ctx, "persistent", EventQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 ||
+		page.Items[0].Sequence != 1 ||
+		page.Items[1].Sequence != 2 {
+		t.Fatalf("events after compact/reopen = %#v", page)
+	}
+}
+
 func TestGORMEventStorePersistsPrivateState(t *testing.T) {
 	ctx := t.Context()
 	rawURI := gormEventStoreTestURI(t, "persistent")

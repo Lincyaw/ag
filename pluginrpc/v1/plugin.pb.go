@@ -296,6 +296,7 @@ type Manifest struct {
 	Registers     []string               `protobuf:"bytes,7,rep,name=registers,proto3" json:"registers,omitempty"`
 	MinApiVersion uint32                 `protobuf:"varint,8,opt,name=min_api_version,json=minApiVersion,proto3" json:"min_api_version,omitempty"`
 	MaxApiVersion uint32                 `protobuf:"varint,9,opt,name=max_api_version,json=maxApiVersion,proto3" json:"max_api_version,omitempty"`
+	Commands      []*CommandSpec         `protobuf:"bytes,10,rep,name=commands,proto3" json:"commands,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -391,6 +392,13 @@ func (x *Manifest) GetMaxApiVersion() uint32 {
 		return x.MaxApiVersion
 	}
 	return 0
+}
+
+func (x *Manifest) GetCommands() []*CommandSpec {
+	if x != nil {
+		return x.Commands
+	}
+	return nil
 }
 
 type ProviderSpec struct {
@@ -717,6 +725,66 @@ func (x *CapabilitySpec) GetOutputSchema() *structpb.Struct {
 	return nil
 }
 
+type CommandSpec struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Description   string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	Instruction   string                 `protobuf:"bytes,3,opt,name=instruction,proto3" json:"instruction,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CommandSpec) Reset() {
+	*x = CommandSpec{}
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CommandSpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CommandSpec) ProtoMessage() {}
+
+func (x *CommandSpec) ProtoReflect() protoreflect.Message {
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CommandSpec.ProtoReflect.Descriptor instead.
+func (*CommandSpec) Descriptor() ([]byte, []int) {
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *CommandSpec) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CommandSpec) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *CommandSpec) GetInstruction() string {
+	if x != nil {
+		return x.Instruction
+	}
+	return ""
+}
+
 type EventContract struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -729,7 +797,7 @@ type EventContract struct {
 
 func (x *EventContract) Reset() {
 	*x = EventContract{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[6]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -741,7 +809,7 @@ func (x *EventContract) String() string {
 func (*EventContract) ProtoMessage() {}
 
 func (x *EventContract) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[6]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -754,7 +822,7 @@ func (x *EventContract) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventContract.ProtoReflect.Descriptor instead.
 func (*EventContract) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{6}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *EventContract) GetName() string {
@@ -794,13 +862,14 @@ type DescribeResponse struct {
 	Capabilities  []*CapabilitySpec      `protobuf:"bytes,5,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
 	Events        []*EventContract       `protobuf:"bytes,6,rep,name=events,proto3" json:"events,omitempty"`
 	Subscribers   []*SubscriberSpec      `protobuf:"bytes,7,rep,name=subscribers,proto3" json:"subscribers,omitempty"`
+	Commands      []*CommandSpec         `protobuf:"bytes,8,rep,name=commands,proto3" json:"commands,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DescribeResponse) Reset() {
 	*x = DescribeResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[7]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -812,7 +881,7 @@ func (x *DescribeResponse) String() string {
 func (*DescribeResponse) ProtoMessage() {}
 
 func (x *DescribeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[7]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -825,7 +894,7 @@ func (x *DescribeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeResponse.ProtoReflect.Descriptor instead.
 func (*DescribeResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{7}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *DescribeResponse) GetManifest() *Manifest {
@@ -877,6 +946,13 @@ func (x *DescribeResponse) GetSubscribers() []*SubscriberSpec {
 	return nil
 }
 
+func (x *DescribeResponse) GetCommands() []*CommandSpec {
+	if x != nil {
+		return x.Commands
+	}
+	return nil
+}
+
 type DescribeRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -885,7 +961,7 @@ type DescribeRequest struct {
 
 func (x *DescribeRequest) Reset() {
 	*x = DescribeRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[8]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -897,7 +973,7 @@ func (x *DescribeRequest) String() string {
 func (*DescribeRequest) ProtoMessage() {}
 
 func (x *DescribeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[8]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -910,7 +986,7 @@ func (x *DescribeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeRequest.ProtoReflect.Descriptor instead.
 func (*DescribeRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{8}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{9}
 }
 
 type ToolCall struct {
@@ -924,7 +1000,7 @@ type ToolCall struct {
 
 func (x *ToolCall) Reset() {
 	*x = ToolCall{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[9]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -936,7 +1012,7 @@ func (x *ToolCall) String() string {
 func (*ToolCall) ProtoMessage() {}
 
 func (x *ToolCall) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[9]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -949,7 +1025,7 @@ func (x *ToolCall) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolCall.ProtoReflect.Descriptor instead.
 func (*ToolCall) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{9}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ToolCall) GetId() string {
@@ -985,7 +1061,7 @@ type Message struct {
 
 func (x *Message) Reset() {
 	*x = Message{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[10]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -997,7 +1073,7 @@ func (x *Message) String() string {
 func (*Message) ProtoMessage() {}
 
 func (x *Message) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[10]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1010,7 +1086,7 @@ func (x *Message) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Message.ProtoReflect.Descriptor instead.
 func (*Message) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{10}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Message) GetRole() string {
@@ -1051,7 +1127,7 @@ type Usage struct {
 
 func (x *Usage) Reset() {
 	*x = Usage{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[11]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1063,7 +1139,7 @@ func (x *Usage) String() string {
 func (*Usage) ProtoMessage() {}
 
 func (x *Usage) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[11]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1076,7 +1152,7 @@ func (x *Usage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Usage.ProtoReflect.Descriptor instead.
 func (*Usage) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{11}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Usage) GetInputTokens() int64 {
@@ -1103,7 +1179,7 @@ type ModelRequest struct {
 
 func (x *ModelRequest) Reset() {
 	*x = ModelRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[12]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1115,7 +1191,7 @@ func (x *ModelRequest) String() string {
 func (*ModelRequest) ProtoMessage() {}
 
 func (x *ModelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[12]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1128,7 +1204,7 @@ func (x *ModelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelRequest.ProtoReflect.Descriptor instead.
 func (*ModelRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{12}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ModelRequest) GetMessages() []*Message {
@@ -1158,7 +1234,7 @@ type ModelResponse struct {
 
 func (x *ModelResponse) Reset() {
 	*x = ModelResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[13]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1170,7 +1246,7 @@ func (x *ModelResponse) String() string {
 func (*ModelResponse) ProtoMessage() {}
 
 func (x *ModelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[13]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1183,7 +1259,7 @@ func (x *ModelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelResponse.ProtoReflect.Descriptor instead.
 func (*ModelResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{13}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ModelResponse) GetContent() string {
@@ -1231,7 +1307,7 @@ type ToolResult struct {
 
 func (x *ToolResult) Reset() {
 	*x = ToolResult{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[14]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1243,7 +1319,7 @@ func (x *ToolResult) String() string {
 func (*ToolResult) ProtoMessage() {}
 
 func (x *ToolResult) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[14]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1256,7 +1332,7 @@ func (x *ToolResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolResult.ProtoReflect.Descriptor instead.
 func (*ToolResult) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{14}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ToolResult) GetContent() string {
@@ -1286,7 +1362,7 @@ type EventEnvelope struct {
 
 func (x *EventEnvelope) Reset() {
 	*x = EventEnvelope{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[15]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1298,7 +1374,7 @@ func (x *EventEnvelope) String() string {
 func (*EventEnvelope) ProtoMessage() {}
 
 func (x *EventEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[15]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1311,7 +1387,7 @@ func (x *EventEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventEnvelope.ProtoReflect.Descriptor instead.
 func (*EventEnvelope) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{15}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *EventEnvelope) GetId() string {
@@ -1359,7 +1435,7 @@ type Block struct {
 
 func (x *Block) Reset() {
 	*x = Block{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[16]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1371,7 +1447,7 @@ func (x *Block) String() string {
 func (*Block) ProtoMessage() {}
 
 func (x *Block) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[16]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1384,7 +1460,7 @@ func (x *Block) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Block.ProtoReflect.Descriptor instead.
 func (*Block) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{16}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *Block) GetReason() string {
@@ -1412,7 +1488,7 @@ type Cause struct {
 
 func (x *Cause) Reset() {
 	*x = Cause{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[17]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1424,7 +1500,7 @@ func (x *Cause) String() string {
 func (*Cause) ProtoMessage() {}
 
 func (x *Cause) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[17]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1437,7 +1513,7 @@ func (x *Cause) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Cause.ProtoReflect.Descriptor instead.
 func (*Cause) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{17}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *Cause) GetCode() string {
@@ -1472,7 +1548,7 @@ type Action struct {
 
 func (x *Action) Reset() {
 	*x = Action{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[18]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1484,7 +1560,7 @@ func (x *Action) String() string {
 func (*Action) ProtoMessage() {}
 
 func (x *Action) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[18]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1497,7 +1573,7 @@ func (x *Action) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Action.ProtoReflect.Descriptor instead.
 func (*Action) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{18}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *Action) GetKind() ActionKind {
@@ -1532,7 +1608,7 @@ type Effect struct {
 
 func (x *Effect) Reset() {
 	*x = Effect{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[19]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1544,7 +1620,7 @@ func (x *Effect) String() string {
 func (*Effect) ProtoMessage() {}
 
 func (x *Effect) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[19]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1557,7 +1633,7 @@ func (x *Effect) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Effect.ProtoReflect.Descriptor instead.
 func (*Effect) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{19}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *Effect) GetPatch() *structpb.Struct {
@@ -1598,7 +1674,7 @@ type Invocation struct {
 
 func (x *Invocation) Reset() {
 	*x = Invocation{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[20]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1610,7 +1686,7 @@ func (x *Invocation) String() string {
 func (*Invocation) ProtoMessage() {}
 
 func (x *Invocation) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[20]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1623,7 +1699,7 @@ func (x *Invocation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Invocation.ProtoReflect.Descriptor instead.
 func (*Invocation) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{20}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *Invocation) GetId() string {
@@ -1700,7 +1776,7 @@ type OperationRequest struct {
 
 func (x *OperationRequest) Reset() {
 	*x = OperationRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[21]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1712,7 +1788,7 @@ func (x *OperationRequest) String() string {
 func (*OperationRequest) ProtoMessage() {}
 
 func (x *OperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[21]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1725,7 +1801,7 @@ func (x *OperationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationRequest.ProtoReflect.Descriptor instead.
 func (*OperationRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{21}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *OperationRequest) GetIdempotencyKey() string {
@@ -1760,7 +1836,7 @@ type SubmitOperationRequest struct {
 
 func (x *SubmitOperationRequest) Reset() {
 	*x = SubmitOperationRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[22]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1772,7 +1848,7 @@ func (x *SubmitOperationRequest) String() string {
 func (*SubmitOperationRequest) ProtoMessage() {}
 
 func (x *SubmitOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[22]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1785,7 +1861,7 @@ func (x *SubmitOperationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitOperationRequest.ProtoReflect.Descriptor instead.
 func (*SubmitOperationRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{22}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *SubmitOperationRequest) GetKind() OperationKind {
@@ -1818,7 +1894,7 @@ type SubmitOperationResponse struct {
 
 func (x *SubmitOperationResponse) Reset() {
 	*x = SubmitOperationResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[23]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1830,7 +1906,7 @@ func (x *SubmitOperationResponse) String() string {
 func (*SubmitOperationResponse) ProtoMessage() {}
 
 func (x *SubmitOperationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[23]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1843,7 +1919,7 @@ func (x *SubmitOperationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitOperationResponse.ProtoReflect.Descriptor instead.
 func (*SubmitOperationResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{23}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *SubmitOperationResponse) GetOperation() *Operation {
@@ -1865,7 +1941,7 @@ type PollOperationRequest struct {
 
 func (x *PollOperationRequest) Reset() {
 	*x = PollOperationRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[24]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1877,7 +1953,7 @@ func (x *PollOperationRequest) String() string {
 func (*PollOperationRequest) ProtoMessage() {}
 
 func (x *PollOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[24]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1890,7 +1966,7 @@ func (x *PollOperationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollOperationRequest.ProtoReflect.Descriptor instead.
 func (*PollOperationRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{24}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *PollOperationRequest) GetKind() OperationKind {
@@ -1930,7 +2006,7 @@ type PollOperationResponse struct {
 
 func (x *PollOperationResponse) Reset() {
 	*x = PollOperationResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[25]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1942,7 +2018,7 @@ func (x *PollOperationResponse) String() string {
 func (*PollOperationResponse) ProtoMessage() {}
 
 func (x *PollOperationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[25]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1955,7 +2031,7 @@ func (x *PollOperationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollOperationResponse.ProtoReflect.Descriptor instead.
 func (*PollOperationResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{25}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *PollOperationResponse) GetOperation() *Operation {
@@ -1976,7 +2052,7 @@ type CancelOperationRequest struct {
 
 func (x *CancelOperationRequest) Reset() {
 	*x = CancelOperationRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[26]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1988,7 +2064,7 @@ func (x *CancelOperationRequest) String() string {
 func (*CancelOperationRequest) ProtoMessage() {}
 
 func (x *CancelOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[26]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2001,7 +2077,7 @@ func (x *CancelOperationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelOperationRequest.ProtoReflect.Descriptor instead.
 func (*CancelOperationRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{26}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *CancelOperationRequest) GetKind() OperationKind {
@@ -2034,7 +2110,7 @@ type CancelOperationResponse struct {
 
 func (x *CancelOperationResponse) Reset() {
 	*x = CancelOperationResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[27]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2046,7 +2122,7 @@ func (x *CancelOperationResponse) String() string {
 func (*CancelOperationResponse) ProtoMessage() {}
 
 func (x *CancelOperationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[27]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2059,7 +2135,7 @@ func (x *CancelOperationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelOperationResponse.ProtoReflect.Descriptor instead.
 func (*CancelOperationResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{27}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *CancelOperationResponse) GetOperation() *Operation {
@@ -2085,7 +2161,7 @@ type Operation struct {
 
 func (x *Operation) Reset() {
 	*x = Operation{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[28]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2097,7 +2173,7 @@ func (x *Operation) String() string {
 func (*Operation) ProtoMessage() {}
 
 func (x *Operation) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[28]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2110,7 +2186,7 @@ func (x *Operation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Operation.ProtoReflect.Descriptor instead.
 func (*Operation) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{28}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *Operation) GetId() string {
@@ -2179,7 +2255,7 @@ type HandleHookRequest struct {
 
 func (x *HandleHookRequest) Reset() {
 	*x = HandleHookRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[29]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2191,7 +2267,7 @@ func (x *HandleHookRequest) String() string {
 func (*HandleHookRequest) ProtoMessage() {}
 
 func (x *HandleHookRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[29]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2204,7 +2280,7 @@ func (x *HandleHookRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HandleHookRequest.ProtoReflect.Descriptor instead.
 func (*HandleHookRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{29}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *HandleHookRequest) GetHook() string {
@@ -2230,7 +2306,7 @@ type HandleHookResponse struct {
 
 func (x *HandleHookResponse) Reset() {
 	*x = HandleHookResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[30]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2242,7 +2318,7 @@ func (x *HandleHookResponse) String() string {
 func (*HandleHookResponse) ProtoMessage() {}
 
 func (x *HandleHookResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[30]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2255,7 +2331,7 @@ func (x *HandleHookResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HandleHookResponse.ProtoReflect.Descriptor instead.
 func (*HandleHookResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{30}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *HandleHookResponse) GetEffect() *Effect {
@@ -2282,7 +2358,7 @@ type Delivery struct {
 
 func (x *Delivery) Reset() {
 	*x = Delivery{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[31]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2294,7 +2370,7 @@ func (x *Delivery) String() string {
 func (*Delivery) ProtoMessage() {}
 
 func (x *Delivery) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[31]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2307,7 +2383,7 @@ func (x *Delivery) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Delivery.ProtoReflect.Descriptor instead.
 func (*Delivery) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{31}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *Delivery) GetId() string {
@@ -2382,7 +2458,7 @@ type DeliverRequest struct {
 
 func (x *DeliverRequest) Reset() {
 	*x = DeliverRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[32]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2394,7 +2470,7 @@ func (x *DeliverRequest) String() string {
 func (*DeliverRequest) ProtoMessage() {}
 
 func (x *DeliverRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[32]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2407,7 +2483,7 @@ func (x *DeliverRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverRequest.ProtoReflect.Descriptor instead.
 func (*DeliverRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{32}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *DeliverRequest) GetDelivery() *Delivery {
@@ -2426,7 +2502,7 @@ type DeliverResponse struct {
 
 func (x *DeliverResponse) Reset() {
 	*x = DeliverResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[33]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2438,7 +2514,7 @@ func (x *DeliverResponse) String() string {
 func (*DeliverResponse) ProtoMessage() {}
 
 func (x *DeliverResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[33]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2451,7 +2527,7 @@ func (x *DeliverResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverResponse.ProtoReflect.Descriptor instead.
 func (*DeliverResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{33}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *DeliverResponse) GetAccepted() bool {
@@ -2475,7 +2551,7 @@ type Registration struct {
 
 func (x *Registration) Reset() {
 	*x = Registration{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[34]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2487,7 +2563,7 @@ func (x *Registration) String() string {
 func (*Registration) ProtoMessage() {}
 
 func (x *Registration) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[34]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2500,7 +2576,7 @@ func (x *Registration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Registration.ProtoReflect.Descriptor instead.
 func (*Registration) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{34}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *Registration) GetName() string {
@@ -2556,7 +2632,7 @@ type InstanceKey struct {
 
 func (x *InstanceKey) Reset() {
 	*x = InstanceKey{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[35]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2568,7 +2644,7 @@ func (x *InstanceKey) String() string {
 func (*InstanceKey) ProtoMessage() {}
 
 func (x *InstanceKey) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[35]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2581,7 +2657,7 @@ func (x *InstanceKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InstanceKey.ProtoReflect.Descriptor instead.
 func (*InstanceKey) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{35}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *InstanceKey) GetNamespace() string {
@@ -2619,7 +2695,7 @@ type PluginInstance struct {
 
 func (x *PluginInstance) Reset() {
 	*x = PluginInstance{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[36]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2631,7 +2707,7 @@ func (x *PluginInstance) String() string {
 func (*PluginInstance) ProtoMessage() {}
 
 func (x *PluginInstance) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[36]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2644,7 +2720,7 @@ func (x *PluginInstance) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PluginInstance.ProtoReflect.Descriptor instead.
 func (*PluginInstance) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{36}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *PluginInstance) GetRegistration() *Registration {
@@ -2699,7 +2775,7 @@ type RegisterRequest struct {
 
 func (x *RegisterRequest) Reset() {
 	*x = RegisterRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[37]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2711,7 +2787,7 @@ func (x *RegisterRequest) String() string {
 func (*RegisterRequest) ProtoMessage() {}
 
 func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[37]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2724,7 +2800,7 @@ func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterRequest.ProtoReflect.Descriptor instead.
 func (*RegisterRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{37}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *RegisterRequest) GetRegistration() *Registration {
@@ -2750,7 +2826,7 @@ type RegisterResponse struct {
 
 func (x *RegisterResponse) Reset() {
 	*x = RegisterResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[38]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2762,7 +2838,7 @@ func (x *RegisterResponse) String() string {
 func (*RegisterResponse) ProtoMessage() {}
 
 func (x *RegisterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[38]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2775,7 +2851,7 @@ func (x *RegisterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterResponse.ProtoReflect.Descriptor instead.
 func (*RegisterResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{38}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *RegisterResponse) GetLease() *Lease {
@@ -2798,7 +2874,7 @@ type Lease struct {
 
 func (x *Lease) Reset() {
 	*x = Lease{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[39]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2810,7 +2886,7 @@ func (x *Lease) String() string {
 func (*Lease) ProtoMessage() {}
 
 func (x *Lease) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[39]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2823,7 +2899,7 @@ func (x *Lease) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Lease.ProtoReflect.Descriptor instead.
 func (*Lease) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{39}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *Lease) GetId() string {
@@ -2872,7 +2948,7 @@ type RenewRequest struct {
 
 func (x *RenewRequest) Reset() {
 	*x = RenewRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[40]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2884,7 +2960,7 @@ func (x *RenewRequest) String() string {
 func (*RenewRequest) ProtoMessage() {}
 
 func (x *RenewRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[40]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2897,7 +2973,7 @@ func (x *RenewRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewRequest.ProtoReflect.Descriptor instead.
 func (*RenewRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{40}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *RenewRequest) GetId() string {
@@ -2930,7 +3006,7 @@ type RenewResponse struct {
 
 func (x *RenewResponse) Reset() {
 	*x = RenewResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[41]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2942,7 +3018,7 @@ func (x *RenewResponse) String() string {
 func (*RenewResponse) ProtoMessage() {}
 
 func (x *RenewResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[41]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2955,7 +3031,7 @@ func (x *RenewResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewResponse.ProtoReflect.Descriptor instead.
 func (*RenewResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{41}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *RenewResponse) GetLease() *Lease {
@@ -2975,7 +3051,7 @@ type UnregisterRequest struct {
 
 func (x *UnregisterRequest) Reset() {
 	*x = UnregisterRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[42]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2987,7 +3063,7 @@ func (x *UnregisterRequest) String() string {
 func (*UnregisterRequest) ProtoMessage() {}
 
 func (x *UnregisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[42]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3000,7 +3076,7 @@ func (x *UnregisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnregisterRequest.ProtoReflect.Descriptor instead.
 func (*UnregisterRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{42}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *UnregisterRequest) GetId() string {
@@ -3025,7 +3101,7 @@ type UnregisterResponse struct {
 
 func (x *UnregisterResponse) Reset() {
 	*x = UnregisterResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[43]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3037,7 +3113,7 @@ func (x *UnregisterResponse) String() string {
 func (*UnregisterResponse) ProtoMessage() {}
 
 func (x *UnregisterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[43]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3050,7 +3126,7 @@ func (x *UnregisterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnregisterResponse.ProtoReflect.Descriptor instead.
 func (*UnregisterResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{43}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{44}
 }
 
 type DiscoveryQuery struct {
@@ -3066,7 +3142,7 @@ type DiscoveryQuery struct {
 
 func (x *DiscoveryQuery) Reset() {
 	*x = DiscoveryQuery{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[44]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3078,7 +3154,7 @@ func (x *DiscoveryQuery) String() string {
 func (*DiscoveryQuery) ProtoMessage() {}
 
 func (x *DiscoveryQuery) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[44]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3091,7 +3167,7 @@ func (x *DiscoveryQuery) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiscoveryQuery.ProtoReflect.Descriptor instead.
 func (*DiscoveryQuery) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{44}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *DiscoveryQuery) GetNamespace() string {
@@ -3138,7 +3214,7 @@ type GetRegistrationRequest struct {
 
 func (x *GetRegistrationRequest) Reset() {
 	*x = GetRegistrationRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[45]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3150,7 +3226,7 @@ func (x *GetRegistrationRequest) String() string {
 func (*GetRegistrationRequest) ProtoMessage() {}
 
 func (x *GetRegistrationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[45]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3163,7 +3239,7 @@ func (x *GetRegistrationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRegistrationRequest.ProtoReflect.Descriptor instead.
 func (*GetRegistrationRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{45}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *GetRegistrationRequest) GetKey() *InstanceKey {
@@ -3182,7 +3258,7 @@ type GetRegistrationResponse struct {
 
 func (x *GetRegistrationResponse) Reset() {
 	*x = GetRegistrationResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[46]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3194,7 +3270,7 @@ func (x *GetRegistrationResponse) String() string {
 func (*GetRegistrationResponse) ProtoMessage() {}
 
 func (x *GetRegistrationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[46]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3207,7 +3283,7 @@ func (x *GetRegistrationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRegistrationResponse.ProtoReflect.Descriptor instead.
 func (*GetRegistrationResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{46}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *GetRegistrationResponse) GetInstance() *PluginInstance {
@@ -3228,7 +3304,7 @@ type ListRegistrationsRequest struct {
 
 func (x *ListRegistrationsRequest) Reset() {
 	*x = ListRegistrationsRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[47]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3240,7 +3316,7 @@ func (x *ListRegistrationsRequest) String() string {
 func (*ListRegistrationsRequest) ProtoMessage() {}
 
 func (x *ListRegistrationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[47]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3253,7 +3329,7 @@ func (x *ListRegistrationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRegistrationsRequest.ProtoReflect.Descriptor instead.
 func (*ListRegistrationsRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{47}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *ListRegistrationsRequest) GetQuery() *DiscoveryQuery {
@@ -3288,7 +3364,7 @@ type ListRegistrationsResponse struct {
 
 func (x *ListRegistrationsResponse) Reset() {
 	*x = ListRegistrationsResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[48]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3300,7 +3376,7 @@ func (x *ListRegistrationsResponse) String() string {
 func (*ListRegistrationsResponse) ProtoMessage() {}
 
 func (x *ListRegistrationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[48]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3313,7 +3389,7 @@ func (x *ListRegistrationsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRegistrationsResponse.ProtoReflect.Descriptor instead.
 func (*ListRegistrationsResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{48}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *ListRegistrationsResponse) GetNextPageToken() string {
@@ -3348,7 +3424,7 @@ type RegistrationChange struct {
 
 func (x *RegistrationChange) Reset() {
 	*x = RegistrationChange{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[49]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3360,7 +3436,7 @@ func (x *RegistrationChange) String() string {
 func (*RegistrationChange) ProtoMessage() {}
 
 func (x *RegistrationChange) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[49]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3373,7 +3449,7 @@ func (x *RegistrationChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegistrationChange.ProtoReflect.Descriptor instead.
 func (*RegistrationChange) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{49}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *RegistrationChange) GetRevision() uint64 {
@@ -3409,7 +3485,7 @@ type PollRegistrationsRequest struct {
 
 func (x *PollRegistrationsRequest) Reset() {
 	*x = PollRegistrationsRequest{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[50]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3421,7 +3497,7 @@ func (x *PollRegistrationsRequest) String() string {
 func (*PollRegistrationsRequest) ProtoMessage() {}
 
 func (x *PollRegistrationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[50]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3434,7 +3510,7 @@ func (x *PollRegistrationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollRegistrationsRequest.ProtoReflect.Descriptor instead.
 func (*PollRegistrationsRequest) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{50}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *PollRegistrationsRequest) GetQuery() *DiscoveryQuery {
@@ -3476,7 +3552,7 @@ type PollRegistrationsResponse struct {
 
 func (x *PollRegistrationsResponse) Reset() {
 	*x = PollRegistrationsResponse{}
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[51]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3488,7 +3564,7 @@ func (x *PollRegistrationsResponse) String() string {
 func (*PollRegistrationsResponse) ProtoMessage() {}
 
 func (x *PollRegistrationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[51]
+	mi := &file_pluginrpc_v1_plugin_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3501,7 +3577,7 @@ func (x *PollRegistrationsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollRegistrationsResponse.ProtoReflect.Descriptor instead.
 func (*PollRegistrationsResponse) Descriptor() ([]byte, []int) {
-	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{51}
+	return file_pluginrpc_v1_plugin_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *PollRegistrationsResponse) GetChanges() []*RegistrationChange {
@@ -3529,7 +3605,7 @@ var File_pluginrpc_v1_plugin_proto protoreflect.FileDescriptor
 
 const file_pluginrpc_v1_plugin_proto_rawDesc = "" +
 	"\n" +
-	"\x19pluginrpc/v1/plugin.proto\x12\fpluginrpc.v1\x1a\x1cgoogle/protobuf/struct.proto\"\xa3\x02\n" +
+	"\x19pluginrpc/v1/plugin.proto\x12\fpluginrpc.v1\x1a\x1cgoogle/protobuf/struct.proto\"\xda\x02\n" +
 	"\bManifest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12 \n" +
@@ -3540,7 +3616,9 @@ const file_pluginrpc_v1_plugin_proto_rawDesc = "" +
 	"\tconflicts\x18\x06 \x03(\tR\tconflicts\x12\x1c\n" +
 	"\tregisters\x18\a \x03(\tR\tregisters\x12&\n" +
 	"\x0fmin_api_version\x18\b \x01(\rR\rminApiVersion\x12&\n" +
-	"\x0fmax_api_version\x18\t \x01(\rR\rmaxApiVersion\"8\n" +
+	"\x0fmax_api_version\x18\t \x01(\rR\rmaxApiVersion\x125\n" +
+	"\bcommands\x18\n" +
+	" \x03(\v2\x19.pluginrpc.v1.CommandSpecR\bcommands\"8\n" +
 	"\fProviderSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\"\xa8\x01\n" +
@@ -3565,13 +3643,17 @@ const file_pluginrpc_v1_plugin_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12:\n" +
 	"\finput_schema\x18\x03 \x01(\v2\x17.google.protobuf.StructR\vinputSchema\x12<\n" +
-	"\routput_schema\x18\x04 \x01(\v2\x17.google.protobuf.StructR\foutputSchema\"\x8e\x01\n" +
+	"\routput_schema\x18\x04 \x01(\v2\x17.google.protobuf.StructR\foutputSchema\"e\n" +
+	"\vCommandSpec\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
+	"\vdescription\x18\x02 \x01(\tR\vdescription\x12 \n" +
+	"\vinstruction\x18\x03 \x01(\tR\vinstruction\"\x8e\x01\n" +
 	"\rEventContract\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12%\n" +
 	"\x0emutable_fields\x18\x02 \x03(\tR\rmutableFields\x12\x1f\n" +
 	"\vallow_block\x18\x03 \x01(\bR\n" +
 	"allowBlock\x12!\n" +
-	"\fallow_action\x18\x04 \x01(\bR\vallowAction\"\x93\x03\n" +
+	"\fallow_action\x18\x04 \x01(\bR\vallowAction\"\xca\x03\n" +
 	"\x10DescribeResponse\x122\n" +
 	"\bmanifest\x18\x01 \x01(\v2\x16.pluginrpc.v1.ManifestR\bmanifest\x128\n" +
 	"\tproviders\x18\x02 \x03(\v2\x1a.pluginrpc.v1.ProviderSpecR\tproviders\x12,\n" +
@@ -3579,7 +3661,8 @@ const file_pluginrpc_v1_plugin_proto_rawDesc = "" +
 	"\x05hooks\x18\x04 \x03(\v2\x16.pluginrpc.v1.HookSpecR\x05hooks\x12@\n" +
 	"\fcapabilities\x18\x05 \x03(\v2\x1c.pluginrpc.v1.CapabilitySpecR\fcapabilities\x123\n" +
 	"\x06events\x18\x06 \x03(\v2\x1b.pluginrpc.v1.EventContractR\x06events\x12>\n" +
-	"\vsubscribers\x18\a \x03(\v2\x1c.pluginrpc.v1.SubscriberSpecR\vsubscribers\"\x11\n" +
+	"\vsubscribers\x18\a \x03(\v2\x1c.pluginrpc.v1.SubscriberSpecR\vsubscribers\x125\n" +
+	"\bcommands\x18\b \x03(\v2\x19.pluginrpc.v1.CommandSpecR\bcommands\"\x11\n" +
 	"\x0fDescribeRequest\"e\n" +
 	"\bToolCall\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
@@ -3837,7 +3920,7 @@ func file_pluginrpc_v1_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_pluginrpc_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_pluginrpc_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 54)
+var file_pluginrpc_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
 var file_pluginrpc_v1_plugin_proto_goTypes = []any{
 	(FailurePolicy)(0),                // 0: pluginrpc.v1.FailurePolicy
 	(ActionKind)(0),                   // 1: pluginrpc.v1.ActionKind
@@ -3850,141 +3933,144 @@ var file_pluginrpc_v1_plugin_proto_goTypes = []any{
 	(*HookSpec)(nil),                  // 8: pluginrpc.v1.HookSpec
 	(*SubscriberSpec)(nil),            // 9: pluginrpc.v1.SubscriberSpec
 	(*CapabilitySpec)(nil),            // 10: pluginrpc.v1.CapabilitySpec
-	(*EventContract)(nil),             // 11: pluginrpc.v1.EventContract
-	(*DescribeResponse)(nil),          // 12: pluginrpc.v1.DescribeResponse
-	(*DescribeRequest)(nil),           // 13: pluginrpc.v1.DescribeRequest
-	(*ToolCall)(nil),                  // 14: pluginrpc.v1.ToolCall
-	(*Message)(nil),                   // 15: pluginrpc.v1.Message
-	(*Usage)(nil),                     // 16: pluginrpc.v1.Usage
-	(*ModelRequest)(nil),              // 17: pluginrpc.v1.ModelRequest
-	(*ModelResponse)(nil),             // 18: pluginrpc.v1.ModelResponse
-	(*ToolResult)(nil),                // 19: pluginrpc.v1.ToolResult
-	(*EventEnvelope)(nil),             // 20: pluginrpc.v1.EventEnvelope
-	(*Block)(nil),                     // 21: pluginrpc.v1.Block
-	(*Cause)(nil),                     // 22: pluginrpc.v1.Cause
-	(*Action)(nil),                    // 23: pluginrpc.v1.Action
-	(*Effect)(nil),                    // 24: pluginrpc.v1.Effect
-	(*Invocation)(nil),                // 25: pluginrpc.v1.Invocation
-	(*OperationRequest)(nil),          // 26: pluginrpc.v1.OperationRequest
-	(*SubmitOperationRequest)(nil),    // 27: pluginrpc.v1.SubmitOperationRequest
-	(*SubmitOperationResponse)(nil),   // 28: pluginrpc.v1.SubmitOperationResponse
-	(*PollOperationRequest)(nil),      // 29: pluginrpc.v1.PollOperationRequest
-	(*PollOperationResponse)(nil),     // 30: pluginrpc.v1.PollOperationResponse
-	(*CancelOperationRequest)(nil),    // 31: pluginrpc.v1.CancelOperationRequest
-	(*CancelOperationResponse)(nil),   // 32: pluginrpc.v1.CancelOperationResponse
-	(*Operation)(nil),                 // 33: pluginrpc.v1.Operation
-	(*HandleHookRequest)(nil),         // 34: pluginrpc.v1.HandleHookRequest
-	(*HandleHookResponse)(nil),        // 35: pluginrpc.v1.HandleHookResponse
-	(*Delivery)(nil),                  // 36: pluginrpc.v1.Delivery
-	(*DeliverRequest)(nil),            // 37: pluginrpc.v1.DeliverRequest
-	(*DeliverResponse)(nil),           // 38: pluginrpc.v1.DeliverResponse
-	(*Registration)(nil),              // 39: pluginrpc.v1.Registration
-	(*InstanceKey)(nil),               // 40: pluginrpc.v1.InstanceKey
-	(*PluginInstance)(nil),            // 41: pluginrpc.v1.PluginInstance
-	(*RegisterRequest)(nil),           // 42: pluginrpc.v1.RegisterRequest
-	(*RegisterResponse)(nil),          // 43: pluginrpc.v1.RegisterResponse
-	(*Lease)(nil),                     // 44: pluginrpc.v1.Lease
-	(*RenewRequest)(nil),              // 45: pluginrpc.v1.RenewRequest
-	(*RenewResponse)(nil),             // 46: pluginrpc.v1.RenewResponse
-	(*UnregisterRequest)(nil),         // 47: pluginrpc.v1.UnregisterRequest
-	(*UnregisterResponse)(nil),        // 48: pluginrpc.v1.UnregisterResponse
-	(*DiscoveryQuery)(nil),            // 49: pluginrpc.v1.DiscoveryQuery
-	(*GetRegistrationRequest)(nil),    // 50: pluginrpc.v1.GetRegistrationRequest
-	(*GetRegistrationResponse)(nil),   // 51: pluginrpc.v1.GetRegistrationResponse
-	(*ListRegistrationsRequest)(nil),  // 52: pluginrpc.v1.ListRegistrationsRequest
-	(*ListRegistrationsResponse)(nil), // 53: pluginrpc.v1.ListRegistrationsResponse
-	(*RegistrationChange)(nil),        // 54: pluginrpc.v1.RegistrationChange
-	(*PollRegistrationsRequest)(nil),  // 55: pluginrpc.v1.PollRegistrationsRequest
-	(*PollRegistrationsResponse)(nil), // 56: pluginrpc.v1.PollRegistrationsResponse
-	nil,                               // 57: pluginrpc.v1.Registration.LabelsEntry
-	nil,                               // 58: pluginrpc.v1.DiscoveryQuery.LabelsEntry
-	(*structpb.Struct)(nil),           // 59: google.protobuf.Struct
+	(*CommandSpec)(nil),               // 11: pluginrpc.v1.CommandSpec
+	(*EventContract)(nil),             // 12: pluginrpc.v1.EventContract
+	(*DescribeResponse)(nil),          // 13: pluginrpc.v1.DescribeResponse
+	(*DescribeRequest)(nil),           // 14: pluginrpc.v1.DescribeRequest
+	(*ToolCall)(nil),                  // 15: pluginrpc.v1.ToolCall
+	(*Message)(nil),                   // 16: pluginrpc.v1.Message
+	(*Usage)(nil),                     // 17: pluginrpc.v1.Usage
+	(*ModelRequest)(nil),              // 18: pluginrpc.v1.ModelRequest
+	(*ModelResponse)(nil),             // 19: pluginrpc.v1.ModelResponse
+	(*ToolResult)(nil),                // 20: pluginrpc.v1.ToolResult
+	(*EventEnvelope)(nil),             // 21: pluginrpc.v1.EventEnvelope
+	(*Block)(nil),                     // 22: pluginrpc.v1.Block
+	(*Cause)(nil),                     // 23: pluginrpc.v1.Cause
+	(*Action)(nil),                    // 24: pluginrpc.v1.Action
+	(*Effect)(nil),                    // 25: pluginrpc.v1.Effect
+	(*Invocation)(nil),                // 26: pluginrpc.v1.Invocation
+	(*OperationRequest)(nil),          // 27: pluginrpc.v1.OperationRequest
+	(*SubmitOperationRequest)(nil),    // 28: pluginrpc.v1.SubmitOperationRequest
+	(*SubmitOperationResponse)(nil),   // 29: pluginrpc.v1.SubmitOperationResponse
+	(*PollOperationRequest)(nil),      // 30: pluginrpc.v1.PollOperationRequest
+	(*PollOperationResponse)(nil),     // 31: pluginrpc.v1.PollOperationResponse
+	(*CancelOperationRequest)(nil),    // 32: pluginrpc.v1.CancelOperationRequest
+	(*CancelOperationResponse)(nil),   // 33: pluginrpc.v1.CancelOperationResponse
+	(*Operation)(nil),                 // 34: pluginrpc.v1.Operation
+	(*HandleHookRequest)(nil),         // 35: pluginrpc.v1.HandleHookRequest
+	(*HandleHookResponse)(nil),        // 36: pluginrpc.v1.HandleHookResponse
+	(*Delivery)(nil),                  // 37: pluginrpc.v1.Delivery
+	(*DeliverRequest)(nil),            // 38: pluginrpc.v1.DeliverRequest
+	(*DeliverResponse)(nil),           // 39: pluginrpc.v1.DeliverResponse
+	(*Registration)(nil),              // 40: pluginrpc.v1.Registration
+	(*InstanceKey)(nil),               // 41: pluginrpc.v1.InstanceKey
+	(*PluginInstance)(nil),            // 42: pluginrpc.v1.PluginInstance
+	(*RegisterRequest)(nil),           // 43: pluginrpc.v1.RegisterRequest
+	(*RegisterResponse)(nil),          // 44: pluginrpc.v1.RegisterResponse
+	(*Lease)(nil),                     // 45: pluginrpc.v1.Lease
+	(*RenewRequest)(nil),              // 46: pluginrpc.v1.RenewRequest
+	(*RenewResponse)(nil),             // 47: pluginrpc.v1.RenewResponse
+	(*UnregisterRequest)(nil),         // 48: pluginrpc.v1.UnregisterRequest
+	(*UnregisterResponse)(nil),        // 49: pluginrpc.v1.UnregisterResponse
+	(*DiscoveryQuery)(nil),            // 50: pluginrpc.v1.DiscoveryQuery
+	(*GetRegistrationRequest)(nil),    // 51: pluginrpc.v1.GetRegistrationRequest
+	(*GetRegistrationResponse)(nil),   // 52: pluginrpc.v1.GetRegistrationResponse
+	(*ListRegistrationsRequest)(nil),  // 53: pluginrpc.v1.ListRegistrationsRequest
+	(*ListRegistrationsResponse)(nil), // 54: pluginrpc.v1.ListRegistrationsResponse
+	(*RegistrationChange)(nil),        // 55: pluginrpc.v1.RegistrationChange
+	(*PollRegistrationsRequest)(nil),  // 56: pluginrpc.v1.PollRegistrationsRequest
+	(*PollRegistrationsResponse)(nil), // 57: pluginrpc.v1.PollRegistrationsResponse
+	nil,                               // 58: pluginrpc.v1.Registration.LabelsEntry
+	nil,                               // 59: pluginrpc.v1.DiscoveryQuery.LabelsEntry
+	(*structpb.Struct)(nil),           // 60: google.protobuf.Struct
 }
 var file_pluginrpc_v1_plugin_proto_depIdxs = []int32{
-	59, // 0: pluginrpc.v1.ToolSpec.parameters:type_name -> google.protobuf.Struct
-	0,  // 1: pluginrpc.v1.HookSpec.failure_policy:type_name -> pluginrpc.v1.FailurePolicy
-	59, // 2: pluginrpc.v1.CapabilitySpec.input_schema:type_name -> google.protobuf.Struct
-	59, // 3: pluginrpc.v1.CapabilitySpec.output_schema:type_name -> google.protobuf.Struct
-	5,  // 4: pluginrpc.v1.DescribeResponse.manifest:type_name -> pluginrpc.v1.Manifest
-	6,  // 5: pluginrpc.v1.DescribeResponse.providers:type_name -> pluginrpc.v1.ProviderSpec
-	7,  // 6: pluginrpc.v1.DescribeResponse.tools:type_name -> pluginrpc.v1.ToolSpec
-	8,  // 7: pluginrpc.v1.DescribeResponse.hooks:type_name -> pluginrpc.v1.HookSpec
-	10, // 8: pluginrpc.v1.DescribeResponse.capabilities:type_name -> pluginrpc.v1.CapabilitySpec
-	11, // 9: pluginrpc.v1.DescribeResponse.events:type_name -> pluginrpc.v1.EventContract
-	9,  // 10: pluginrpc.v1.DescribeResponse.subscribers:type_name -> pluginrpc.v1.SubscriberSpec
-	59, // 11: pluginrpc.v1.ToolCall.arguments:type_name -> google.protobuf.Struct
-	14, // 12: pluginrpc.v1.Message.tool_calls:type_name -> pluginrpc.v1.ToolCall
-	15, // 13: pluginrpc.v1.ModelRequest.messages:type_name -> pluginrpc.v1.Message
-	7,  // 14: pluginrpc.v1.ModelRequest.tools:type_name -> pluginrpc.v1.ToolSpec
-	14, // 15: pluginrpc.v1.ModelResponse.tool_calls:type_name -> pluginrpc.v1.ToolCall
-	16, // 16: pluginrpc.v1.ModelResponse.usage:type_name -> pluginrpc.v1.Usage
-	59, // 17: pluginrpc.v1.EventEnvelope.payload:type_name -> google.protobuf.Struct
-	1,  // 18: pluginrpc.v1.Action.kind:type_name -> pluginrpc.v1.ActionKind
-	22, // 19: pluginrpc.v1.Action.cause:type_name -> pluginrpc.v1.Cause
-	15, // 20: pluginrpc.v1.Action.messages:type_name -> pluginrpc.v1.Message
-	59, // 21: pluginrpc.v1.Effect.patch:type_name -> google.protobuf.Struct
-	21, // 22: pluginrpc.v1.Effect.block:type_name -> pluginrpc.v1.Block
-	23, // 23: pluginrpc.v1.Effect.action:type_name -> pluginrpc.v1.Action
-	59, // 24: pluginrpc.v1.OperationRequest.input:type_name -> google.protobuf.Struct
-	25, // 25: pluginrpc.v1.OperationRequest.invocation:type_name -> pluginrpc.v1.Invocation
-	3,  // 26: pluginrpc.v1.SubmitOperationRequest.kind:type_name -> pluginrpc.v1.OperationKind
-	26, // 27: pluginrpc.v1.SubmitOperationRequest.request:type_name -> pluginrpc.v1.OperationRequest
-	33, // 28: pluginrpc.v1.SubmitOperationResponse.operation:type_name -> pluginrpc.v1.Operation
-	3,  // 29: pluginrpc.v1.PollOperationRequest.kind:type_name -> pluginrpc.v1.OperationKind
-	33, // 30: pluginrpc.v1.PollOperationResponse.operation:type_name -> pluginrpc.v1.Operation
-	3,  // 31: pluginrpc.v1.CancelOperationRequest.kind:type_name -> pluginrpc.v1.OperationKind
-	33, // 32: pluginrpc.v1.CancelOperationResponse.operation:type_name -> pluginrpc.v1.Operation
-	2,  // 33: pluginrpc.v1.Operation.state:type_name -> pluginrpc.v1.OperationState
-	59, // 34: pluginrpc.v1.Operation.output:type_name -> google.protobuf.Struct
-	20, // 35: pluginrpc.v1.HandleHookRequest.event:type_name -> pluginrpc.v1.EventEnvelope
-	24, // 36: pluginrpc.v1.HandleHookResponse.effect:type_name -> pluginrpc.v1.Effect
-	20, // 37: pluginrpc.v1.Delivery.event:type_name -> pluginrpc.v1.EventEnvelope
-	36, // 38: pluginrpc.v1.DeliverRequest.delivery:type_name -> pluginrpc.v1.Delivery
-	5,  // 39: pluginrpc.v1.Registration.manifest:type_name -> pluginrpc.v1.Manifest
-	57, // 40: pluginrpc.v1.Registration.labels:type_name -> pluginrpc.v1.Registration.LabelsEntry
-	39, // 41: pluginrpc.v1.PluginInstance.registration:type_name -> pluginrpc.v1.Registration
-	39, // 42: pluginrpc.v1.RegisterRequest.registration:type_name -> pluginrpc.v1.Registration
-	44, // 43: pluginrpc.v1.RegisterResponse.lease:type_name -> pluginrpc.v1.Lease
-	40, // 44: pluginrpc.v1.Lease.key:type_name -> pluginrpc.v1.InstanceKey
-	44, // 45: pluginrpc.v1.RenewResponse.lease:type_name -> pluginrpc.v1.Lease
-	58, // 46: pluginrpc.v1.DiscoveryQuery.labels:type_name -> pluginrpc.v1.DiscoveryQuery.LabelsEntry
-	40, // 47: pluginrpc.v1.GetRegistrationRequest.key:type_name -> pluginrpc.v1.InstanceKey
-	41, // 48: pluginrpc.v1.GetRegistrationResponse.instance:type_name -> pluginrpc.v1.PluginInstance
-	49, // 49: pluginrpc.v1.ListRegistrationsRequest.query:type_name -> pluginrpc.v1.DiscoveryQuery
-	41, // 50: pluginrpc.v1.ListRegistrationsResponse.instances:type_name -> pluginrpc.v1.PluginInstance
-	4,  // 51: pluginrpc.v1.RegistrationChange.kind:type_name -> pluginrpc.v1.RegistrationChangeKind
-	41, // 52: pluginrpc.v1.RegistrationChange.instance:type_name -> pluginrpc.v1.PluginInstance
-	49, // 53: pluginrpc.v1.PollRegistrationsRequest.query:type_name -> pluginrpc.v1.DiscoveryQuery
-	54, // 54: pluginrpc.v1.PollRegistrationsResponse.changes:type_name -> pluginrpc.v1.RegistrationChange
-	13, // 55: pluginrpc.v1.PluginService.Describe:input_type -> pluginrpc.v1.DescribeRequest
-	27, // 56: pluginrpc.v1.PluginService.SubmitOperation:input_type -> pluginrpc.v1.SubmitOperationRequest
-	29, // 57: pluginrpc.v1.PluginService.PollOperation:input_type -> pluginrpc.v1.PollOperationRequest
-	31, // 58: pluginrpc.v1.PluginService.CancelOperation:input_type -> pluginrpc.v1.CancelOperationRequest
-	34, // 59: pluginrpc.v1.PluginService.HandleHook:input_type -> pluginrpc.v1.HandleHookRequest
-	37, // 60: pluginrpc.v1.PluginService.Deliver:input_type -> pluginrpc.v1.DeliverRequest
-	42, // 61: pluginrpc.v1.RegistryService.Register:input_type -> pluginrpc.v1.RegisterRequest
-	45, // 62: pluginrpc.v1.RegistryService.Renew:input_type -> pluginrpc.v1.RenewRequest
-	47, // 63: pluginrpc.v1.RegistryService.Unregister:input_type -> pluginrpc.v1.UnregisterRequest
-	50, // 64: pluginrpc.v1.RegistryService.GetRegistration:input_type -> pluginrpc.v1.GetRegistrationRequest
-	52, // 65: pluginrpc.v1.RegistryService.ListRegistrations:input_type -> pluginrpc.v1.ListRegistrationsRequest
-	55, // 66: pluginrpc.v1.RegistryService.PollRegistrations:input_type -> pluginrpc.v1.PollRegistrationsRequest
-	12, // 67: pluginrpc.v1.PluginService.Describe:output_type -> pluginrpc.v1.DescribeResponse
-	28, // 68: pluginrpc.v1.PluginService.SubmitOperation:output_type -> pluginrpc.v1.SubmitOperationResponse
-	30, // 69: pluginrpc.v1.PluginService.PollOperation:output_type -> pluginrpc.v1.PollOperationResponse
-	32, // 70: pluginrpc.v1.PluginService.CancelOperation:output_type -> pluginrpc.v1.CancelOperationResponse
-	35, // 71: pluginrpc.v1.PluginService.HandleHook:output_type -> pluginrpc.v1.HandleHookResponse
-	38, // 72: pluginrpc.v1.PluginService.Deliver:output_type -> pluginrpc.v1.DeliverResponse
-	43, // 73: pluginrpc.v1.RegistryService.Register:output_type -> pluginrpc.v1.RegisterResponse
-	46, // 74: pluginrpc.v1.RegistryService.Renew:output_type -> pluginrpc.v1.RenewResponse
-	48, // 75: pluginrpc.v1.RegistryService.Unregister:output_type -> pluginrpc.v1.UnregisterResponse
-	51, // 76: pluginrpc.v1.RegistryService.GetRegistration:output_type -> pluginrpc.v1.GetRegistrationResponse
-	53, // 77: pluginrpc.v1.RegistryService.ListRegistrations:output_type -> pluginrpc.v1.ListRegistrationsResponse
-	56, // 78: pluginrpc.v1.RegistryService.PollRegistrations:output_type -> pluginrpc.v1.PollRegistrationsResponse
-	67, // [67:79] is the sub-list for method output_type
-	55, // [55:67] is the sub-list for method input_type
-	55, // [55:55] is the sub-list for extension type_name
-	55, // [55:55] is the sub-list for extension extendee
-	0,  // [0:55] is the sub-list for field type_name
+	11, // 0: pluginrpc.v1.Manifest.commands:type_name -> pluginrpc.v1.CommandSpec
+	60, // 1: pluginrpc.v1.ToolSpec.parameters:type_name -> google.protobuf.Struct
+	0,  // 2: pluginrpc.v1.HookSpec.failure_policy:type_name -> pluginrpc.v1.FailurePolicy
+	60, // 3: pluginrpc.v1.CapabilitySpec.input_schema:type_name -> google.protobuf.Struct
+	60, // 4: pluginrpc.v1.CapabilitySpec.output_schema:type_name -> google.protobuf.Struct
+	5,  // 5: pluginrpc.v1.DescribeResponse.manifest:type_name -> pluginrpc.v1.Manifest
+	6,  // 6: pluginrpc.v1.DescribeResponse.providers:type_name -> pluginrpc.v1.ProviderSpec
+	7,  // 7: pluginrpc.v1.DescribeResponse.tools:type_name -> pluginrpc.v1.ToolSpec
+	8,  // 8: pluginrpc.v1.DescribeResponse.hooks:type_name -> pluginrpc.v1.HookSpec
+	10, // 9: pluginrpc.v1.DescribeResponse.capabilities:type_name -> pluginrpc.v1.CapabilitySpec
+	12, // 10: pluginrpc.v1.DescribeResponse.events:type_name -> pluginrpc.v1.EventContract
+	9,  // 11: pluginrpc.v1.DescribeResponse.subscribers:type_name -> pluginrpc.v1.SubscriberSpec
+	11, // 12: pluginrpc.v1.DescribeResponse.commands:type_name -> pluginrpc.v1.CommandSpec
+	60, // 13: pluginrpc.v1.ToolCall.arguments:type_name -> google.protobuf.Struct
+	15, // 14: pluginrpc.v1.Message.tool_calls:type_name -> pluginrpc.v1.ToolCall
+	16, // 15: pluginrpc.v1.ModelRequest.messages:type_name -> pluginrpc.v1.Message
+	7,  // 16: pluginrpc.v1.ModelRequest.tools:type_name -> pluginrpc.v1.ToolSpec
+	15, // 17: pluginrpc.v1.ModelResponse.tool_calls:type_name -> pluginrpc.v1.ToolCall
+	17, // 18: pluginrpc.v1.ModelResponse.usage:type_name -> pluginrpc.v1.Usage
+	60, // 19: pluginrpc.v1.EventEnvelope.payload:type_name -> google.protobuf.Struct
+	1,  // 20: pluginrpc.v1.Action.kind:type_name -> pluginrpc.v1.ActionKind
+	23, // 21: pluginrpc.v1.Action.cause:type_name -> pluginrpc.v1.Cause
+	16, // 22: pluginrpc.v1.Action.messages:type_name -> pluginrpc.v1.Message
+	60, // 23: pluginrpc.v1.Effect.patch:type_name -> google.protobuf.Struct
+	22, // 24: pluginrpc.v1.Effect.block:type_name -> pluginrpc.v1.Block
+	24, // 25: pluginrpc.v1.Effect.action:type_name -> pluginrpc.v1.Action
+	60, // 26: pluginrpc.v1.OperationRequest.input:type_name -> google.protobuf.Struct
+	26, // 27: pluginrpc.v1.OperationRequest.invocation:type_name -> pluginrpc.v1.Invocation
+	3,  // 28: pluginrpc.v1.SubmitOperationRequest.kind:type_name -> pluginrpc.v1.OperationKind
+	27, // 29: pluginrpc.v1.SubmitOperationRequest.request:type_name -> pluginrpc.v1.OperationRequest
+	34, // 30: pluginrpc.v1.SubmitOperationResponse.operation:type_name -> pluginrpc.v1.Operation
+	3,  // 31: pluginrpc.v1.PollOperationRequest.kind:type_name -> pluginrpc.v1.OperationKind
+	34, // 32: pluginrpc.v1.PollOperationResponse.operation:type_name -> pluginrpc.v1.Operation
+	3,  // 33: pluginrpc.v1.CancelOperationRequest.kind:type_name -> pluginrpc.v1.OperationKind
+	34, // 34: pluginrpc.v1.CancelOperationResponse.operation:type_name -> pluginrpc.v1.Operation
+	2,  // 35: pluginrpc.v1.Operation.state:type_name -> pluginrpc.v1.OperationState
+	60, // 36: pluginrpc.v1.Operation.output:type_name -> google.protobuf.Struct
+	21, // 37: pluginrpc.v1.HandleHookRequest.event:type_name -> pluginrpc.v1.EventEnvelope
+	25, // 38: pluginrpc.v1.HandleHookResponse.effect:type_name -> pluginrpc.v1.Effect
+	21, // 39: pluginrpc.v1.Delivery.event:type_name -> pluginrpc.v1.EventEnvelope
+	37, // 40: pluginrpc.v1.DeliverRequest.delivery:type_name -> pluginrpc.v1.Delivery
+	5,  // 41: pluginrpc.v1.Registration.manifest:type_name -> pluginrpc.v1.Manifest
+	58, // 42: pluginrpc.v1.Registration.labels:type_name -> pluginrpc.v1.Registration.LabelsEntry
+	40, // 43: pluginrpc.v1.PluginInstance.registration:type_name -> pluginrpc.v1.Registration
+	40, // 44: pluginrpc.v1.RegisterRequest.registration:type_name -> pluginrpc.v1.Registration
+	45, // 45: pluginrpc.v1.RegisterResponse.lease:type_name -> pluginrpc.v1.Lease
+	41, // 46: pluginrpc.v1.Lease.key:type_name -> pluginrpc.v1.InstanceKey
+	45, // 47: pluginrpc.v1.RenewResponse.lease:type_name -> pluginrpc.v1.Lease
+	59, // 48: pluginrpc.v1.DiscoveryQuery.labels:type_name -> pluginrpc.v1.DiscoveryQuery.LabelsEntry
+	41, // 49: pluginrpc.v1.GetRegistrationRequest.key:type_name -> pluginrpc.v1.InstanceKey
+	42, // 50: pluginrpc.v1.GetRegistrationResponse.instance:type_name -> pluginrpc.v1.PluginInstance
+	50, // 51: pluginrpc.v1.ListRegistrationsRequest.query:type_name -> pluginrpc.v1.DiscoveryQuery
+	42, // 52: pluginrpc.v1.ListRegistrationsResponse.instances:type_name -> pluginrpc.v1.PluginInstance
+	4,  // 53: pluginrpc.v1.RegistrationChange.kind:type_name -> pluginrpc.v1.RegistrationChangeKind
+	42, // 54: pluginrpc.v1.RegistrationChange.instance:type_name -> pluginrpc.v1.PluginInstance
+	50, // 55: pluginrpc.v1.PollRegistrationsRequest.query:type_name -> pluginrpc.v1.DiscoveryQuery
+	55, // 56: pluginrpc.v1.PollRegistrationsResponse.changes:type_name -> pluginrpc.v1.RegistrationChange
+	14, // 57: pluginrpc.v1.PluginService.Describe:input_type -> pluginrpc.v1.DescribeRequest
+	28, // 58: pluginrpc.v1.PluginService.SubmitOperation:input_type -> pluginrpc.v1.SubmitOperationRequest
+	30, // 59: pluginrpc.v1.PluginService.PollOperation:input_type -> pluginrpc.v1.PollOperationRequest
+	32, // 60: pluginrpc.v1.PluginService.CancelOperation:input_type -> pluginrpc.v1.CancelOperationRequest
+	35, // 61: pluginrpc.v1.PluginService.HandleHook:input_type -> pluginrpc.v1.HandleHookRequest
+	38, // 62: pluginrpc.v1.PluginService.Deliver:input_type -> pluginrpc.v1.DeliverRequest
+	43, // 63: pluginrpc.v1.RegistryService.Register:input_type -> pluginrpc.v1.RegisterRequest
+	46, // 64: pluginrpc.v1.RegistryService.Renew:input_type -> pluginrpc.v1.RenewRequest
+	48, // 65: pluginrpc.v1.RegistryService.Unregister:input_type -> pluginrpc.v1.UnregisterRequest
+	51, // 66: pluginrpc.v1.RegistryService.GetRegistration:input_type -> pluginrpc.v1.GetRegistrationRequest
+	53, // 67: pluginrpc.v1.RegistryService.ListRegistrations:input_type -> pluginrpc.v1.ListRegistrationsRequest
+	56, // 68: pluginrpc.v1.RegistryService.PollRegistrations:input_type -> pluginrpc.v1.PollRegistrationsRequest
+	13, // 69: pluginrpc.v1.PluginService.Describe:output_type -> pluginrpc.v1.DescribeResponse
+	29, // 70: pluginrpc.v1.PluginService.SubmitOperation:output_type -> pluginrpc.v1.SubmitOperationResponse
+	31, // 71: pluginrpc.v1.PluginService.PollOperation:output_type -> pluginrpc.v1.PollOperationResponse
+	33, // 72: pluginrpc.v1.PluginService.CancelOperation:output_type -> pluginrpc.v1.CancelOperationResponse
+	36, // 73: pluginrpc.v1.PluginService.HandleHook:output_type -> pluginrpc.v1.HandleHookResponse
+	39, // 74: pluginrpc.v1.PluginService.Deliver:output_type -> pluginrpc.v1.DeliverResponse
+	44, // 75: pluginrpc.v1.RegistryService.Register:output_type -> pluginrpc.v1.RegisterResponse
+	47, // 76: pluginrpc.v1.RegistryService.Renew:output_type -> pluginrpc.v1.RenewResponse
+	49, // 77: pluginrpc.v1.RegistryService.Unregister:output_type -> pluginrpc.v1.UnregisterResponse
+	52, // 78: pluginrpc.v1.RegistryService.GetRegistration:output_type -> pluginrpc.v1.GetRegistrationResponse
+	54, // 79: pluginrpc.v1.RegistryService.ListRegistrations:output_type -> pluginrpc.v1.ListRegistrationsResponse
+	57, // 80: pluginrpc.v1.RegistryService.PollRegistrations:output_type -> pluginrpc.v1.PollRegistrationsResponse
+	69, // [69:81] is the sub-list for method output_type
+	57, // [57:69] is the sub-list for method input_type
+	57, // [57:57] is the sub-list for extension type_name
+	57, // [57:57] is the sub-list for extension extendee
+	0,  // [0:57] is the sub-list for field type_name
 }
 
 func init() { file_pluginrpc_v1_plugin_proto_init() }
@@ -3998,7 +4084,7 @@ func file_pluginrpc_v1_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pluginrpc_v1_plugin_proto_rawDesc), len(file_pluginrpc_v1_plugin_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   54,
+			NumMessages:   55,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

@@ -27,6 +27,7 @@ type Registrar struct {
 	Subscribers  map[string]Contribution[sdk.Subscriber, sdk.SubscriberSpec]
 	Capabilities map[string]Contribution[sdk.Capability, sdk.CapabilitySpec]
 	Events       map[string]sdk.EventContract
+	Commands     map[string]sdk.CommandSpec
 }
 
 func NewRegistrar() *Registrar {
@@ -38,6 +39,7 @@ func NewRegistrar() *Registrar {
 		Subscribers:  make(map[string]Contribution[sdk.Subscriber, sdk.SubscriberSpec]),
 		Capabilities: make(map[string]Contribution[sdk.Capability, sdk.CapabilitySpec]),
 		Events:       make(map[string]sdk.EventContract),
+		Commands:     make(map[string]sdk.CommandSpec),
 	}
 }
 
@@ -190,6 +192,17 @@ func (registrar *Registrar) RegisterEvent(contract sdk.EventContract) error {
 	return nil
 }
 
+func (registrar *Registrar) RegisterCommand(spec sdk.CommandSpec) error {
+	if err := validateCommandSpec(spec); err != nil {
+		return err
+	}
+	if _, exists := registrar.Commands[spec.Name]; exists {
+		return fmt.Errorf("command %q registered twice", spec.Name)
+	}
+	registrar.Commands[spec.Name] = spec
+	return nil
+}
+
 func register[Resource, Spec any](
 	resources map[string]Contribution[Resource, Spec],
 	kind string,
@@ -233,6 +246,9 @@ func (registrar *Registrar) ResourceSpec(
 	case sdk.ResourceKindEvent:
 		resource, exists := registrar.Events[name]
 		return resource, exists
+	case sdk.ResourceKindCommand:
+		resource, exists := registrar.Commands[name]
+		return resource, exists
 	default:
 		return nil, false
 	}
@@ -265,7 +281,8 @@ func (registrar *Registrar) Resources() []string {
 			len(registrar.Hooks)+
 			len(registrar.Subscribers)+
 			len(registrar.Capabilities)+
-			len(registrar.Events),
+			len(registrar.Events)+
+			len(registrar.Commands),
 	)
 	resources = appendNames(resources, registrar.Providers, sdk.ProviderResource)
 	resources = appendNames(resources, registrar.Tools, sdk.ToolResource)
@@ -274,6 +291,7 @@ func (registrar *Registrar) Resources() []string {
 	resources = appendNames(resources, registrar.Subscribers, sdk.SubscriberResource)
 	resources = appendNames(resources, registrar.Capabilities, sdk.CapabilityResource)
 	resources = appendNames(resources, registrar.Events, sdk.EventResource)
+	resources = appendNames(resources, registrar.Commands, sdk.CommandResource)
 	slices.Sort(resources)
 	return resources
 }
@@ -288,6 +306,25 @@ func (registrar *Registrar) ValidateManifest(manifest sdk.Manifest) error {
 			manifest.Name,
 			declared,
 			actual,
+		)
+	}
+	declaredCommands := slices.Clone(manifest.Commands)
+	slices.SortFunc(declaredCommands, func(left, right sdk.CommandSpec) int {
+		return strings.Compare(left.Name, right.Name)
+	})
+	actualCommands := make([]sdk.CommandSpec, 0, len(registrar.Commands))
+	for _, command := range registrar.Commands {
+		actualCommands = append(actualCommands, command)
+	}
+	slices.SortFunc(actualCommands, func(left, right sdk.CommandSpec) int {
+		return strings.Compare(left.Name, right.Name)
+	})
+	if !slices.Equal(declaredCommands, actualCommands) {
+		return fmt.Errorf(
+			"plugin %q manifest commands %v, but install registered %v",
+			manifest.Name,
+			declaredCommands,
+			actualCommands,
 		)
 	}
 	return nil
@@ -444,6 +481,19 @@ func validateCapabilitySpec(spec sdk.CapabilitySpec) error {
 	return nil
 }
 
+func validateCommandSpec(spec sdk.CommandSpec) error {
+	if err := sdk.ValidateResourceName("command", spec.Name); err != nil {
+		return err
+	}
+	if strings.TrimSpace(spec.Description) == "" {
+		return fmt.Errorf("command %q description is empty", spec.Name)
+	}
+	if strings.TrimSpace(spec.Instruction) == "" {
+		return fmt.Errorf("command %q instruction is empty", spec.Name)
+	}
+	return nil
+}
+
 func validateEventContract(contract sdk.EventContract) error {
 	if err := sdk.ValidateResourceName("event", contract.Name); err != nil {
 		return err
@@ -464,3 +514,4 @@ func validateEventContract(contract sdk.EventContract) error {
 
 var _ sdk.Registrar = (*Registrar)(nil)
 var _ sdk.AgentRegistrar = (*AgentRegistrar)(nil)
+var _ sdk.CommandRegistrar = (*Registrar)(nil)

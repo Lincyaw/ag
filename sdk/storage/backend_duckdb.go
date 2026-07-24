@@ -162,7 +162,6 @@ func (*duckDBStateBackend) Capabilities() sdk.StorageCapabilities {
 	return sdk.StorageCapabilities{
 		Durable:            true,
 		MultiProcessSafe:   false,
-		AtomicState:        true,
 		OperationFencing:   true,
 		NamedQueues:        true,
 		Pagination:         true,

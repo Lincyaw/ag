@@ -266,6 +266,12 @@ func (server *server) Describe(
 			toProtoEventContract(server.registrar.Events[name]),
 		)
 	}
+	for _, name := range sortedKeys(server.registrar.Commands) {
+		response.Commands = append(
+			response.Commands,
+			toProtoCommandSpec(server.registrar.Commands[name]),
+		)
+	}
 	return response, nil
 }
 

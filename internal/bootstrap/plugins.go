@@ -7,8 +7,12 @@ import (
 	"github.com/lincyaw/ag/plugins/bash"
 	"github.com/lincyaw/ag/plugins/compact"
 	fileplugin "github.com/lincyaw/ag/plugins/file"
+	"github.com/lincyaw/ag/plugins/memory"
 	"github.com/lincyaw/ag/plugins/openai"
 	otelplugin "github.com/lincyaw/ag/plugins/otel"
+	"github.com/lincyaw/ag/plugins/skills"
+	"github.com/lincyaw/ag/plugins/subagent"
+	"github.com/lincyaw/ag/plugins/systemprompt"
 	"github.com/lincyaw/ag/sdk"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -20,7 +24,7 @@ func configuredLocalPlugins(
 	tracer trace.Tracer,
 	meter metric.Meter,
 ) ([]sdk.Plugin, error) {
-	plugins := make([]sdk.Plugin, 0, 7)
+	plugins := make([]sdk.Plugin, 0, 9)
 	if config.Observability.Enabled {
 		plugin, err := otelplugin.New(otelplugin.Config{
 			Logger: logger,
@@ -52,6 +56,34 @@ func configuredLocalPlugins(
 			MaxToolResultChars: config.Compact.MaxToolResultChars,
 		}))
 	}
+	if config.SystemPrompt.Enabled {
+		plugins = append(plugins, systemprompt.New(systemprompt.Config{
+			WorkspaceRoot: config.Workspace.Root,
+			Prompt:        config.SystemPrompt.Prompt,
+			PromptFile:    config.SystemPrompt.PromptFile,
+			MaxFileBytes:  config.SystemPrompt.MaxFileBytes,
+			Logger:        logger,
+		}))
+	}
+	if config.Skills.Enabled {
+		plugins = append(plugins, skills.New(skills.Config{
+			WorkspaceRoot:   config.Workspace.Root,
+			Paths:           config.Skills.Paths,
+			IncludeDefaults: config.Skills.IncludeDefaults,
+			MaxReadBytes:    config.Skills.MaxReadBytes,
+			Logger:          logger,
+		}))
+	}
+	if config.Memory.Enabled {
+		plugins = append(plugins, memory.New(memory.Config{
+			WorkspaceRoot:       config.Workspace.Root,
+			Path:                config.Memory.Path,
+			EnableWrite:         config.Memory.EnableWrite,
+			IndexInSystemPrompt: config.Memory.IndexInSystemPrompt,
+			MaxReadBytes:        config.Memory.MaxReadBytes,
+			MaxIndexEntries:     config.Memory.MaxIndexEntries,
+		}))
+	}
 	if config.Workspace.Enabled {
 		plugins = append(plugins, fileplugin.New(fileplugin.Config{
 			Root:          config.Workspace.Root,
@@ -70,6 +102,25 @@ func configuredLocalPlugins(
 			MaxOutputBytes: config.Bash.MaxOutputBytes,
 			Environment:    config.Bash.Environment,
 		}))
+	}
+	if config.Subagent.Enabled {
+		agents := make([]subagent.Agent, len(config.Subagent.Agents))
+		for index, agent := range config.Subagent.Agents {
+			var tools []string
+			if agent.Tools != nil {
+				tools = append(
+					make([]string, 0, len(agent.Tools)),
+					agent.Tools...,
+				)
+			}
+			agents[index] = subagent.Agent{
+				Name: agent.Name, Description: agent.Description,
+				Provider: agent.Provider, System: agent.System,
+				MaxTurns: agent.MaxTurns,
+				Tools:    tools,
+			}
+		}
+		plugins = append(plugins, subagent.New(subagent.Config{Agents: agents}))
 	}
 	return plugins, nil
 }

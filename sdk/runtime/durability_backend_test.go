@@ -63,7 +63,6 @@ type atomicTestBackend struct {
 
 func (backend *atomicTestBackend) Capabilities() sdk.StorageCapabilities {
 	capabilities := backend.StateBackend.Capabilities()
-	capabilities.AtomicState = true
 	return capabilities
 }
 

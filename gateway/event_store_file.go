@@ -19,21 +19,29 @@ import (
 
 const fileEventSchemaVersion uint32 = 1
 
+const (
+	fileEventJournalCompactBytes   = 16 << 20
+	fileEventJournalCompactEntries = 10_000
+)
+
 type fileEventState struct {
 	SchemaVersion uint32                 `json:"schema_version"`
 	Streams       map[string]eventStream `json:"streams"`
 }
 
 type fileEventStore struct {
-	mu          sync.Mutex
-	directory   string
-	statePath   string
-	journalPath string
-	state       fileEventState
-	notify      map[string]chan struct{}
-	latest      map[string]uint64
-	clock       func() time.Time
-	closed      bool
+	mu             sync.Mutex
+	directory      string
+	statePath      string
+	snapshotPath   string
+	journalPath    string
+	state          fileEventState
+	journalState   fileEventState
+	journalEntries int
+	notify         map[string]chan struct{}
+	latest         map[string]uint64
+	clock          func() time.Time
+	closed         bool
 }
 
 func NewFileEventStore(directory string) (EventStore, error) {
@@ -45,12 +53,13 @@ func NewFileEventStore(directory string) (EventStore, error) {
 		return nil, err
 	}
 	store := &fileEventStore{
-		directory:   absolute,
-		statePath:   filepath.Join(absolute, "events.json"),
-		journalPath: filepath.Join(absolute, "events.journal.jsonl"),
-		notify:      make(map[string]chan struct{}),
-		latest:      make(map[string]uint64),
-		clock:       func() time.Time { return time.Now().UTC() },
+		directory:    absolute,
+		statePath:    filepath.Join(absolute, "events.json"),
+		snapshotPath: filepath.Join(absolute, "events.snapshot.json"),
+		journalPath:  filepath.Join(absolute, "events.journal.jsonl"),
+		notify:       make(map[string]chan struct{}),
+		latest:       make(map[string]uint64),
+		clock:        func() time.Time { return time.Now().UTC() },
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -58,10 +67,16 @@ func NewFileEventStore(directory string) (EventStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := store.loadJournalLocked(&state); err != nil {
+	journalState, err := store.readSnapshotLocked()
+	if err != nil {
+		return nil, err
+	}
+	mergeEventState(&state, journalState)
+	if err := store.loadJournalLocked(&state, &journalState); err != nil {
 		return nil, err
 	}
 	store.state = state
+	store.journalState = journalState
 	for sessionID, stream := range state.Streams {
 		store.latest[sessionID] = latestAgentEventSequence(stream)
 	}
@@ -105,8 +120,16 @@ func (store *fileEventStore) Append(
 		return AgentEvent{}, err
 	}
 	store.state.Streams[sessionID] = stream
+	store.journalState.Streams[sessionID] = appendJournalEvent(
+		store.journalState.Streams[sessionID],
+		created,
+	)
+	store.journalEntries++
 	store.latest[sessionID] = created.Sequence
 	store.signalLocked(sessionID)
+	if err := store.compactJournalLocked(ctx, false); err != nil {
+		return AgentEvent{}, err
+	}
 	return cloneAgentEvent(created), nil
 }
 
@@ -243,7 +266,55 @@ func (store *fileEventStore) readLocked() (fileEventState, error) {
 	return state, nil
 }
 
-func (store *fileEventStore) loadJournalLocked(state *fileEventState) error {
+func (store *fileEventStore) readSnapshotLocked() (fileEventState, error) {
+	raw, err := os.ReadFile(store.snapshotPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fileEventState{
+			SchemaVersion: fileEventSchemaVersion,
+			Streams:       make(map[string]eventStream),
+		}, nil
+	}
+	if err != nil {
+		return fileEventState{}, fmt.Errorf("read gateway event snapshot: %w", err)
+	}
+	var state fileEventState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return fileEventState{}, fmt.Errorf("decode gateway event snapshot: %w", err)
+	}
+	if state.SchemaVersion != fileEventSchemaVersion {
+		return fileEventState{}, fmt.Errorf(
+			"unsupported gateway event snapshot schema version %d",
+			state.SchemaVersion,
+		)
+	}
+	if state.Streams == nil {
+		state.Streams = make(map[string]eventStream)
+	}
+	for sessionID, stream := range state.Streams {
+		validated, err := validateStoredEventStream(sessionID, stream)
+		if err != nil {
+			return fileEventState{}, err
+		}
+		state.Streams[sessionID] = validated
+	}
+	return state, nil
+}
+
+func mergeEventState(target *fileEventState, source fileEventState) {
+	for sessionID, stream := range source.Streams {
+		for _, event := range stream.Events {
+			target.Streams[sessionID] = appendJournalEvent(
+				target.Streams[sessionID],
+				event,
+			)
+		}
+	}
+}
+
+func (store *fileEventStore) loadJournalLocked(
+	state *fileEventState,
+	journalState *fileEventState,
+) error {
 	file, err := os.OpenFile(store.journalPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return fmt.Errorf("open gateway event journal: %w", err)
@@ -272,6 +343,11 @@ func (store *fileEventStore) loadJournalLocked(state *fileEventState) error {
 			state.Streams[event.SessionID],
 			event,
 		)
+		journalState.Streams[event.SessionID] = appendJournalEvent(
+			journalState.Streams[event.SessionID],
+			event,
+		)
+		store.journalEntries++
 		offset += int64(len(line))
 	}
 	for sessionID, stream := range state.Streams {
@@ -306,16 +382,64 @@ func (store *fileEventStore) appendJournalLocked(event AgentEvent) error {
 }
 
 func appendJournalEvent(stream eventStream, event AgentEvent) eventStream {
-	for _, current := range stream.Events {
-		if current.ID == event.ID {
-			return stream
+	if _, exists := stream.byID[event.ID]; exists {
+		return stream
+	}
+	if stream.byID == nil {
+		stream.byID = make(map[string]int, len(stream.Events)+1)
+		for index, current := range stream.Events {
+			stream.byID[current.ID] = index
+			if current.ID == event.ID {
+				return stream
+			}
 		}
 	}
 	stream.Events = append(stream.Events, cloneAgentEvent(event))
+	stream.byID[event.ID] = len(stream.Events) - 1
 	if event.Sequence >= stream.NextSequence {
 		stream.NextSequence = event.Sequence + 1
 	}
 	return stream
+}
+
+func (store *fileEventStore) compactJournalLocked(
+	ctx context.Context,
+	force bool,
+) error {
+	if !force && store.journalEntries < fileEventJournalCompactEntries {
+		if store.journalEntries%256 != 0 {
+			return nil
+		}
+		info, err := os.Stat(store.journalPath)
+		if err != nil {
+			return fmt.Errorf("stat gateway event journal: %w", err)
+		}
+		if info.Size() < fileEventJournalCompactBytes {
+			return nil
+		}
+	}
+	if err := filestate.WriteJSON(
+		ctx,
+		store.directory,
+		store.snapshotPath,
+		"gateway event snapshot",
+		store.journalState,
+	); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(store.journalPath, os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("truncate gateway event journal after snapshot: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync compacted gateway event journal: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close compacted gateway event journal: %w", err)
+	}
+	store.journalEntries = 0
+	return nil
 }
 
 func (store *fileEventStore) notifyLocked(sessionID string) chan struct{} {

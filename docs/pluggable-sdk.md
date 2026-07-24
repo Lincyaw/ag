@@ -252,6 +252,7 @@ type Manifest struct {
     Requires      []string
     Conflicts     []string
     Registers     []string
+    Commands      []CommandSpec
 }
 ```
 
@@ -268,6 +269,7 @@ agent:<name>        # same-process extension
 hook:<name>
 capability:<name>
 event:<name>
+command:<name>
 plugin:<name>
 ```
 
@@ -284,9 +286,16 @@ The initial contribution kinds are:
 - `Subscriber`: passive asynchronous event consumer;
 - `Capability`: generic JSON request/response operation;
 - `EventContract`: custom event declaration.
+- `CommandSpec`: a TUI-visible prompt command.
 
 Provider and Tool are specialized capabilities because the agent loop needs
 their typed contracts directly.
+
+The built-in `system-prompt`, `skills`, and `memory` packages demonstrate
+composition at this boundary. `system-prompt` prepends hierarchical workspace
+context through a `before_agent_start` hook. `skills` and `memory` append
+compact discovery indexes through later hooks and register tools for
+demand-loaded bodies. The runtime owns none of their filesystem conventions.
 
 `AgentRegistrar` is an optional local registrar extension rather than part of
 the cross-process `Registrar` contract. A Go plugin registers an agent with
@@ -295,6 +304,43 @@ runtime staging registrar and fails explicitly for an RPC registrar. Agent
 callbacks are intentionally same-process in API v1; providers and tools used by
 that agent may still be local or RPC resources already mounted in the inherited
 snapshot.
+
+The built-in `subagent` plugin uses this optional extension to register
+configured child agents plus `dispatch_agent`. The tool calls
+`sdk.InvokeAgent`, so new, forked, and resumed child work retains runtime
+lineage, idempotency, cancellation, tool narrowing, and durable trajectory
+semantics instead of creating an independent execution mechanism.
+
+Prompt commands are transport-neutral and available to local and RPC plugins.
+Declare the command in the manifest and register the identical spec during
+installation:
+
+```go
+var reviewCommand = sdk.CommandSpec{
+    Name:        "review",
+    Description: "Review a file or package",
+    Instruction: "Review $ARGUMENTS and report actionable findings.",
+}
+
+func (plugin Plugin) Manifest() sdk.Manifest {
+    return sdk.Manifest{
+        Name:        "reviewer",
+        Version:     "1.0.0",
+        Description: "Review shortcuts",
+        APIVersion:  sdk.APIVersion,
+        Registers:   []string{sdk.CommandResource(reviewCommand.Name)},
+        Commands:    []sdk.CommandSpec{reviewCommand},
+    }
+}
+
+func (plugin Plugin) Install(_ context.Context, registrar sdk.Registrar) error {
+    return sdk.RegisterCommand(registrar, reviewCommand)
+}
+```
+
+An attached plugin's command appears in slash completion and the TUI command
+palette. `$ARGUMENTS` is replaced by the text following `/review`; if the
+placeholder is absent, arguments are appended to the instruction.
 
 ## Transactional mount and unmount
 

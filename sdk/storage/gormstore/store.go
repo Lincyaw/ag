@@ -268,7 +268,6 @@ func (s *Store) Capabilities() sdk.StorageCapabilities {
 	return sdk.StorageCapabilities{
 		Durable:            true,
 		MultiProcessSafe:   true,
-		AtomicState:        true,
 		OperationFencing:   true,
 		NamedQueues:        true,
 		Pagination:         true,
